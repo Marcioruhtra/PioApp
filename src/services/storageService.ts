@@ -329,6 +329,7 @@ export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): 
     paymentProofs: [],
     announcements: [],
     messages: [],
+    deletionRequests: [],
     auditLogs: [
       {
         id: `AUD-INIT-${Date.now()}`,
@@ -338,7 +339,7 @@ export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): 
         actorRole: 'admin_tecnico',
         module: 'audit',
         action: 'REINICIALIZACAO_SISTEMA_ZERO',
-        details: 'Sistema reiniciado do zero pelo Administrador. Todos os dados foram eliminados: sem membros, sem dinheiro (0 Kz), sem documentos e sem classes/especialidades. Conta única mantida como Administrador Técnico.',
+        details: 'Sistema reiniciado do zero pelo Administrador. Todos os dados foram eliminados: sem membros, sem dinheiro (0 Kz), sem documentos, sem mensagens, sem registos de eliminação de membros e sem classes/especialidades. Conta única mantida como Administrador Técnico.',
         reason: 'Reinício integral de sistema do zero solicitado pelo Administrador.',
       },
     ],
