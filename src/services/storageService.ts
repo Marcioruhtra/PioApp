@@ -223,6 +223,12 @@ export function loadInitialState(): ClubDatabaseState {
     console.error('Falha ao ler dados do localStorage:', e);
   }
 
+  // Se o utilizador limpou o sistema ou iniciou limpo, não carregar dados de demonstração (teste)
+  const startedClean = typeof window !== 'undefined' && window.localStorage && localStorage.getItem('pioapp_started_clean') === 'true';
+  if (startedClean) {
+    return resetToCleanAdminOnlyState();
+  }
+
   // Estado padrão com dados demonstrativos
   return {
     users: INITIAL_USERS,
@@ -276,6 +282,7 @@ export function saveStateToStorage(state: ClubDatabaseState): void {
 export function resetToDemoData(): ClubDatabaseState {
   if (typeof window !== 'undefined' && window.localStorage) {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem('pioapp_started_clean');
   }
   const state = loadInitialState();
   saveStateToStorage(state);
@@ -291,6 +298,7 @@ export function resetToDemoData(): ClubDatabaseState {
 export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): ClubDatabaseState {
   if (typeof window !== 'undefined' && window.localStorage) {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.setItem('pioapp_started_clean', 'true');
   }
   const now = getNowISOString();
   const admin: UserAccount = {
