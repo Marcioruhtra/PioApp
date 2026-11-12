@@ -3552,12 +3552,28 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!can('audit', 'ADMIN')) {
       return { success: false, error: 'Apenas o Administrador Técnico pode redefinir palavras-passe.' };
     }
-    // NOTA: Em produção, isto chamaria uma Cloud Function para atualizar a senha no Firebase Auth
-    setState((prev) => ({
-      ...prev,
-      users: prev.users.map(u => u.id === userId ? { ...u, passwordResetRequested: false } : u)
-    }));
-    logAction('audit', 'REDEFINICAO_SENHA', `Palavra-passe redefinida manualmente para o utilizador ${userId}`, userId);
+    const nowISO = getNowISOString();
+    const updatedUsers = state.users.map(u => 
+      u.id === userId 
+        ? { ...u, password: newPassword.trim(), passwordResetRequested: false, lastPasswordChangedAt: nowISO } 
+        : u
+    );
+
+    const updatedCurrentUser = state.currentUser.id === userId
+      ? { ...state.currentUser, password: newPassword.trim(), passwordResetRequested: false, lastPasswordChangedAt: nowISO }
+      : state.currentUser;
+
+    const newState = {
+      ...state,
+      users: updatedUsers,
+      currentUser: updatedCurrentUser,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    pushToFirestore(newState);
+
+    logAction('audit', 'REDEFINICAO_SENHA', `Palavra-passe redefinida manualmente para o utilizador ${userId} e tempo de 2 meses reiniciado`, userId);
     return { success: true };
   };
 
