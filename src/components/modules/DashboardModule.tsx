@@ -15,6 +15,7 @@ import {
   BarChart3,
   ArrowDownRight,
   ArrowUpRight,
+  Check,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import { formatKz } from '../../utils/currency';
@@ -45,7 +46,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
 
   const pendingExpensesCount = state.expenses.filter((e) => e.status === 'solicitado').length;
   const pendingProofsCount = state.paymentProofs.filter((p) => p.status === 'submetido').length;
-  const pendingRequestsCount = state.requests.filter((r) => r.status === 'pendente').length;
 
   return (
     <div className="space-y-6 w-full max-w-full min-w-0">
@@ -161,12 +161,12 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
             <Clock className="w-4 h-4 text-amber-600 shrink-0" />
           </div>
           <div className="text-2xl font-black text-slate-900">
-            {pendingExpensesCount + pendingProofsCount + pendingRequestsCount}
+            {pendingExpensesCount + pendingProofsCount}
           </div>
           <div className="text-xs text-slate-500 mt-2 flex items-center gap-2">
             <span>{pendingProofsCount} Comprovativos</span>
             <span>·</span>
-            <span>{pendingRequestsCount} Pedidos</span>
+            <span>{pendingExpensesCount} Despesas</span>
           </div>
         </div>
       </div>
@@ -304,37 +304,54 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
           </div>
         </div>
 
-        {/* Painel: Avisos Institucionais Recentes */}
+        {/* Painel: Circulares Institucionais Recentes */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden w-full max-w-full min-w-0">
           <div className="px-4 sm:px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
             <div className="flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-blue-900" />
-              <h2 className="text-sm font-bold text-slate-900">Avisos Oficiais do Clube</h2>
+              <h2 className="text-sm font-bold text-slate-900">Circulares & Comunicados</h2>
             </div>
             <button
               onClick={() => onNavigate('requests')}
               className="text-xs text-blue-900 hover:text-blue-700 font-semibold inline-flex items-center gap-1"
             >
-              <span>Todos os Avisos</span>
+              <span>Ver Todas</span>
               <ArrowRight className="w-3 h-3" />
             </button>
           </div>
 
           <div className="divide-y divide-slate-100">
-            {state.announcements.map((ann) => (
-              <div key={ann.id} className="p-4 hover:bg-slate-50 transition-colors">
+            {(state.circulars || [])
+              .filter(c => c.targetRoles.includes(currentUser.role))
+              .slice(0, 5)
+              .map((circular) => (
+              <div key={circular.id} className="p-4 hover:bg-slate-50 transition-colors">
                 <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-xs font-bold text-slate-900">{ann.title}</h3>
+                  <div className="flex items-center gap-2">
+                    <span className={`w-1.5 h-1.5 rounded-full ${circular.priority === 'urgente' ? 'bg-rose-500 animate-pulse' : circular.priority === 'alta' ? 'bg-amber-500' : 'bg-blue-500'}`}></span>
+                    <h3 className="text-xs font-bold text-slate-900">{circular.title}</h3>
+                  </div>
                   <span className="text-[10px] text-slate-600 font-mono shrink-0">
-                    {formatDateAO(ann.publishedAt)}
+                    {formatDateAO(circular.publishedAt)}
                   </span>
                 </div>
-                <p className="text-xs text-slate-600 mt-1 leading-relaxed">{ann.content}</p>
-                <div className="text-[10px] text-slate-500 mt-2 flex items-center gap-2">
-                  <span>Publicado por: {ann.publishedByName}</span>
+                <p className="text-xs text-slate-600 mt-1 leading-relaxed line-clamp-2">{circular.content}</p>
+                <div className="text-[10px] text-slate-500 mt-2 flex items-center justify-between">
+                  <span>Por: {circular.publishedByName}</span>
+                  {currentUser.linkedMemberId && circular.readBy.includes(currentUser.linkedMemberId) && (
+                    <span className="flex items-center gap-0.5 text-emerald-600 font-bold uppercase tracking-tighter">
+                      <Check className="w-3 h-3" />
+                      Lido
+                    </span>
+                  )}
                 </div>
               </div>
             ))}
+            {(state.circulars || []).filter(c => c.targetRoles.includes(currentUser.role)).length === 0 && (
+              <div className="p-8 text-center text-xs text-slate-400 italic">
+                Nenhum comunicado oficial recente.
+              </div>
+            )}
           </div>
         </div>
       </div>

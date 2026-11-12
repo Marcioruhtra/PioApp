@@ -52,11 +52,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const { currentUser, can, state } = useClub();
 
-  const pendingRequests = state.requests.filter((r) => r.status === 'pendente').length;
-  const pendingProofs = state.paymentProofs.filter((p) => p.status === 'submetido').length;
   const isDirectorOrAdmin = currentUser.role === 'diretor' || currentUser.role === 'admin_tecnico';
   const unviewedSuggestions = isDirectorOrAdmin
     ? (state.suggestions || []).filter((s) => !s.viewedByDirector).length
+    : 0;
+
+  // Contagem de comprovativos pendentes para a Tesouraria
+  const pendingProofs = state.paymentProofs.filter(p => p.status === 'submetido').length;
+
+  // Conta circulares não lidas pelo membro
+  const unreadCirculars = currentUser.linkedMemberId 
+    ? (state.circulars || []).filter(c => !c.readBy.includes(currentUser.linkedMemberId!)).length
     : 0;
 
   const navItems: NavItem[] = [
@@ -107,10 +113,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'requests',
-      label: currentUser.role === 'membro' ? 'Avisos e Editais' : 'Pedidos e Avisos',
+      label: 'Circulares & Avisos',
       icon: MessageSquare,
-      badge: currentUser.role === 'membro' ? undefined : (pendingRequests > 0 ? pendingRequests : undefined),
-      description: currentUser.role === 'membro' ? 'Avisos, editais e comunicados oficiais' : 'Comunicações e solicitações',
+      badge: unreadCirculars > 0 ? unreadCirculars : undefined,
+      description: 'Comunicados oficiais e diretivas institucionais',
     },
     {
       id: 'chaplaincy',

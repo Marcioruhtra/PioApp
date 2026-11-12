@@ -42,7 +42,6 @@ export const AndroidDrawer: React.FC<AndroidDrawerProps> = ({
   onLogout,
 }) => {
   const { currentUser, can, state } = useClub();
-  const pendingRequests = state.requests.filter((r) => r.status === 'pendente').length;
   const pendingProofs = state.paymentProofs.filter((p) => p.status === 'submetido').length;
 
   const navItems: NavItem[] = [
@@ -53,7 +52,7 @@ export const AndroidDrawer: React.FC<AndroidDrawerProps> = ({
     { id: 'training', label: 'Classes e Formação', icon: GraduationCap },
     { id: 'documents', label: 'Documentos Oficiais', icon: FileText },
     { id: 'member_portal', label: 'Portal do Membro', icon: UserCheck },
-    { id: 'requests', label: currentUser.role === 'membro' ? 'Avisos e Editais' : 'Pedidos e Avisos', icon: MessageSquare, badge: currentUser.role === 'membro' ? undefined : (pendingRequests > 0 ? pendingRequests : undefined) },
+    { id: 'requests', label: 'Circulares & Avisos', icon: MessageSquare },
     { id: 'reports', label: 'Relatórios Oficiais', icon: BarChart3 },
     { id: 'settings', label: 'Configurações', icon: Settings },
     { id: 'audit', label: 'Auditoria e Acessos', icon: ShieldAlert },

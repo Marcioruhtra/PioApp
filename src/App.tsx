@@ -22,7 +22,7 @@ import { ActivitiesModule } from './components/modules/ActivitiesModule';
 import { TrainingModule } from './components/modules/TrainingModule';
 import { DocumentsModule } from './components/modules/DocumentsModule';
 import { MemberPortalModule } from './components/modules/MemberPortalModule';
-import { RequestsModule } from './components/modules/RequestsModule';
+import { CircularsModule } from './components/modules/CircularsModule';
 import { ReportsModule } from './components/modules/ReportsModule';
 import { SettingsModule } from './components/modules/SettingsModule';
 import { AuditAndAdminModule } from './components/modules/AuditAndAdminModule';
@@ -124,7 +124,7 @@ const MainAppContent: React.FC = () => {
             {activeModule === 'training' && <TrainingModule />}
             {activeModule === 'documents' && <DocumentsModule />}
             {activeModule === 'member_portal' && <MemberPortalModule />}
-            {activeModule === 'requests' && <RequestsModule />}
+            {activeModule === 'requests' && <CircularsModule />}
             {activeModule === 'reports' && <ReportsModule />}
             {activeModule === 'settings' && <SettingsModule />}
             {activeModule === 'audit' && <AuditAndAdminModule />}

@@ -30,6 +30,7 @@ import {
   SuggestionCategory,
   SuggestionStatus,
   Message,
+  Circular,
 } from '../types';
 import {
   ClubDatabaseState,
@@ -173,6 +174,10 @@ interface ClubContextValue {
   deleteSuggestion: (suggestionId: string) => { success: boolean; error?: string };
 
   addAnnouncement: (title: string, content: string, urgency: ClubAnnouncement['urgency'], targetAudience: ClubAnnouncement['targetAudience']) => void;
+  // Circulares
+  createCircular: (data: Omit<Circular, 'id' | 'publishedAt' | 'publishedByUserId' | 'publishedByName' | 'readBy'>) => { success: boolean; error?: string };
+  markCircularAsRead: (circularId: string) => void;
+  deleteCircular: (circularId: string) => void;
 
   // Notificações
   addNotification: (data: Omit<ClubNotification, 'id' | 'timestamp' | 'read'>) => void;
@@ -2763,111 +2768,92 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   // --- PORTAL DO MEMBRO & PEDIDOS ---
-  const submitPortalRequest = (data: {
-    category: MemberPortalRequest['category'];
-    subject: string;
-    details: string;
-  }) => {
-    const memberId = currentUser.linkedMemberId || 'CDA-MEM-001';
-    const member = state.members.find((m) => m.id === memberId);
-    const memberName = member ? member.fullName : currentUser.name;
-
-    const nextId = `REQ-${Date.now().toString().slice(-5)}`;
-    const now = getNowISOString();
-
-    const newReq: MemberPortalRequest = {
-      id: nextId,
-      memberId,
-      memberName,
-      category: data.category,
-      subject: data.subject,
-      details: data.details,
-      status: 'pendente',
-      assignedRole: data.category === 'tesouraria' ? 'tesoureiro' : 'secretario',
-      history: [
-        {
-          status: 'pendente',
-          updatedBy: memberName,
-          updatedAt: now,
-          note: 'Solicitação submetida pelo membro.',
-        },
-      ],
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    setState((prev) => ({
-      ...prev,
-      requests: [newReq, ...prev.requests],
-    }));
-
-    addNotification({
-      title: `Nova Solicitação no Portal: ${data.subject}`,
-      message: `Solicitação submetida por ${memberName} (Categoria: ${data.category}).`,
-      category: 'request',
-      targetModule: 'requests',
-      recipientRole: newReq.assignedRole,
-      recipientRoles: [newReq.assignedRole, 'diretor'],
-      isConfidential: true,
-      priority: 'normal',
-    });
-
-    logAction('requests', 'SUBMISSAO_PEDIDO', `Pedido submetido: ${data.subject}`, nextId, data.subject);
-    return { success: true };
-  };
-
-  const respondToRequest = (
-    requestId: string,
-    status: MemberPortalRequest['status'],
-    responseNotes: string
-  ) => {
-    if (!can('requests', 'APPROVE')) {
-      return { success: false, error: 'Sem autorização para decidir pedidos.' };
+  // --- CIRCULARES ---
+  const createCircular = (data: Omit<Circular, 'id' | 'publishedAt' | 'publishedByUserId' | 'publishedByName' | 'readBy'>) => {
+    if (!can('requests', 'CREATE') && currentUser.role !== 'diretor' && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'secretario') {
+      return { success: false, error: 'Sem autorização para publicar circulares oficiais.' };
     }
 
     const now = getNowISOString();
-    let targetMemberId = '';
+    const newCircular: Circular = {
+      ...data,
+      id: `CIRC-${Date.now()}`,
+      publishedAt: now,
+      publishedByUserId: currentUser.id,
+      publishedByName: currentUser.name,
+      readBy: [],
+    };
 
-    setState((prev) => {
-      const updated = prev.requests.map((r) => {
-        if (r.id === requestId) {
-          targetMemberId = r.memberId;
-          return {
-            ...r,
-            status,
-            responseNotes,
-            assignedUserId: currentUser.id,
-            assignedUserName: currentUser.name,
-            updatedAt: now,
-            history: [
-              ...r.history,
-              {
-                status,
-                updatedBy: currentUser.name,
-                updatedAt: now,
-                note: responseNotes,
-              },
-            ],
-          };
-        }
-        return r;
-      });
-      return { ...prev, requests: updated };
-    });
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      circulars: [newCircular, ...state.circulars],
+    };
+
+    saveStateToStorage(nextState);
+    setState(nextState);
+    pushToFirestore(nextState);
 
     addNotification({
-      title: `Solicitação Atualizada (${status.toUpperCase()})`,
-      message: `A resposta ao seu pedido ${requestId} foi registada por ${currentUser.name}: ${responseNotes}`,
-      category: 'request',
-      targetModule: 'requests',
-      recipientUserId: targetMemberId,
-      isConfidential: true,
-      priority: status === 'aprovado' || status === 'concluido' ? 'normal' : 'alta',
+      title: `Circular Oficial: ${data.title}`,
+      message: 'Uma nova circular oficial foi publicada. Consulte o Portal do Membro.',
+      category: 'announcement',
+      targetModule: 'member_portal',
+      priority: data.priority === 'urgente' ? 'urgente' : data.priority === 'alta' ? 'alta' : 'normal',
     });
 
-    logAction('requests', 'RESPOSTA_PEDIDO', `Decisão sobre pedido: ${status}`, requestId, requestId);
+    logAction('requests', 'PUBLICACAO_CIRCULAR', `Circular publicada: ${data.title}`, newCircular.id, data.title);
     return { success: true };
   };
+
+  const markCircularAsRead = (circularId: string) => {
+    const memberId = currentUser.linkedMemberId;
+    if (!memberId) return;
+
+    const circular = state.circulars.find(c => c.id === circularId);
+    if (!circular || circular.readBy.includes(memberId)) return;
+
+    const now = getNowISOString();
+    const updatedCirculars = state.circulars.map(c => 
+      c.id === circularId ? { ...c, readBy: [...c.readBy, memberId] } : c
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      circulars: updatedCirculars,
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+  };
+
+  const deleteCircular = (circularId: string) => {
+    if (!can('requests', 'ADMIN') && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'diretor' && currentUser.role !== 'secretario') {
+      return;
+    }
+
+    const circular = state.circulars.find(c => c.id === circularId);
+    if (!circular) return;
+
+    const now = getNowISOString();
+    const updatedCirculars = state.circulars.filter(c => c.id !== circularId);
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      circulars: updatedCirculars,
+    };
+
+    saveStateToStorage(nextState);
+    setState(nextState);
+    pushToFirestore(nextState);
+
+    logAction('requests', 'REMOCAO_CIRCULAR', `Circular removida: ${circular.title}`, circularId, circular.title);
+  };
+
+
 
   // --- CAPELANIA DIGITAL ---
   const submitChaplaincyRequest = (data: {
@@ -3336,40 +3322,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
-  // --- AVISOS ---
-  const addAnnouncement = (
-    title: string,
-    content: string,
-    urgency: ClubAnnouncement['urgency'],
-    targetAudience: ClubAnnouncement['targetAudience']
-  ) => {
-    const newAnn: ClubAnnouncement = {
-      id: `ANN-${Date.now()}`,
-      title,
-      content,
-      urgency,
-      targetAudience,
-      publishedByUserId: currentUser.id,
-      publishedByName: currentUser.name,
-      publishedAt: getNowISOString(),
-      active: true,
-    };
 
-    setState((prev) => ({
-      ...prev,
-      announcements: [newAnn, ...prev.announcements],
-    }));
-
-    addNotification({
-      title: `Aviso Oficial: ${title}`,
-      message: content,
-      category: 'announcement',
-      targetModule: 'member_portal',
-      priority: urgency === 'urgente' ? 'urgente' : urgency === 'importante' ? 'alta' : 'normal',
-    });
-
-    logAction('requests', 'PUBLICACAO_AVISO', `Aviso publicado: ${title}`, newAnn.id, title);
-  };
 
   // --- UTILIZADORES & ADMINISTRAÇÃO ---
   const createUserAccount = (user: Omit<UserAccount, 'id' | 'createdAt'> & { password?: string }) => {
@@ -3810,6 +3763,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return JSON.stringify(state, null, 2);
   };
 
+
   return (
     <ClubContext.Provider
       value={{
@@ -3850,8 +3804,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         deleteTrainingProgress,
         createOfficialDoc,
         cancelOfficialDoc,
-        submitPortalRequest,
-        respondToRequest,
+        submitPortalRequest: () => ({ success: false, error: 'Módulo de pedidos substituído por Circulares.' }),
+        respondToRequest: () => ({ success: false, error: 'Módulo de pedidos substituído por Circulares.' }),
         submitPaymentProof,
         verifyPaymentProof,
         submitChaplaincyRequest,
@@ -3860,7 +3814,10 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         markSuggestionAsViewed,
         respondToSuggestion,
         deleteSuggestion,
-        addAnnouncement,
+        createCircular,
+        markCircularAsRead,
+        deleteCircular,
+        addAnnouncement: () => {},
         addNotification,
         markNotificationAsRead,
         markAllNotificationsAsRead,

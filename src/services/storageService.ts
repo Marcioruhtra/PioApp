@@ -29,6 +29,7 @@ import {
   ChaplaincyRequest,
   MemberSuggestion,
   Message,
+  Circular,
 } from '../types';
 import {
   INITIAL_ACCOUNTS,
@@ -72,9 +73,8 @@ export interface ClubDatabaseState {
   specialties: SpecialtyHonor[];
   trainingProgress: MemberTrainingProgress[];
   documents: OfficialDocument[];
-  requests: MemberPortalRequest[];
+  circulars: Circular[];
   paymentProofs: PaymentProofReport[];
-  announcements: ClubAnnouncement[];
   auditLogs: AuditLogEntry[];
   notifications: ClubNotification[];
   deletionRequests: DeletionRequest[];
@@ -203,6 +203,7 @@ export function loadInitialState(): ClubDatabaseState {
         parsed.deletionRequests = parsed.deletionRequests || INITIAL_DELETION_REQUESTS;
         parsed.chaplaincyRequests = parsed.chaplaincyRequests || INITIAL_CHAPLAINCY_REQUESTS;
         parsed.suggestions = parsed.suggestions || INITIAL_SUGGESTIONS;
+        parsed.circulars = parsed.circulars || [];
         parsed.messages = parsed.messages || [];
         
         // Deduplicação de fechos mensais
@@ -236,9 +237,8 @@ export function loadInitialState(): ClubDatabaseState {
     specialties: INITIAL_SPECIALTIES,
     trainingProgress: INITIAL_TRAINING_PROGRESS,
     documents: INITIAL_DOCUMENTS,
-    requests: INITIAL_REQUESTS,
+    circulars: [],
     paymentProofs: INITIAL_PAYMENT_PROOFS,
-    announcements: INITIAL_ANNOUNCEMENTS,
     auditLogs: INITIAL_AUDIT_LOGS,
     settings: INITIAL_SETTINGS,
     currentUser: INITIAL_USERS[1], // Diretor por padrão na demonstração para visualização completa
@@ -325,11 +325,9 @@ export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): 
     specialties: [],
     trainingProgress: [],
     documents: [],
-    requests: [],
+    circulars: [],
     paymentProofs: [],
-    announcements: [],
     messages: [],
-    deletionRequests: [],
     auditLogs: [
       {
         id: `AUD-INIT-${Date.now()}`,
@@ -398,30 +396,28 @@ export function cleanSystemStorageSpace(
   const cleanedState: ClubDatabaseState = {
     ...currentState,
     // Elimina ficheiros pesados, documentos gerados, transações temporárias e todos os registos de auditoria
-    documents: [],
+    circulars: [],
     paymentProofs: [],
     activities: [],
-    announcements: [],
-    requests: [],
     receipts: [],
     expenses: [],
     monthlyClosings: [],
     auditLogs: [],
-    // Preserva saldos bancários, membros, utilizadores e configurações
+    deletionRequests: [],
+    messages: [],
+    documents: [],
+    // Preserva saldos bancários, membros ativos (elimina membros arquivados e inativos), utilizadores e configurações
     accounts: currentState.accounts.map((acc) => ({
       ...acc,
       currentBalanceInCents: acc.currentBalanceInCents,
     })),
-    members: currentState.members,
+    members: currentState.members.filter((m) => m.status !== 'arquivado' && m.status !== 'inativo'),
     users: currentState.users,
     settings: currentState.settings,
     classes: currentState.classes,
     specialties: currentState.specialties,
     trainingProgress: currentState.trainingProgress,
-    notifications: (currentState.notifications || []).filter(
-      (n) => !n.title.toLowerCase().includes('sugestão') && !n.title.toLowerCase().includes('sugestao')
-    ),
-    deletionRequests: currentState.deletionRequests || [],
+    notifications: [],
     chaplaincyRequests: [],
     suggestions: [],
     currentUser: currentState.currentUser,

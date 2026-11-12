@@ -551,3 +551,15 @@ export interface Message {
   replies?: MessageReply[];
 }
 
+export interface Circular {
+  id: string;
+  title: string;
+  content: string;
+  publishedAt: string;
+  publishedByUserId: string;
+  publishedByName: string;
+  targetRoles: RoleType[];
+  priority: 'normal' | 'alta' | 'urgente';
+  readBy: string[];
+}
+

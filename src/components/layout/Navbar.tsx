@@ -89,12 +89,6 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, onOpenNotificat
   );
   const unreadNotifications = authorizedNotifications.filter((n) => !n.read);
 
-  // Alertas de tarefas operacionais exclusivas do departamento
-  const pendingRequestsCount =
-    currentUser.role === 'secretario' || currentUser.role === 'diretor' || currentUser.role === 'admin_tecnico'
-      ? state.requests.filter((r) => r.status === 'pendente' && (currentUser.role !== 'secretario' || r.assignedRole === 'secretario')).length
-      : 0;
-
   const pendingProofsCount =
     currentUser.role === 'tesoureiro' || currentUser.role === 'diretor' || currentUser.role === 'admin_tecnico'
       ? state.paymentProofs.filter((p) => p.status === 'submetido').length

@@ -72,10 +72,10 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   { module: 'member_portal', action: 'CREATE', description: 'Submeter comprovativo de pagamento e pedidos' },
   { module: 'member_portal', action: 'PRINT', description: 'Imprimir os próprios recibos' },
 
-  // Pedidos e Avisos
-  { module: 'requests', action: 'VIEW', description: 'Consultar avisos e pedidos pendentes' },
-  { module: 'requests', action: 'CREATE', description: 'Publicar aviso ou submeter solicitação' },
-  { module: 'requests', action: 'APPROVE', description: 'Decidir sobre pedidos institucionais' },
+  // Circulares & Avisos
+  { module: 'requests', action: 'VIEW', description: 'Consultar circulares e editais' },
+  { module: 'requests', action: 'CREATE', description: 'Publicar circulares oficiais' },
+  { module: 'requests', action: 'ADMIN', description: 'Remover circulares e gerir rasto' },
 
   // Relatórios
   { module: 'reports', action: 'VIEW', description: 'Consultar relatórios estatísticos' },

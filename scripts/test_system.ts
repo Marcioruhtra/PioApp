@@ -220,44 +220,6 @@ function runTests() {
   const headquarters = state.settings.city || state.settings.headquarters;
   assert(!!headquarters && headquarters.includes('Talatona'), "Igreja Adventista do Sétimo Dia institucional configurada corretamente para o cabeçalho");
 
-  // 9. PORTAL DO MEMBRO & FILTRAGEM POR CARGO
-  console.log("\n9. Teste de Solicitações do Portal do Membro & Roteamento por Cargo:");
-  const nowISO = new Date().toISOString();
-  const reqTesouraria = {
-    id: 'REQ-001',
-    memberId: testMember.id,
-    memberName: testMember.fullName,
-    category: 'tesouraria' as const,
-    subject: 'Comprovativo de Quota Mensal',
-    details: 'Envio de comprovativo por transferência.',
-    status: 'pendente' as const,
-    assignedRole: 'tesoureiro' as const,
-    history: [],
-    createdAt: nowISO,
-    updatedAt: nowISO,
-  };
-  const reqDoc = {
-    id: 'REQ-002',
-    memberId: testMember.id,
-    memberName: testMember.fullName,
-    category: 'atualizacao_dados' as const,
-    subject: 'Atualização de Dados Cadastrais',
-    details: 'Atualização de morada e contacto telefónico.',
-    status: 'pendente' as const,
-    assignedRole: 'secretario' as const,
-    history: [],
-    createdAt: nowISO,
-    updatedAt: nowISO,
-  };
-  state.requests.push(reqTesouraria, reqDoc);
-
-  // Filtragem estrita por cargo conforme especificação
-  const tesourariaRequests = state.requests.filter(r => r.category === 'tesouraria');
-  assert(tesourariaRequests.some(r => r.id === 'REQ-001') && !tesourariaRequests.some(r => r.id === 'REQ-002'), "Tesouraria vê apenas pedidos financeiros");
-
-  const secretariaRequests = state.requests.filter(r => r.category === 'atualizacao_dados');
-  assert(secretariaRequests.some(r => r.id === 'REQ-002') && !secretariaRequests.some(r => r.id === 'REQ-001'), "Secretaria vê apenas pedidos de atualização de dados");
-
   // 10. ESPECIALIDADES (REQUISITOS DEFINIDOS PELO UTILIZADOR)
   console.log("\n10. Teste de Especialidades:");
   const customSpec: SpecialtyHonor = {
@@ -347,13 +309,13 @@ function runTests() {
   assert(cleanedState.documents.length === 0, "Todos os documentos gerados foram eliminados (liberando armazenamento)");
   assert(cleanedState.paymentProofs.length === 0, "Todos os uploads de comprovativos (base64) foram eliminados");
   assert(cleanedState.activities.length === 0, "Todas as atividades e reuniões foram eliminadas");
-  assert(cleanedState.announcements.length === 0, "Todos os avisos e editais foram eliminados");
-  assert(cleanedState.requests.length === 0, "Todas as solicitações de membros foram eliminadas");
   assert(cleanedState.receipts.length === 0, "Todos os recibos foram eliminados");
   assert(cleanedState.expenses.length === 0, "Todas as despesas e aprovações foram eliminadas");
+  assert(cleanedState.deletionRequests.length === 0, "Todos os registos de eliminação de membros foram eliminados");
+  assert(cleanedState.messages.length === 0, "Todas as mensagens foram eliminadas");
 
-  // Validações do que foi MANTIDO intacto
-  assert(cleanedState.members.length === preCleanMembersCount, "Todos os membros registados foram integralmente preservados");
+  // Validações do que foi MANTIDO vs ELIMINADO
+  assert(cleanedState.members.every(m => m.status === 'ativo'), "Membros arquivados/inativos foram eliminados e apenas membros ativos foram preservados");
   assert(cleanedState.users.length === preCleanUsersCount, "Todas as contas de login de utilizadores foram integralmente preservadas");
   
   const balancesPreserved = cleanedState.accounts.every(acc => {
@@ -362,9 +324,8 @@ function runTests() {
   });
   assert(balancesPreserved, "Todos os saldos das contas bancárias foram integralmente preservados");
 
-  // Validação de auditoria
-  const storageCleanLog = cleanedState.auditLogs.find(l => l.action === 'LIMPEZA_SISTEMA_ARMAZENAMENTO');
-  assert(!!storageCleanLog, "Registo de auditoria da limpeza de armazenamento gravado com sucesso");
+  // Validação de auditoria (auditLogs limpos)
+  assert(cleanedState.auditLogs.length === 0, "Registo de auditoria limpo com sucesso após limpeza de armazenamento");
 
   // 14. TESTE DE AUTORIZAÇÃO DA DIREÇÃO NA GRELHA PARA ELIMINAÇÃO/ARQUIVAMENTO
   console.log("\n14. Teste de Autorização da Direção para Eliminação/Arquivamento de Membros:");

@@ -28,6 +28,7 @@ import {
   ShieldAlert,
   CreditCard,
   QrCode,
+  Bell,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import { formatKz, parseKzToCents } from '../../utils/currency';
@@ -61,7 +62,8 @@ export const MemberPortalModule: React.FC = () => {
     state,
     currentUser,
     submitPaymentProof,
-    submitPortalRequest,
+    createCircular,
+    markCircularAsRead,
     selfResetPassword,
     requestPasswordReset,
     submitMemberSuggestion,
@@ -73,7 +75,6 @@ export const MemberPortalModule: React.FC = () => {
   } = useClub();
 
   const [isProofModalOpen, setIsProofModalOpen] = useState(false);
-  const [isRequestModalOpen, setIsRequestModalOpen] = useState(false);
   const [isDigitalCardOpen, setIsDigitalCardOpen] = useState(false);
   const [printedReceipt, setPrintedReceipt] = useState<OfficialDocument | null>(null);
   const [selectedProofToView, setSelectedProofToView] = useState<PaymentProofReport | null>(null);
@@ -87,8 +88,8 @@ export const MemberPortalModule: React.FC = () => {
   // Dados exclusivos do membro
   const myReceipts = state.receipts.filter((r) => r.memberId === member?.id);
   const myProofs = state.paymentProofs.filter((p) => p.memberId === member?.id);
-  const myRequests = state.requests.filter((r) => r.memberId === member?.id && (r.category === 'atualizacao_dados' || r.category === 'tesouraria'));
   const myTraining = state.trainingProgress.filter((p) => p.memberId === member?.id);
+  const myCirculars = (state.circulars || []).filter(c => c.targetRoles.includes(currentUser.role));
 
   const myMessages = (state.messages || []).filter((msg) => {
     if (!member) return false;
@@ -195,15 +196,7 @@ export const MemberPortalModule: React.FC = () => {
   };
 
   const [proofSubmitError, setProofSubmitError] = useState<string | null>(null);
-  const [requestSubmitError, setRequestSubmitError] = useState<string | null>(null);
   const [portalActionSuccess, setPortalActionSuccess] = useState<string | null>(null);
-
-  // Formulário Pedido
-  const [requestForm, setRequestForm] = useState({
-    category: 'atualizacao_dados' as const,
-    subject: '',
-    details: '',
-  });
 
   const handleProofSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -240,31 +233,7 @@ export const MemberPortalModule: React.FC = () => {
     }
   };
 
-  const handleRequestSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setRequestSubmitError(null);
-    if (!requestForm.subject.trim()) return;
 
-    const res = submitPortalRequest({
-      category: requestForm.category,
-      subject: requestForm.subject.trim(),
-      details: requestForm.details.trim(),
-    });
-
-    if (res.success) {
-      setIsRequestModalOpen(false);
-      setRequestSubmitError(null);
-      setRequestForm({
-        category: 'atualizacao_dados',
-        subject: '',
-        details: '',
-      });
-      setPortalActionSuccess('Solicitação institucional enviada com sucesso!');
-      setTimeout(() => setPortalActionSuccess(null), 4000);
-    } else {
-      setRequestSubmitError(res.error || 'Erro ao submeter pedido.');
-    }
-  };
 
   // Estados da Aba de Sugestões e Direção
   const [activePortalTab, setActivePortalTab] = useState<'geral' | 'sugestoes' | 'mensagens'>('geral');
@@ -469,13 +438,7 @@ export const MemberPortalModule: React.FC = () => {
               <Upload className="w-3.5 h-3.5" />
               <span>Reportar Pagamento</span>
             </button>
-            <button
-              onClick={() => setIsRequestModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Fazer Pedido</span>
-            </button>
+
           </div>
         </div>
       </div>
@@ -652,42 +615,59 @@ export const MemberPortalModule: React.FC = () => {
           </div>
         </div>
 
-        {/* Bloco 3: Minhas Solicitações */}
+        {/* Bloco 3: Circulares & Avisos Oficiais */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50">
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-              <MessageSquare className="w-4 h-4 text-blue-900" />
-              <span>Minhas Solicitações ({myRequests.length})</span>
+              <Bell className="w-4 h-4 text-blue-900" />
+              <span>Circulares & Avisos ({myCirculars.length})</span>
             </h2>
           </div>
 
-          <div className="divide-y divide-slate-100">
-            {myRequests.length === 0 ? (
-              <p className="p-4 text-xs text-slate-500">Nenhuma solicitação efetuada.</p>
+          <div className="divide-y divide-slate-100 max-h-[400px] overflow-y-auto">
+            {myCirculars.length === 0 ? (
+              <p className="p-8 text-center text-xs text-slate-400 italic">Nenhum comunicado oficial pendente.</p>
             ) : (
-              myRequests.map((req) => (
-                <div key={req.id} className="p-4 text-xs space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-900">{req.subject}</span>
-                    <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
-                      req.status === 'concluido' || req.status === 'aprovado'
-                        ? 'bg-emerald-50 text-emerald-800'
-                        : req.status === 'rejeitado'
-                        ? 'bg-rose-50 text-rose-800'
-                        : 'bg-amber-50 text-amber-800'
-                    }`}>
-                      {req.status}
-                    </span>
+              myCirculars.map((circular) => {
+                const isRead = member && circular.readBy.includes(member.id);
+                return (
+                  <div key={circular.id} className={`p-4 transition-colors ${!isRead ? 'bg-blue-50/30' : ''}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-1 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase border ${
+                            circular.priority === 'urgente' ? 'bg-rose-100 text-rose-800 border-rose-200' :
+                            circular.priority === 'alta' ? 'bg-amber-100 text-amber-800 border-amber-200' :
+                            'bg-blue-100 text-blue-800 border-blue-200'
+                          }`}>
+                            {circular.priority}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {formatDateAO(circular.publishedAt)}
+                          </span>
+                        </div>
+                        <h3 className="text-sm font-bold text-slate-900">{circular.title}</h3>
+                        <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap line-clamp-3">
+                          {circular.content}
+                        </p>
+                      </div>
+                      {!isRead ? (
+                        <button
+                          onClick={() => markCircularAsRead(circular.id)}
+                          className="px-3 py-1.5 text-[10px] font-bold bg-blue-900 text-white rounded-lg hover:bg-blue-800 transition-all shadow-xs shrink-0"
+                        >
+                          Confirmar Leitura
+                        </button>
+                      ) : (
+                        <div className="flex items-center gap-1 text-emerald-600 shrink-0">
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span className="text-[10px] font-bold uppercase">Lido</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-slate-600 leading-relaxed">{req.details}</p>
-                  {req.responseNotes && (
-                    <p className="text-[10px] text-rose-700 bg-rose-50 p-1.5 rounded border border-rose-200 mt-1">
-                      Motivo/Resposta: {req.responseNotes}
-                    </p>
-                  )}
-                  <p className="text-[10px] text-slate-400">Submetido em: {formatDateAO(req.createdAt)}</p>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -1439,81 +1419,6 @@ export const MemberPortalModule: React.FC = () => {
         </form>
       </Modal>
 
-      {/* MODAL 2: Fazer Pedido */}
-      <Modal
-        isOpen={isRequestModalOpen}
-        onClose={() => setIsRequestModalOpen(false)}
-        title="Enviar Solicitação Institucional"
-        description="Envie um pedido formal à Secretaria ou Direção do Clube de Embaixadores Pioneiros D'Alvorada."
-        maxWidth="md"
-      >
-        <form onSubmit={handleRequestSubmit} className="space-y-4 text-xs">
-          {requestSubmitError && (
-            <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs flex items-center justify-between">
-              <span>{requestSubmitError}</span>
-              <button
-                type="button"
-                onClick={() => setRequestSubmitError(null)}
-                className="text-rose-500 hover:text-rose-800 font-bold ml-2 text-sm"
-              >
-                ×
-              </button>
-            </div>
-          )}
-          <div>
-            <label className="block text-slate-700 font-semibold mb-1">Tipo de Solicitação</label>
-            <select
-              value={requestForm.category}
-              onChange={(e) => setRequestForm({ ...requestForm, category: e.target.value as any })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-            >
-              <option value="atualizacao_dados">Atualização de Contacto / Morada (Secretaria)</option>
-              <option value="tesouraria">Questão de Tesouraria e Quotas (Tesoureiro)</option>
-
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-slate-700 font-semibold mb-1">Assunto</label>
-            <input
-              type="text"
-              placeholder="Ex: Declaração para justificação de faltas escolares"
-              value={requestForm.subject}
-              onChange={(e) => setRequestForm({ ...requestForm, subject: e.target.value })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-slate-700 font-semibold mb-1">Detalhes e Justificação</label>
-            <textarea
-              rows={4}
-              placeholder="Escreva a sua mensagem detalhada..."
-              value={requestForm.details}
-              onChange={(e) => setRequestForm({ ...requestForm, details: e.target.value })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-              required
-            />
-          </div>
-
-          <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-3">
-            <button
-              type="button"
-              onClick={() => setIsRequestModalOpen(false)}
-              className="px-3 py-1.5 text-slate-600 hover:text-slate-900"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-1.5 font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded shadow-xs"
-            >
-              Enviar Solicitação
-            </button>
-          </div>
-        </form>
-      </Modal>
 
       {/* MODAL: Redefinição de Palavra-passe no Portal do Membro (1 vez a cada 2 meses) */}
       {isPasswordModalOpen && (
