@@ -90,9 +90,42 @@ export function loadInitialState(): ClubDatabaseState {
   try {
     const raw = typeof window !== 'undefined' && window.localStorage ? localStorage.getItem(STORAGE_KEY) : null;
     if (raw) {
-      const parsed = JSON.parse(raw);
-      // Validar integridade básica
-      if (parsed.members && parsed.receipts && parsed.users) {
+      let parsed: any;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (parseErr) {
+        console.error('LocalStorage corrompido, a limpar cache:', parseErr);
+        if (typeof window !== 'undefined' && window.localStorage) {
+          localStorage.removeItem(STORAGE_KEY);
+        }
+        parsed = null;
+      }
+
+      if (parsed && typeof parsed === 'object') {
+        // Garantir que todas as coleções e arrays essenciais existem e são arrays válidos para evitar erros de renderização
+        parsed.users = Array.isArray(parsed.users) ? parsed.users : INITIAL_USERS;
+        parsed.members = Array.isArray(parsed.members) ? parsed.members : [];
+        parsed.fees = Array.isArray(parsed.fees) ? parsed.fees : INITIAL_FEES;
+        parsed.accounts = Array.isArray(parsed.accounts) ? parsed.accounts : INITIAL_ACCOUNTS;
+        parsed.receipts = Array.isArray(parsed.receipts) ? parsed.receipts : [];
+        parsed.expenses = Array.isArray(parsed.expenses) ? parsed.expenses : [];
+        parsed.monthlyClosings = Array.isArray(parsed.monthlyClosings) ? parsed.monthlyClosings : [];
+        parsed.activities = Array.isArray(parsed.activities) ? parsed.activities : [];
+        parsed.classes = Array.isArray(parsed.classes) && parsed.classes.length > 0 ? parsed.classes : INITIAL_CLASSES;
+        parsed.specialties = Array.isArray(parsed.specialties) && parsed.specialties.length > 0 ? parsed.specialties : INITIAL_SPECIALTIES;
+        parsed.trainingProgress = Array.isArray(parsed.trainingProgress) ? parsed.trainingProgress : [];
+        parsed.documents = Array.isArray(parsed.documents) ? parsed.documents : [];
+        parsed.circulars = Array.isArray(parsed.circulars) ? parsed.circulars : [];
+        parsed.paymentProofs = Array.isArray(parsed.paymentProofs) ? parsed.paymentProofs : [];
+        parsed.auditLogs = Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [];
+        parsed.notifications = Array.isArray(parsed.notifications) ? parsed.notifications : [];
+        parsed.deletionRequests = Array.isArray(parsed.deletionRequests) ? parsed.deletionRequests : [];
+        parsed.chaplaincyRequests = Array.isArray(parsed.chaplaincyRequests) ? parsed.chaplaincyRequests : [];
+        parsed.suggestions = Array.isArray(parsed.suggestions) ? parsed.suggestions : [];
+        parsed.messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+        parsed.settings = parsed.settings || INITIAL_SETTINGS;
+        parsed.currentUser = parsed.currentUser || parsed.users[0] || INITIAL_USERS[1];
+
         const allowedCategories: MemberCategory[] = ['embaixador', 'lider', 'aspirante'];
         parsed.members = parsed.members.map((m: any) => {
           let cat = m.category;
@@ -105,122 +138,17 @@ export function loadInitialState(): ClubDatabaseState {
         // Garantir integridade contínua de contactos de emergência, encarregado e dados de alergias
         const integrityResult = verifyAndRepairMembersIntegrity(parsed.members);
         parsed.members = integrityResult.sanitizedMembers;
-        if (parsed.settings) {
-          parsed.settings.memberCategories = {
-            embaixador: 'Embaixador',
-            lider: 'Líder',
-            aspirante: 'Aspirante',
-          };
-          if (parsed.settings.units) {
-            parsed.settings.units = parsed.settings.units.map((u: any) => {
-              let cat = u.category;
-              if (cat === 'desbravador' || cat === 'aventureiro') cat = 'aspirante';
-              else if (cat === 'conselheiro' || cat === 'apoio') cat = 'lider';
-              else if (cat !== 'mista' && !allowedCategories.includes(cat)) cat = 'mista';
-              return { ...u, category: cat };
-            });
-          }
-        }
-        if (parsed.fees) {
-          parsed.fees = parsed.fees.map((f: any) => {
-            if (f.targetCategory === 'desbravador' || f.targetCategory === 'aventureiro') {
-              return { ...f, targetCategory: 'aspirante', title: f.title.replace('Desbravadores', 'Aspirantes').replace('Aventureiros', 'Aspirantes') };
-            }
-            return f;
-          });
-        }
 
-        // Integridade e migração de classes curriculares
-        if (!parsed.classes || !Array.isArray(parsed.classes) || parsed.classes.length === 0) {
-          parsed.classes = INITIAL_CLASSES;
-        } else {
-          parsed.classes = parsed.classes.map((c: any) => {
-            const initialMatch = INITIAL_CLASSES.find(ic => ic.id === c.id || ic.title?.toLowerCase() === (c.title || c.name)?.toLowerCase());
-            const reqs = Array.isArray(c.requirements) && c.requirements.length > 0
-              ? c.requirements
-              : (initialMatch?.requirements || Array.from({ length: c.requirementsCount || 8 }, (_, i) => `Requisito Oficial #${i + 1}: Demonstração prática e curricular`));
-            return {
-              id: c.id,
-              code: c.code || initialMatch?.code || c.id,
-              title: c.title || c.name || initialMatch?.title || 'Classe Oficial',
-              minimumAge: c.minimumAge || initialMatch?.minimumAge || 10,
-              requirementsCount: reqs.length,
-              requirements: reqs,
-              active: c.active !== undefined ? c.active : true,
-            };
-          });
-
-          // Adicionar quaisquer classes padrão essenciais ausentes
-          INITIAL_CLASSES.forEach(ic => {
-            if (!parsed.classes.some((c: any) => c.id === ic.id)) {
-              parsed.classes.push(ic);
-            }
-          });
-        }
-
-        // Integridade e migração de especialidades
-        if (!parsed.specialties || !Array.isArray(parsed.specialties) || parsed.specialties.length === 0) {
-          parsed.specialties = INITIAL_SPECIALTIES;
-        } else {
-          parsed.specialties = parsed.specialties.map((s: any) => {
-            const initialMatch = INITIAL_SPECIALTIES.find(is => is.id === s.id || is.title?.toLowerCase() === (s.title || s.name)?.toLowerCase());
-            const reqs = Array.isArray(s.requirements) && s.requirements.length > 0
-              ? s.requirements
-              : (initialMatch?.requirements || Array.from({ length: s.requirementsCount || 6 }, (_, i) => `Requisito da Especialidade #${i + 1}: Demonstração prática e teórica`));
-            return {
-              id: s.id,
-              code: s.code || initialMatch?.code || s.id,
-              title: s.title || s.name || initialMatch?.title || 'Especialidade',
-              category: s.category || initialMatch?.category || 'habilidades',
-              requirementsCount: reqs.length,
-              requirements: reqs,
-              active: s.active !== undefined ? s.active : true,
-            };
-          });
-
-          // Adicionar quaisquer especialidades padrão ausentes
-          INITIAL_SPECIALTIES.forEach(is => {
-            if (!parsed.specialties.some((s: any) => s.id === is.id)) {
-              parsed.specialties.push(is);
-            }
-          });
-        }
-
-        // Integridade do progresso de formação
-        if (!parsed.trainingProgress || !Array.isArray(parsed.trainingProgress) || parsed.trainingProgress.length === 0) {
-          parsed.trainingProgress = INITIAL_TRAINING_PROGRESS;
-        }
-
-        // Limpeza de campos obsoletos de bloqueio se ainda existirem no armazenamento local
-        if ('deletedUserEmails' in parsed) {
-          delete parsed.deletedUserEmails;
-        }
-        if ('deletedUserIds' in parsed) {
-          delete parsed.deletedUserIds;
-        }
-
-        parsed.notifications = parsed.notifications || INITIAL_NOTIFICATIONS;
-        parsed.deletionRequests = parsed.deletionRequests || INITIAL_DELETION_REQUESTS;
-        parsed.chaplaincyRequests = parsed.chaplaincyRequests || INITIAL_CHAPLAINCY_REQUESTS;
-        parsed.suggestions = parsed.suggestions || INITIAL_SUGGESTIONS;
-        parsed.circulars = parsed.circulars || [];
-        parsed.messages = parsed.messages || [];
-        
-        // Deduplicação de fechos mensais
-        if (parsed.monthlyClosings && Array.isArray(parsed.monthlyClosings)) {
-          const uniqueClosings = new Map();
-          parsed.monthlyClosings.forEach((c: any) => {
-             uniqueClosings.set(c.id, c);
-          });
-          parsed.monthlyClosings = Array.from(uniqueClosings.values());
-        }
-        
-        return parsed;
-
+        return parsed as ClubDatabaseState;
       }
     }
   } catch (e) {
-    console.error('Falha ao ler dados do localStorage:', e);
+    console.error('Falha crítica ao carregar estado inicial do localStorage:', e);
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.removeItem(STORAGE_KEY);
+      }
+    } catch {}
   }
 
   // Se o utilizador limpou o sistema ou iniciou limpo, não carregar dados de demonstração (teste)
