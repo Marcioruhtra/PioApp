@@ -1,0 +1,6 @@
+{
+  "name": "PioApp",
+  "description": "PioApp: Sistema integrado de gestão institucional: gestão de membros, tesouraria em Kwanza (Kz), reuniões e atividades, formação, classes e especialidades, documentos oficiais, portal do membro e auditoria.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,60 @@
+{
+  "entities": {
+    "ClubState": {
+      "title": "ClubState",
+      "description": "Global state document for the club",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "updatedAt"]
+    },
+    "PushSubscription": {
+      "title": "PushSubscription",
+      "description": "Push notification token registration for Android/mobile device",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "token": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["userId", "token", "updatedAt"]
+    },
+    "MemberSuggestion": {
+      "title": "MemberSuggestion",
+      "description": "Confidential suggestion sent from a club member directly to the director",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "memberId": { "type": "string" },
+        "memberName": { "type": "string" },
+        "memberManualNumber": { "type": "string" },
+        "isAnonymous": { "type": "boolean" },
+        "category": { "type": "string" },
+        "subject": { "type": "string" },
+        "content": { "type": "string" },
+        "status": { "type": "string" },
+        "viewedByDirector": { "type": "boolean" },
+        "viewedAt": { "type": "string" },
+        "viewedByDirectorName": { "type": "string" },
+        "responseContent": { "type": "string" },
+        "respondedAt": { "type": "string" },
+        "respondedByDirectorName": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "memberId", "memberName", "category", "subject", "content", "status", "viewedByDirector", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/club_data/{stateId}": {
+      "schema": { "$ref": "#/entities/ClubState" },
+      "description": "Synced global club state document across devices"
+    },
+    "/push_subscriptions/{userId}": {
+      "schema": { "$ref": "#/entities/PushSubscription" },
+      "description": "User push subscription tokens for background notifications"
+    }
+  }
+}
