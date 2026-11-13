@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Calendar,
   Clock,
@@ -31,6 +31,7 @@ import { formatDateAO } from '../../utils/date';
 import { Modal } from '../common/Modal';
 import { PrintDocumentModal } from '../common/PrintDocumentModal';
 import { signInWithGoogleCalendar, getCalendarAccessToken, syncActivityToGoogleCalendar } from '../../services/googleCalendarService';
+import { canViewActivitiesAttendanceTab } from '../../services/permissionService';
 
 export const ActivitiesModule: React.FC = () => {
   const [isSyncingCalendar, setIsSyncingCalendar] = useState(false);
@@ -77,7 +78,14 @@ export const ActivitiesModule: React.FC = () => {
   } = useClub();
 
   // Navegação Principal de Abas
+  const canViewAttendanceTab = canViewActivitiesAttendanceTab(currentUser.role);
   const [mainTab, setMainTab] = useState<'atividades' | 'presencas'>('atividades');
+
+  useEffect(() => {
+    if (!canViewAttendanceTab && mainTab === 'presencas') {
+      setMainTab('atividades');
+    }
+  }, [canViewAttendanceTab, mainTab]);
 
   // Estados do Sub-módulo de Presenças
   const [attendanceSubTab, setAttendanceSubTab] = useState<'chamada' | 'historico'>('chamada');
@@ -496,20 +504,22 @@ export const ActivitiesModule: React.FC = () => {
             <span>Calendário & Atividades ({state.activities.length})</span>
           </button>
 
-          <button
-            onClick={() => setMainTab('presencas')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
-              mainTab === 'presencas'
-                ? 'border-blue-900 text-blue-900 bg-blue-50/50 rounded-t-lg'
-                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-            }`}
-          >
-            <UserCheck className="w-4 h-4" />
-            <span>Sub-módulo de Presenças & Frequência</span>
-            <span className="ml-1 px-2 py-0.5 text-[10px] bg-blue-100 text-blue-900 rounded-full font-bold">
-              {globalClubAttendanceRate}% Média
-            </span>
-          </button>
+          {canViewAttendanceTab && (
+            <button
+              onClick={() => setMainTab('presencas')}
+              className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+                mainTab === 'presencas'
+                  ? 'border-blue-900 text-blue-900 bg-blue-50/50 rounded-t-lg'
+                  : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              }`}
+            >
+              <UserCheck className="w-4 h-4" />
+              <span>Sub-módulo de Presenças & Frequência</span>
+              <span className="ml-1 px-2 py-0.5 text-[10px] bg-blue-100 text-blue-900 rounded-full font-bold">
+                {globalClubAttendanceRate}% Média
+              </span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -835,17 +845,19 @@ export const ActivitiesModule: React.FC = () => {
                       <Users className="w-4 h-4 text-blue-900" />
                       <span>Chamada Rápida de Presenças (Anti-Duplicação)</span>
                     </h3>
-                    <button
-                      onClick={() => {
-                        setMainTab('presencas');
-                        setAttendanceSelectedActivityId(currentActivity.id);
-                        setAttendanceSubTab('chamada');
-                      }}
-                      className="text-xs font-bold text-blue-900 hover:underline flex items-center gap-1 cursor-pointer"
-                    >
-                      <span>Abrir Sub-módulo Completo de Chamada</span>
-                      <ChevronRight className="w-3.5 h-3.5" />
-                    </button>
+                    {canViewAttendanceTab && (
+                      <button
+                        onClick={() => {
+                          setMainTab('presencas');
+                          setAttendanceSelectedActivityId(currentActivity.id);
+                          setAttendanceSubTab('chamada');
+                        }}
+                        className="text-xs font-bold text-blue-900 hover:underline flex items-center gap-1 cursor-pointer"
+                      >
+                        <span>Abrir Sub-módulo Completo de Chamada</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
 
                   <div className="max-h-48 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-lg">
@@ -941,7 +953,7 @@ export const ActivitiesModule: React.FC = () => {
       )}
 
       {/* CONTEÚDO DA ABA 2: SUB-MÓDULO DE PRESENÇAS & FREQUÊNCIA */}
-      {mainTab === 'presencas' && (
+      {mainTab === 'presencas' && canViewAttendanceTab && (
         <div className="space-y-6">
           {/* Sub-Navegação de Presenças */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-xs">

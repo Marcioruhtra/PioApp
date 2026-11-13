@@ -330,3 +330,10 @@ export const syncPermissionsMatrix = (
   return existingMatrix;
 };
 
+/**
+ * Em Gestão de Atividades e Reuniões, os papéis membro, capelão e tesoureiro
+ * não podem visualizar nem aceder à sub-aba de Presenças e Frequência.
+ */
+export const canViewActivitiesAttendanceTab = (role: RoleType): boolean => {
+  return role !== 'membro' && role !== 'capelao' && role !== 'tesoureiro';
+};

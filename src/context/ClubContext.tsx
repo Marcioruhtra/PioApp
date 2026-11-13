@@ -317,17 +317,6 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Normaliza e substitui o estado local diretamente pela fonte única de verdade da nuvem (sem ressuscitar dados locais antigos)
   const normalizeCloudState = (remoteData: Partial<ClubDatabaseState>, prev: ClubDatabaseState): ClubDatabaseState => {
-    const allowedCategories: MemberCategory[] = ['embaixador', 'lider', 'aspirante'];
-    const rawMembers = Array.isArray(remoteData.members) ? remoteData.members : [];
-    const migratedMembers = rawMembers.map((m: any) => {
-      let cat = m?.category;
-      if (cat === 'desbravador' || cat === 'aventureiro') cat = 'aspirante';
-      else if (cat === 'conselheiro' || cat === 'apoio') cat = 'lider';
-      else if (!allowedCategories.includes(cat)) cat = 'embaixador';
-      return { ...m, category: cat };
-    });
-
-    const sanitizedMembers = verifyAndRepairMembersIntegrity(migratedMembers).sanitizedMembers;
     const remoteUsers = Array.isArray(remoteData.users) ? remoteData.users : prev.users;
     const remoteSettings = remoteData.settings
       ? {
@@ -336,6 +325,29 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
           permissionsMatrix: syncPermissionsMatrix(remoteData.settings.permissionsMatrix),
         }
       : prev.settings;
+
+    const configuredUnitNames = new Set(
+      (remoteSettings.units || []).map((u) => String(u.name || '').trim().toLowerCase())
+    );
+
+    const allowedCategories: MemberCategory[] = ['embaixador', 'lider', 'aspirante'];
+    const rawMembers = Array.isArray(remoteData.members) ? remoteData.members : [];
+    const migratedMembers = rawMembers.map((m: any) => {
+      let cat = m?.category;
+      if (cat === 'desbravador' || cat === 'aventureiro') cat = 'aspirante';
+      else if (cat === 'conselheiro' || cat === 'apoio') cat = 'lider';
+      else if (!allowedCategories.includes(cat)) cat = 'embaixador';
+
+      const rawUnit = typeof m?.unitOrTeam === 'string' ? m.unitOrTeam.trim() : '';
+      const cleanUnit =
+        !rawUnit || (rawUnit.toLowerCase() === 'unidade águias' && !configuredUnitNames.has('unidade águias'))
+          ? undefined
+          : rawUnit;
+
+      return { ...m, category: cat, unitOrTeam: cleanUnit };
+    });
+
+    const sanitizedMembers = verifyAndRepairMembersIntegrity(migratedMembers).sanitizedMembers;
 
     // Atualiza em tempo real os dados do utilizador atualmente autenticado neste dispositivo (ex: novo temporizador de senha, cargo, estado ativo)
     let nextCurrentUser = prev.currentUser;

@@ -83,7 +83,9 @@ export const MemberPortalModule: React.FC = () => {
 
   // Membro vinculado ao utilizador autenticado
   const memberId = currentUser.linkedMemberId || 'PIO-MEM-001';
-  const member = state.members.find((m) => m.id === memberId) || state.members[0];
+  const member =
+    state.members.find((m) => m.id === memberId || m.manualNumber === memberId) ||
+    state.members[0];
 
   // Dados exclusivos do membro
   const myReceipts = state.receipts.filter((r) => r.memberId === member?.id);
@@ -397,7 +399,7 @@ export const MemberPortalModule: React.FC = () => {
             </div>
             <h1 className="text-2xl font-black text-slate-100 mt-1">{member.fullName}</h1>
             <p className="text-xs text-slate-300 mt-0.5">
-              Matrícula Oficial: <strong>{member.manualNumber}</strong> · Unidade: <strong>{member.unitOrTeam || 'Sem Equipa'}</strong>
+              Matrícula Oficial: <strong>{member.manualNumber}</strong> · Equipa: <strong>{member.unitOrTeam?.trim() || 'Sem Equipa'}</strong>
             </p>
           </div>
 

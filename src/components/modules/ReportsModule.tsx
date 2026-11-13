@@ -28,9 +28,9 @@ export const ReportsModule: React.FC = () => {
     let csvContent = 'data:text/csv;charset=utf-8,';
 
     if (reportType === 'members') {
-      csvContent += 'ID;Numero_Manual;Nome_Completo;Categoria;Unidade;BI;Telefone;Renovacao;Estado\n';
+      csvContent += 'ID;Numero_Manual;Nome_Completo;Categoria;Equipa;BI;Telefone;Renovacao;Estado\n';
       state.members.forEach((m) => {
-        csvContent += `${m.id};${m.manualNumber};"${m.fullName}";${m.category};"${m.unitOrTeam || ''}";${m.identityCardNumber};${m.phone};${m.annualRenewalYear};${m.status}\n`;
+        csvContent += `${m.id};${m.manualNumber};"${m.fullName}";${m.category};"${m.unitOrTeam?.trim() || 'Sem Equipa'}";${m.identityCardNumber};${m.phone};${m.annualRenewalYear};${m.status}\n`;
       });
     } else if (reportType === 'treasury') {
       csvContent += 'Recibo;Membro;Conceito;Periodo;Valor_Kz;Metodo;Data;Estado\n';
@@ -181,7 +181,7 @@ export const ReportsModule: React.FC = () => {
                   <th className="py-2.5 px-3">Matrícula</th>
                   <th className="py-2.5 px-3">Nome do Membro</th>
                   <th className="py-2.5 px-3">Categoria</th>
-                  <th className="py-2.5 px-3">Unidade</th>
+                  <th className="py-2.5 px-3">Equipa</th>
                   <th className="py-2.5 px-3">B.I.</th>
                   <th className="py-2.5 px-3">Estado</th>
                 </tr>
@@ -193,7 +193,7 @@ export const ReportsModule: React.FC = () => {
                     <td className="py-2.5 px-3">{m.manualNumber}</td>
                     <td className="py-2.5 px-3 font-semibold text-slate-900">{m.fullName}</td>
                     <td className="py-2.5 px-3 capitalize">{m.category}</td>
-                    <td className="py-2.5 px-3">{m.unitOrTeam || '-'}</td>
+                    <td className="py-2.5 px-3">{m.unitOrTeam?.trim() || 'Sem Equipa'}</td>
                     <td className="py-2.5 px-3 font-mono">{m.identityCardNumber}</td>
                     <td className="py-2.5 px-3 capitalize">{m.status}</td>
                   </tr>

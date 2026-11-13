@@ -214,7 +214,7 @@ export const MembersModule: React.FC = () => {
     email: '',
     address: '',
     category: 'embaixador' as MemberCategory,
-    unitOrTeam: 'Unidade Águias',
+    unitOrTeam: '',
     guardianName: '',
     guardianPhone: '',
     emergencyName: '',
@@ -334,7 +334,7 @@ export const MembersModule: React.FC = () => {
       email: formData.email.trim() || undefined,
       address: formData.address.trim() || 'Luanda, Angola',
       category: formData.category,
-      unitOrTeam: formData.unitOrTeam,
+      unitOrTeam: formData.unitOrTeam.trim() || undefined,
       guardianName: formData.guardianName.trim() || undefined,
       guardianPhone: formData.guardianPhone.trim() || undefined,
       guardianValidated: Boolean(formData.guardianName.trim()),
@@ -643,7 +643,7 @@ export const MembersModule: React.FC = () => {
                     <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
                       <th className="py-3 px-4">Identificador</th>
                       <th className="py-3 px-4">Nome Completo</th>
-                      <th className="py-3 px-4">Categoria / Unidade</th>
+                      <th className="py-3 px-4">Categoria / Equipa</th>
                       <th className="py-3 px-4">B.I. (Angola)</th>
                       <th className="py-3 px-4">Renovação</th>
                       <th className="py-3 px-4">Estado</th>
@@ -693,7 +693,7 @@ export const MembersModule: React.FC = () => {
                               </span>
                             )}
                           </div>
-                          <div className="text-[11px] text-slate-500 font-medium mt-1">{member.unitOrTeam || 'Sem Equipa'}</div>
+                          <div className="text-[11px] text-slate-500 font-medium mt-1">{member.unitOrTeam?.trim() || 'Sem Equipa'}</div>
                         </td>
                         <td className="py-3 px-4 font-mono text-[11px] text-slate-600">
                           {member.identityCardNumber}
@@ -1196,7 +1196,7 @@ export const MembersModule: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-slate-700 font-semibold mb-1">Equipa / Unidade</label>
+                <label className="block text-slate-700 font-semibold mb-1">Equipa</label>
                 <select
                   value={formData.unitOrTeam}
                   onChange={(e) => setFormData({ ...formData, unitOrTeam: e.target.value })}
@@ -1368,8 +1368,8 @@ export const MembersModule: React.FC = () => {
                 <p className="font-bold text-slate-900 capitalize">{selectedMember.category}</p>
               </div>
               <div>
-                <span className="text-slate-500">Unidade:</span>
-                <p className="font-semibold text-slate-900">{selectedMember.unitOrTeam || '-'}</p>
+                <span className="text-slate-500">Equipa:</span>
+                <p className="font-semibold text-slate-900">{selectedMember.unitOrTeam?.trim() || 'Sem Equipa'}</p>
               </div>
               <div>
                 <span className="text-slate-500">Data de Nascimento:</span>
@@ -1469,7 +1469,7 @@ export const MembersModule: React.FC = () => {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-blue-100">
-                  <span className="font-semibold text-slate-700">Equipa / Unidade:</span>
+                  <span className="font-semibold text-slate-700">Equipa:</span>
                   <select
                     value={selectedMember.unitOrTeam || ''}
                     onChange={(e) => {
@@ -1853,7 +1853,7 @@ export const MembersModule: React.FC = () => {
           >
             <h4 className="font-bold text-slate-900 flex items-center gap-1.5">
               <Building className="w-4 h-4 text-blue-900" />
-              <span>{editingUnitId ? 'Editar Equipa Existente' : 'Criar Nova Equipa / Unidade'}</span>
+              <span>{editingUnitId ? 'Editar Equipa Existente' : 'Criar Nova Equipa'}</span>
             </h4>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -2325,7 +2325,7 @@ export const MembersModule: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-700 font-semibold mb-1">Equipa / Unidade</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Equipa</label>
                   <select
                     value={editFormData.unitOrTeam}
                     onChange={(e) => setEditFormData({ ...editFormData, unitOrTeam: e.target.value })}

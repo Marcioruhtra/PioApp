@@ -1,5 +1,5 @@
 import { loadInitialState, createCleanCloudShellState, generateNextDocumentNumber, isMemberNumberUnique, findPotentialDuplicateMember, cleanSystemStorageSpace } from '../src/services/storageService';
-import { hasPermission, ROLE_PERMISSIONS_MATRIX, updatePermission } from '../src/services/permissionService';
+import { hasPermission, ROLE_PERMISSIONS_MATRIX, updatePermission, canViewActivitiesAttendanceTab } from '../src/services/permissionService';
 import { formatKz } from '../src/utils/currency';
 import { formatDateAO } from '../src/utils/date';
 import { INACTIVITY_TIMEOUT_MS, isSessionInactive, getRemainingInactivityMs } from '../src/utils/inactivity';
@@ -647,6 +647,16 @@ function runTests() {
   assert(isSessionInactive(sessionBaseTime, sessionBaseTime + 5 * 60 * 1000), "Sessão é encerrada automaticamente ao atingir exatamente 5 minutos de inatividade");
   assert(isSessionInactive(sessionBaseTime, sessionBaseTime + 7 * 60 * 1000), "Sessão é encerrada automaticamente após ultrapassar 5 minutos de inatividade");
   assert(getRemainingInactivityMs(sessionBaseTime, sessionBaseTime + 4 * 60 * 1000) === 60 * 1000, "Cálculo de tempo restante antes do encerramento automático retorna exatamente 1 minuto aos 4 minutos");
+
+  // 20. TESTE DE RESTRIÇÃO DA SUB-ABA DE PRESENÇAS E FREQUÊNCIA EM ATIVIDADES
+  console.log("\n20. Teste de Visibilidade da Sub-aba de Presenças & Frequência (Atividades e Reuniões):");
+  assert(!canViewActivitiesAttendanceTab('membro'), "Membro NÃO pode visualizar a sub-aba de Presenças & Frequência");
+  assert(!canViewActivitiesAttendanceTab('capelao'), "Capelão NÃO pode visualizar a sub-aba de Presenças & Frequência");
+  assert(!canViewActivitiesAttendanceTab('tesoureiro'), "Tesoureiro NÃO pode visualizar a sub-aba de Presenças & Frequência");
+  assert(canViewActivitiesAttendanceTab('secretario'), "Secretário pode visualizar a sub-aba de Presenças & Frequência");
+  assert(canViewActivitiesAttendanceTab('diretor'), "Diretor pode visualizar a sub-aba de Presenças & Frequência");
+  assert(canViewActivitiesAttendanceTab('instrutor'), "Instrutor pode visualizar a sub-aba de Presenças & Frequência");
+  assert(canViewActivitiesAttendanceTab('admin_tecnico'), "Administrador Técnico pode visualizar a sub-aba de Presenças & Frequência");
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");
   console.log(`Total de Testes: ${passed + failed}`);
