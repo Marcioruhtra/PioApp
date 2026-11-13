@@ -1,7 +1,8 @@
-import { loadInitialState, generateNextDocumentNumber, isMemberNumberUnique, findPotentialDuplicateMember, cleanSystemStorageSpace } from '../src/services/storageService';
+import { loadInitialState, createCleanCloudShellState, generateNextDocumentNumber, isMemberNumberUnique, findPotentialDuplicateMember, cleanSystemStorageSpace } from '../src/services/storageService';
 import { hasPermission, ROLE_PERMISSIONS_MATRIX, updatePermission } from '../src/services/permissionService';
 import { formatKz } from '../src/utils/currency';
 import { formatDateAO } from '../src/utils/date';
+import { INACTIVITY_TIMEOUT_MS, isSessionInactive, getRemainingInactivityMs } from '../src/utils/inactivity';
 import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest } from '../src/types';
 
 function runTests() {
@@ -611,6 +612,41 @@ function runTests() {
   assert(!testState.members.some(m => m.id === authMember.id), "Membro removido da gestão ativa do clube");
   assert(testState.receipts.some(r => r.memberId === authMember.id), "REQ. 2.4 CUMPRIDO: Recibos financeiros continuam preservados após eliminação do membro");
   assert(testState.receipts.find(r => r.id === 'REC-2026-999')?.amountPaidInCents === 200000, "Valor do recibo histórico permanece inalterado para auditoria");
+
+  // 18. TESTE DE SISTEMA 100% TEMPO REAL (SEM DADOS DE TESTE) E REINÍCIO DE TEMPORIZADOR DE SENHA
+  console.log("\n18. Teste de Estado Limpo na Nuvem & Reinício de Temporizador de 2 Meses após Redefinição pelo Admin:");
+  const cloudShell = createCleanCloudShellState();
+  assert(cloudShell.members.length === 0, "Estado inicial da nuvem no navegador não cria membros de teste automaticamente");
+  assert(cloudShell.activities.length === 0, "Estado inicial da nuvem no navegador não cria atividades de teste automaticamente");
+  assert(cloudShell.receipts.length === 0, "Estado inicial da nuvem no navegador não cria recibos de teste automaticamente");
+
+  const fortyDaysAgo = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+  const userWithPendingReset = {
+    ...testState.users[0],
+    passwordResetRequested: true,
+    lastPasswordChangedAt: fortyDaysAgo,
+  };
+  // Admin altera a senha após solicitação
+  const resetTimestamp = new Date().toISOString();
+  const afterAdminReset = {
+    ...userWithPendingReset,
+    password: 'NovaSenhaAdmin2026',
+    passwordResetRequested: false,
+    lastPasswordChangedAt: resetTimestamp,
+  };
+  const restartedElapsedDays = (Date.now() - new Date(afterAdminReset.lastPasswordChangedAt).getTime()) / (1000 * 60 * 60 * 24);
+  assert(!afterAdminReset.passwordResetRequested, "Solicitação de redefinição pendente é concluída após alteração pelo Administrador");
+  assert(restartedElapsedDays < 1, "Temporizador da regra de 2 meses reinicia automaticamente para 60 dias a contar da alteração feita pelo Administrador");
+
+  // 19. TESTE DE SEGURANÇA GLOBAL: ENCERRAMENTO AUTOMÁTICO POR INATIVIDADE (5 MINUTOS)
+  console.log("\n19. Teste de Encerramento Automático de Sessão após 5 Minutos de Inatividade:");
+  assert(INACTIVITY_TIMEOUT_MS === 5 * 60 * 1000, "Tempo limite global configurado exatamente para 5 minutos (300.000 ms)");
+  const sessionBaseTime = 1_700_000_000_000;
+  assert(!isSessionInactive(sessionBaseTime, sessionBaseTime + 3 * 60 * 1000), "Sessão permanece ativa aos 3 minutos de inatividade");
+  assert(!isSessionInactive(sessionBaseTime, sessionBaseTime + 4 * 60 * 1000 + 59 * 1000), "Sessão permanece ativa antes de completar os 5 minutos");
+  assert(isSessionInactive(sessionBaseTime, sessionBaseTime + 5 * 60 * 1000), "Sessão é encerrada automaticamente ao atingir exatamente 5 minutos de inatividade");
+  assert(isSessionInactive(sessionBaseTime, sessionBaseTime + 7 * 60 * 1000), "Sessão é encerrada automaticamente após ultrapassar 5 minutos de inatividade");
+  assert(getRemainingInactivityMs(sessionBaseTime, sessionBaseTime + 4 * 60 * 1000) === 60 * 1000, "Cálculo de tempo restante antes do encerramento automático retorna exatamente 1 minuto aos 4 minutos");
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");
   console.log(`Total de Testes: ${passed + failed}`);

@@ -554,9 +554,21 @@ export const AuditAndAdminModule: React.FC = () => {
                             return (
                               <div className="flex items-center justify-end gap-1.5 flex-wrap">
                                 {u.passwordResetRequested && (
-                                  <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-800 rounded-full">
-                                    Pedido Pendente
-                                  </span>
+                                  <>
+                                    <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-800 rounded-full">
+                                      Pedido Pendente
+                                    </span>
+                                    <button
+                                      onClick={() => {
+                                        setNewPasswordInput('');
+                                        setResetPasswordTargetUser(u);
+                                      }}
+                                      className="px-2.5 py-1 text-[11px] font-bold bg-amber-600 text-white rounded hover:bg-amber-700 transition-colors shadow-xs"
+                                      title="Atender solicitação de redefinição e reiniciar contador de 2 meses"
+                                    >
+                                      Redefinir Senha
+                                    </button>
+                                  </>
                                 )}
 
                                 <button
@@ -1290,7 +1302,7 @@ export const AuditAndAdminModule: React.FC = () => {
             if (!resetPasswordTargetUser || !newPasswordInput.trim()) return;
             const res = manualPasswordReset(resetPasswordTargetUser.id, newPasswordInput.trim());
             if (res.success) {
-              showFeedback('success', `Palavra-passe de ${resetPasswordTargetUser.name} redefinida com sucesso.`);
+              showFeedback('success', `Palavra-passe de ${resetPasswordTargetUser.name} redefinida com sucesso e contador de 2 meses automaticamente reiniciado.`);
               setResetPasswordTargetUser(null);
               setNewPasswordInput('');
             } else {
@@ -1300,7 +1312,7 @@ export const AuditAndAdminModule: React.FC = () => {
           className="space-y-4 text-xs"
         >
           <p className="text-slate-600">
-            Introduza a nova palavra-passe oficial para o utilizador <strong>{resetPasswordTargetUser?.email}</strong>. O administrador deverá repassar esta palavra-passe presencialmente.
+            Introduza a nova palavra-passe oficial para o utilizador <strong>{resetPasswordTargetUser?.email}</strong>. Ao confirmar, a solicitação será concluída e o contador de 2 meses para nova alteração direta será <strong>automaticamente reiniciado</strong>.
           </p>
           <div>
             <label className="block text-slate-700 font-semibold mb-1">Nova Palavra-passe</label>
@@ -1634,7 +1646,10 @@ export const AuditAndAdminModule: React.FC = () => {
                 }, editUserForm.password || undefined);
                 
                 if (res.success) {
-                  showFeedback('success', `Conta de ${editUserTargetUser.name} atualizada com sucesso.`);
+                  const pwdUpdatedMsg = editUserForm.password.trim()
+                    ? ' e o contador de 2 meses para alteração pelo utilizador foi reiniciado.'
+                    : '.';
+                  showFeedback('success', `Conta de ${editUserTargetUser.name} atualizada com sucesso${pwdUpdatedMsg}`);
                   setEditUserTargetUser(null);
                 } else {
                   showFeedback('error', res.error || 'Erro ao atualizar conta.');
@@ -1642,6 +1657,11 @@ export const AuditAndAdminModule: React.FC = () => {
               }}
               className="space-y-4 text-xs"
             >
+              {editUserTargetUser.passwordResetRequested && (
+                <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg text-[11px]">
+                  <strong>Solicitação de Redefinição Pendente:</strong> Este utilizador pediu alteração de senha. Ao definir uma nova palavra-passe abaixo, o pedido é concluído e o tempo de 2 meses (60 dias) reinicia automaticamente.
+                </div>
+              )}
               <div>
                 <label className="block text-slate-700 font-semibold mb-1">
                   Nome de Exibição {editUserForm.linkedMemberId && <span className="text-[10px] text-blue-800 font-normal">(Sincronizado)</span>}

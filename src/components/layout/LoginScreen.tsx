@@ -4,7 +4,17 @@ import { useClub } from '../../context/ClubContext';
 import { doc, getDoc, getDocFromServer } from 'firebase/firestore';
 import { db, auth, setPersistence, browserLocalPersistence, browserSessionPersistence } from '../../firebase';
 
-export const LoginScreen: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
+interface LoginScreenProps {
+  onLogin: () => void;
+  sessionExpiredMessage?: string | null;
+  onClearSessionExpiredMessage?: () => void;
+}
+
+export const LoginScreen: React.FC<LoginScreenProps> = ({
+  onLogin,
+  sessionExpiredMessage,
+  onClearSessionExpiredMessage,
+}) => {
   const { state, setCurrentUser, requestPasswordReset, syncFromCloud } = useClub();
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -15,11 +25,12 @@ export const LoginScreen: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
 
   const GENERIC_LOGIN_ERROR = 'Não foi possível iniciar sessão. Verifique as credenciais ou contacte o administrador.';
 
-  // Pré-carregamento inicial dos dados do clube diretamente da nuvem
+  // Pré-carregamento inicial dos dados do clube diretamente do servidor da nuvem (sem cache)
   React.useEffect(() => {
-    getDoc(doc(db, 'club_data', 'main_state'))
+    getDocFromServer(doc(db, 'club_data', 'main_state'))
+      .catch(() => getDoc(doc(db, 'club_data', 'main_state')))
       .then((snap) => {
-        if (snap.exists()) {
+        if (snap && snap.exists()) {
           const cloudData = snap.data();
           if (cloudData && Array.isArray(cloudData.users) && cloudData.users.length > 0) {
             syncFromCloud(cloudData);
@@ -34,6 +45,7 @@ export const LoginScreen: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    onClearSessionExpiredMessage?.();
     
     try {
       if (auth) {
@@ -181,6 +193,12 @@ export const LoginScreen: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
 
         {!showForgotPwd ? (
           <form onSubmit={handleLogin} className="space-y-4">
+            {sessionExpiredMessage && !errorMessage && (
+              <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
+                <span>{sessionExpiredMessage}</span>
+              </div>
+            )}
             {errorMessage && (
               <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />

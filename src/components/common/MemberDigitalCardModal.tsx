@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Printer,
   X,
@@ -167,9 +168,9 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
     liveMember.allergiesOrMedicalNotes?.trim() ||
     'Sem registo de alergias';
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/70 backdrop-blur-xs overflow-y-auto print:p-0 print:bg-white print:static print:z-auto print:overflow-visible print:block print:flex-none">
-      <div className="relative w-full max-w-4xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden my-4 print:border-none print:shadow-none print:m-0 print:rounded-none print:max-w-none print:w-full">
+  const modalContent = (
+    <div className="print-modal-wrapper fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/70 backdrop-blur-xs overflow-y-auto print:p-0 print:bg-white print:z-auto print:overflow-visible print:block print:flex-none">
+      <div className="printable-document-modal relative w-full max-w-4xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden my-4 print:border-none print:shadow-none print:m-0 print:rounded-none print:max-w-none print:w-full print:bg-white">
         {/* Barra de Ações Superior (Oculta na Impressão) */}
         <div className="px-5 py-3.5 bg-slate-900 text-white flex items-center justify-between print:hidden">
           <div className="flex items-center gap-2">
@@ -203,6 +204,18 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
 
         {/* Conteúdo Principal do Cartão Digital */}
         <div className="p-4 sm:p-8 bg-slate-100 dark:bg-slate-950 print:bg-white print:p-2">
+          {/* Cabeçalho visível apenas na impressão */}
+          <div className="hidden print:flex items-center justify-between border-b border-slate-300 pb-2 mb-4 text-slate-900">
+            <div>
+              <h2 className="text-sm font-black uppercase tracking-wider">{clubName}</h2>
+              <p className="text-[10px] text-slate-600">Credencial Oficial de Membro — Frente e Verso</p>
+            </div>
+            <div className="text-right text-[10px] font-mono text-slate-600">
+              <div>Matrícula: {liveMember.manualNumber}</div>
+              <div>Ano Fiscal {settings.currentYear || new Date().getFullYear()}</div>
+            </div>
+          </div>
+
           <div className="text-center mb-6 print:hidden">
             <p className="text-xs font-medium text-slate-600 dark:text-slate-400">
               Apresente esta credencial no telemóvel para validação rápida de presença em reuniões, acampamentos e eventos oficiais.
@@ -213,7 +226,7 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start justify-center max-w-3xl mx-auto print:grid-cols-2 print:gap-4 print:max-w-none">
             
             {/* LADO FRENTE DO CARTÃO */}
-            <div className="relative bg-gradient-to-br from-blue-950 via-slate-900 to-blue-900 text-white rounded-2xl shadow-xl border-2 border-amber-400/40 overflow-hidden flex flex-col justify-between aspect-[1.586/1] w-full max-w-md mx-auto print:shadow-none print:border-slate-300">
+            <div className="print-break-inside-avoid relative bg-gradient-to-br from-blue-950 via-slate-900 to-blue-900 text-white rounded-2xl shadow-xl border-2 border-amber-400/40 overflow-hidden flex flex-col justify-between aspect-[1.586/1] w-full max-w-md mx-auto print:shadow-none print:border-slate-400">
               
               {/* Marca de Água de Fundo */}
               <div className="absolute -right-10 -bottom-10 opacity-5 pointer-events-none">
@@ -355,7 +368,7 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
 
 
             {/* LADO VERSO DO CARTÃO */}
-            <div className="relative bg-white dark:bg-slate-900 text-slate-900 dark:text-white rounded-2xl shadow-xl border-2 border-slate-300 dark:border-slate-800 overflow-hidden flex flex-col justify-between aspect-[1.586/1] w-full max-w-md mx-auto print:shadow-none print:border-slate-300">
+            <div className="print-break-inside-avoid relative bg-white dark:bg-slate-900 text-slate-900 dark:text-white rounded-2xl shadow-xl border-2 border-slate-300 dark:border-slate-800 overflow-hidden flex flex-col justify-between aspect-[1.586/1] w-full max-w-md mx-auto print:shadow-none print:border-slate-400 print:bg-white print:text-slate-900">
               
               {/* Cabeçalho do Verso */}
               <div className="bg-slate-900 text-white p-2.5 px-4 flex items-center justify-between border-b border-amber-400/30">
@@ -372,7 +385,7 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
               <div className="p-3.5 flex items-center gap-3.5 my-auto">
                 {/* QR Code gerado em tempo real */}
                 <div className="shrink-0 flex flex-col items-center">
-                  <div className="p-1 bg-white rounded-xl border-2 border-blue-900 shadow-md">
+                  <div className="p-1 bg-white rounded-xl border-2 border-blue-900 shadow-md print:shadow-none">
                     {qrCodeDataUrl ? (
                       <img src={qrCodeDataUrl} alt="QR Code de Validação" className="w-22 h-22 sm:w-24 sm:h-24 object-contain" />
                     ) : (
@@ -381,26 +394,26 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
                       </div>
                     )}
                   </div>
-                  <span className="text-[7px] font-mono text-slate-500 dark:text-slate-400 mt-1 uppercase font-bold">
+                  <span className="text-[7px] font-mono text-slate-500 dark:text-slate-400 print:text-slate-600 mt-1 uppercase font-bold">
                     Scan p/ Verificar
                   </span>
                 </div>
 
                 {/* Informações de Saúde e Encarregado */}
                 <div className="min-w-0 flex-1 space-y-1.5 text-[9px]">
-                  <div className="bg-slate-50 dark:bg-slate-800 p-2 rounded-lg border border-slate-200 dark:border-slate-700 space-y-1">
+                  <div className="bg-slate-50 dark:bg-slate-800 print:bg-slate-50 p-2 rounded-lg border border-slate-200 dark:border-slate-700 print:border-slate-200 space-y-1">
                     <div className="flex items-center justify-between">
-                      <span className="text-slate-500 dark:text-slate-400 font-bold flex items-center gap-1">
+                      <span className="text-slate-500 dark:text-slate-400 print:text-slate-600 font-bold flex items-center gap-1">
                         <Heart className="w-3 h-3 text-rose-500 fill-rose-500" /> Grupo Sanguíneo:
                       </span>
-                      <strong className="font-bold font-mono text-rose-600 dark:text-rose-400 text-xs">
+                      <strong className="font-bold font-mono text-rose-600 dark:text-rose-400 print:text-rose-600 text-xs">
                         {liveMember.bloodType || 'N/I'}
                       </strong>
                     </div>
                   </div>
 
-                  <div className="text-[8px] text-slate-500 dark:text-slate-400 leading-tight space-y-0.5 border-t border-slate-200 dark:border-slate-700 pt-1">
-                    <p className={liveMember.allergiesOrMedicalNotes ? "text-rose-600 dark:text-rose-400 font-semibold" : "text-slate-500 dark:text-slate-400"}>
+                  <div className="text-[8px] text-slate-500 dark:text-slate-400 print:text-slate-600 leading-tight space-y-0.5 border-t border-slate-200 dark:border-slate-700 print:border-slate-200 pt-1">
+                    <p className={liveMember.allergiesOrMedicalNotes ? "text-rose-600 dark:text-rose-400 print:text-rose-700 font-semibold" : "text-slate-500 dark:text-slate-400 print:text-slate-600"}>
                       <strong>Alergias/Avisos:</strong> {allergiesNotes}
                     </p>
                   </div>
@@ -408,14 +421,14 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
               </div>
 
               {/* Assinatura e Carimbo Oficial do Verso */}
-              <div className="bg-slate-50 dark:bg-slate-950 px-4 py-1.5 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-[8px] text-slate-500">
+              <div className="bg-slate-50 dark:bg-slate-950 print:bg-slate-50 px-4 py-1.5 border-t border-slate-200 dark:border-slate-800 print:border-slate-200 flex items-center justify-between text-[8px] text-slate-500 print:text-slate-600">
                 <div className="text-center">
                   <div className="border-b border-slate-400 w-24 mb-0.5 font-serif italic text-[7px]">
                     Secretaria Geral
                   </div>
-                  <span className="text-[7px] uppercase font-bold text-slate-400 block">Assinatura Autorizada</span>
+                  <span className="text-[7px] uppercase font-bold text-slate-400 print:text-slate-500 block">Assinatura Autorizada</span>
                 </div>
-                <div className="text-right font-mono text-[7px] text-slate-400">
+                <div className="text-right font-mono text-[7px] text-slate-400 print:text-slate-500">
                   <span>Conferência Geral EBX</span><br />
                   <span>Registo Nº {liveMember.manualNumber}</span>
                 </div>
@@ -554,4 +567,9 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
       </div>
     </div>
   );
+
+  if (typeof document !== 'undefined') {
+    return createPortal(modalContent, document.body);
+  }
+  return modalContent;
 };

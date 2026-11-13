@@ -725,6 +725,15 @@ export const MemberPortalModule: React.FC = () => {
               )}
             </div>
 
+            {currentUser.passwordResetRequested && (
+              <div className="p-2.5 bg-blue-50 border border-blue-200 text-blue-900 rounded-lg text-[11px] flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 text-blue-700 shrink-0 mt-0.5" />
+                <p>
+                  <strong>Solicitação pendente:</strong> O seu pedido de redefinição foi enviado ao Administrador. Assim que o Administrador definir a nova palavra-passe, o contador de 2 meses reiniciará automaticamente.
+                </p>
+              </div>
+            )}
+
             {isCooldownActive && (
               <div className="p-2.5 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg text-[11px] flex items-start gap-2">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />

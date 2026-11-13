@@ -3,6 +3,13 @@ import App from './App.tsx';
 import './index.css';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 
+// Recuperação automática caso um chunk antigo expire após atualização em tempo real
+if (typeof window !== 'undefined') {
+  window.addEventListener('vite:preloadError', () => {
+    window.location.reload();
+  });
+}
+
 // Gestão de Service Worker resiliente
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
   if (import.meta.env.DEV) {
@@ -13,9 +20,11 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
       }
     }).catch(() => {});
   } else {
-    // Em modo de produção, ativa o service worker PWA
+    // Em modo de produção, ativa o service worker PWA e verifica atualizações imediatamente
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('/sw.js').catch((err) => {
+      navigator.serviceWorker.register('/sw.js').then((reg) => {
+        reg.update().catch(() => {});
+      }).catch((err) => {
         console.warn('Falha no registo do service worker PWA:', err);
       });
     });

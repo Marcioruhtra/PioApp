@@ -13,6 +13,11 @@ import { LoginScreen } from './components/layout/LoginScreen';
 import { NotificationCenterModal } from './components/common/NotificationCenterModal';
 import { ToastContainer, ToastMessage } from './components/common/ToastContainer';
 import { logOutUser } from './firebase';
+import {
+  INACTIVITY_TIMEOUT_MS,
+  INACTIVITY_WARNING_MS,
+  isSessionInactive,
+} from './utils/inactivity';
 
 // Módulos
 import { DashboardModule } from './components/modules/DashboardModule';
@@ -30,24 +35,156 @@ import { ChaplaincyModule } from './components/modules/ChaplaincyModule';
 import { SuggestionsModule } from './components/modules/SuggestionsModule';
 import { MessagingModule } from './components/modules/MessagingModule';
 
+const LAST_ACTIVITY_STORAGE_KEY = 'pioapp_last_activity_at';
+const INACTIVITY_LOGOUT_MESSAGE =
+  'A sua sessão foi encerrada automaticamente após 5 minutos de inatividade por motivos de segurança.';
+
 const MainAppContent: React.FC = () => {
-  const { can, currentUser, isQuotaExceeded, toasts, dismissToast } = useClub();
+  const { state, can, currentUser, isQuotaExceeded, isCloudLoading, toasts, dismissToast, addToast } = useClub();
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return Boolean(
-      localStorage.getItem('pioapp_authenticated_session') ||
       sessionStorage.getItem('pioapp_authenticated_session') ||
-      localStorage.getItem('pioapp_current_user') ||
-      sessionStorage.getItem('pioapp_current_user')
+      sessionStorage.getItem('pioapp_current_user') ||
+      localStorage.getItem('pioapp_authenticated_session') ||
+      localStorage.getItem('pioapp_current_user')
     );
   });
+  const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string | null>(null);
   const [activeModule, setActiveModule] = useState<ModuleName>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
 
+  const lastActivityRef = React.useRef<number>(Date.now());
+  const lastThrottleRef = React.useRef<number>(0);
+  const inactivityWarningShownRef = React.useRef<boolean>(false);
+
+  const performLogout = React.useCallback(async (expiredReason?: string) => {
+    await logOutUser();
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('pioapp_authenticated_session');
+      localStorage.removeItem('pioapp_current_user');
+      localStorage.removeItem(LAST_ACTIVITY_STORAGE_KEY);
+      sessionStorage.removeItem('pioapp_authenticated_session');
+      sessionStorage.removeItem('pioapp_current_user');
+      sessionStorage.removeItem(LAST_ACTIVITY_STORAGE_KEY);
+    }
+    inactivityWarningShownRef.current = false;
+    setSessionExpiredMessage(expiredReason || null);
+    setIsAuthenticated(false);
+  }, []);
+
+  // Garante que uma sessão guardada é validada em tempo real contra os utilizadores vivos da nuvem
   React.useEffect(() => {
-    if (isAuthenticated) {
+    if (!isCloudLoading && isAuthenticated && currentUser && currentUser.id !== 'INST-001' && state.users.length > 0) {
+      const liveUser = state.users.find(
+        (u) =>
+          u.id === currentUser.id ||
+          (u.email && currentUser.email && u.email.toLowerCase() === currentUser.email.toLowerCase())
+      );
+      if (!liveUser || liveUser.active === false) {
+        performLogout();
+      }
+    }
+  }, [isCloudLoading, isAuthenticated, currentUser, state.users, performLogout]);
+
+  // Função global de encerramento automático por inatividade (5 minutos)
+  React.useEffect(() => {
+    if (!isAuthenticated || isCloudLoading || typeof window === 'undefined') {
+      return;
+    }
+
+    const now = Date.now();
+    const storedLastRaw = sessionStorage.getItem(LAST_ACTIVITY_STORAGE_KEY);
+    const storedLast = storedLastRaw ? Number(storedLastRaw) : NaN;
+
+    if (Number.isFinite(storedLast) && isSessionInactive(storedLast, now, INACTIVITY_TIMEOUT_MS)) {
+      performLogout(INACTIVITY_LOGOUT_MESSAGE);
+      return;
+    }
+
+    lastActivityRef.current = now;
+    lastThrottleRef.current = now;
+    inactivityWarningShownRef.current = false;
+    sessionStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(now));
+
+    const registerActivity = () => {
+      const currentNow = Date.now();
+      // Se já expirou antes deste evento (ex: separador em suspensão), encerra imediatamente
+      if (isSessionInactive(lastActivityRef.current, currentNow, INACTIVITY_TIMEOUT_MS)) {
+        performLogout(INACTIVITY_LOGOUT_MESSAGE);
+        return;
+      }
+      if (currentNow - lastThrottleRef.current < 1000) {
+        return;
+      }
+      lastThrottleRef.current = currentNow;
+      lastActivityRef.current = currentNow;
+      inactivityWarningShownRef.current = false;
+      try {
+        sessionStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(currentNow));
+      } catch {
+        // Ignorado em ambientes restritos
+      }
+    };
+
+    const checkInactivity = () => {
+      const currentNow = Date.now();
+      const elapsed = currentNow - lastActivityRef.current;
+
+      if (isSessionInactive(lastActivityRef.current, currentNow, INACTIVITY_TIMEOUT_MS)) {
+        performLogout(INACTIVITY_LOGOUT_MESSAGE);
+        return;
+      }
+
+      if (elapsed >= INACTIVITY_WARNING_MS && !inactivityWarningShownRef.current) {
+        inactivityWarningShownRef.current = true;
+        addToast(
+          'Aviso de Segurança da Sessão',
+          'Sessão prestes a encerrar por inatividade (menos de 1 minuto restante). Interaja para continuar autenticado.',
+          'warning'
+        );
+      }
+    };
+
+    const handleVisibilityOrFocus = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
+      checkInactivity();
+    };
+
+    const activityEvents: (keyof WindowEventMap)[] = [
+      'mousedown',
+      'mousemove',
+      'keydown',
+      'scroll',
+      'touchstart',
+      'pointerdown',
+      'click',
+    ];
+
+    activityEvents.forEach((evt) => {
+      window.addEventListener(evt, registerActivity, { passive: true });
+    });
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+
+    const intervalId = window.setInterval(checkInactivity, 10000);
+
+    return () => {
+      activityEvents.forEach((evt) => {
+        window.removeEventListener(evt, registerActivity);
+      });
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      window.clearInterval(intervalId);
+    };
+  }, [isAuthenticated, isCloudLoading, performLogout, addToast]);
+
+  React.useEffect(() => {
+    if (isAuthenticated && !isCloudLoading && currentUser) {
       setActiveModule('member_portal');
       // Apenas regista subscrição de push se o utilizador já tiver concedido permissão expressa no navegador
       try {
@@ -60,22 +197,42 @@ const MainAppContent: React.FC = () => {
         // Ignorado em caso de iframe restrito
       }
     }
-  }, [isAuthenticated, currentUser.id]);
+  }, [isAuthenticated, isCloudLoading, currentUser?.id]);
 
-  if (!isAuthenticated) {
-    return <LoginScreen onLogin={() => setIsAuthenticated(true)} />;
+  if (isCloudLoading) {
+    return (
+      <div className="min-h-[100dvh] flex flex-col items-center justify-center bg-slate-900 text-white p-6">
+        <img src="/assets/aistudio/logo.png" alt="PioApp" className="w-20 h-20 object-contain mb-4 animate-pulse" />
+        <h1 className="text-xl font-black tracking-tight mb-1">PioApp</h1>
+        <p className="text-xs text-slate-300 flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+          <span>A sincronizar dados em tempo real com a nuvem...</span>
+        </p>
+      </div>
+    );
   }
 
-  const handleLogout = async () => {
-    await logOutUser();
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('pioapp_authenticated_session');
-      localStorage.removeItem('pioapp_current_user');
-      sessionStorage.removeItem('pioapp_authenticated_session');
-      sessionStorage.removeItem('pioapp_current_user');
-    }
-    setIsAuthenticated(false);
-  };
+  if (!isAuthenticated) {
+    return (
+      <LoginScreen
+        sessionExpiredMessage={sessionExpiredMessage}
+        onClearSessionExpiredMessage={() => setSessionExpiredMessage(null)}
+        onLogin={() => {
+          const now = Date.now();
+          lastActivityRef.current = now;
+          lastThrottleRef.current = now;
+          inactivityWarningShownRef.current = false;
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(now));
+          }
+          setSessionExpiredMessage(null);
+          setIsAuthenticated(true);
+        }}
+      />
+    );
+  }
+
+  const handleLogout = () => performLogout();
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 flex flex-col font-sans selection:bg-blue-900 selection:text-white w-full max-w-full overflow-x-hidden min-w-0">
@@ -90,7 +247,7 @@ const MainAppContent: React.FC = () => {
         <div className="bg-sky-50 border-b border-sky-200 px-4 py-1.5 text-xs text-sky-900 flex items-center justify-between">
           <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-sky-500"></span>
-            <strong>Armazenamento Local Ativo:</strong> A cota diária gratuita de escritas do Firebase foi atingida. Todas as operações continuam gravadas em segurança no dispositivo e a sincronização em nuvem reinicia no próximo ciclo.
+            <strong>Limite Temporário de Escritas:</strong> A cota diária gratuita de escritas do Firebase foi atingida. As alterações desta sessão aguardam o próximo ciclo de sincronização.
           </span>
         </div>
       )}

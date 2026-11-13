@@ -49,7 +49,7 @@ import { createAuditLog } from '../services/auditService';
 import { getNowISOString, formatDateAO, generateManualNumber } from '../utils/date';
 import { formatKz } from '../utils/currency';
 import { db } from '../firebase';
-import { doc, setDoc, getDoc, onSnapshot } from 'firebase/firestore';
+import { doc, setDoc, getDoc, getDocFromServer, onSnapshot } from 'firebase/firestore';
 import { verifyAndRepairMembersIntegrity, sanitizeMemberIntegrity, IntegrityCheckResult } from '../services/memberIntegrityService';
 import { ToastMessage } from '../components/common/ToastContainer';
 import { playNotificationSound } from '../utils/notificationSound';
@@ -233,27 +233,46 @@ interface ClubContextValue {
   forceSyncCloud: () => Promise<void>;
   runIntegrityVerification: () => Promise<{ success: boolean; result: IntegrityCheckResult }>;
   isQuotaExceeded?: boolean;
+  isCloudLoading: boolean;
 }
 
 const ClubContext = createContext<ClubContextValue | undefined>(undefined);
 
 const getInitialUserSession = (): UserAccount | null => {
   if (typeof window === 'undefined') return null;
-  const local = localStorage.getItem('pioapp_current_user');
-  if (local) {
-    try {
-      const parsed = JSON.parse(local);
-      if (parsed && parsed.id) return parsed;
-    } catch {}
-  }
   const session = sessionStorage.getItem('pioapp_current_user');
   if (session) {
     try {
       const parsed = JSON.parse(session);
-      if (parsed && parsed.id) return parsed;
-    } catch {}
+      if (parsed && parsed.id && parsed.role) return parsed;
+    } catch {
+      sessionStorage.removeItem('pioapp_current_user');
+    }
+  }
+  const local = localStorage.getItem('pioapp_current_user');
+  if (local) {
+    try {
+      const parsed = JSON.parse(local);
+      if (parsed && parsed.id && parsed.role) return parsed;
+    } catch {
+      localStorage.removeItem('pioapp_current_user');
+    }
   }
   return null;
+};
+
+const syncStoredSessionUser = (user: UserAccount) => {
+  if (typeof window === 'undefined') return;
+  try {
+    const serialized = JSON.stringify(user);
+    if (localStorage.getItem('pioapp_authenticated_session') || localStorage.getItem('pioapp_current_user')) {
+      localStorage.setItem('pioapp_current_user', serialized);
+    } else if (sessionStorage.getItem('pioapp_authenticated_session') || sessionStorage.getItem('pioapp_current_user')) {
+      sessionStorage.setItem('pioapp_current_user', serialized);
+    }
+  } catch {
+    // Ignorado em ambientes restritos
+  }
 };
 
 export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -269,8 +288,11 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return loaded;
   });
 
-  const isInitialMount = React.useRef(true);
   const isRemoteUpdateRef = React.useRef(false);
+  const hasLoadedFromCloudRef = React.useRef(typeof window === 'undefined');
+  const lastPushedUpdatedAtRef = React.useRef<string>('');
+  const lastRemoteUpdatedAtRef = React.useRef<string>('');
+  const [isCloudLoading, setIsCloudLoading] = useState<boolean>(typeof window !== 'undefined');
   const [isQuotaExceeded, setIsQuotaExceeded] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window !== 'undefined' && localStorage.getItem('theme') === 'dark') {
@@ -293,7 +315,71 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
   };
 
-  // Escrita imediata e centralizada no Firestore com garantia de integridade estrita
+  // Normaliza e substitui o estado local diretamente pela fonte única de verdade da nuvem (sem ressuscitar dados locais antigos)
+  const normalizeCloudState = (remoteData: Partial<ClubDatabaseState>, prev: ClubDatabaseState): ClubDatabaseState => {
+    const allowedCategories: MemberCategory[] = ['embaixador', 'lider', 'aspirante'];
+    const rawMembers = Array.isArray(remoteData.members) ? remoteData.members : [];
+    const migratedMembers = rawMembers.map((m: any) => {
+      let cat = m?.category;
+      if (cat === 'desbravador' || cat === 'aventureiro') cat = 'aspirante';
+      else if (cat === 'conselheiro' || cat === 'apoio') cat = 'lider';
+      else if (!allowedCategories.includes(cat)) cat = 'embaixador';
+      return { ...m, category: cat };
+    });
+
+    const sanitizedMembers = verifyAndRepairMembersIntegrity(migratedMembers).sanitizedMembers;
+    const remoteUsers = Array.isArray(remoteData.users) ? remoteData.users : prev.users;
+    const remoteSettings = remoteData.settings
+      ? {
+          ...prev.settings,
+          ...remoteData.settings,
+          permissionsMatrix: syncPermissionsMatrix(remoteData.settings.permissionsMatrix),
+        }
+      : prev.settings;
+
+    // Atualiza em tempo real os dados do utilizador atualmente autenticado neste dispositivo (ex: novo temporizador de senha, cargo, estado ativo)
+    let nextCurrentUser = prev.currentUser;
+    if (prev.currentUser && prev.currentUser.id !== 'INST-001' && remoteUsers.length > 0) {
+      const liveUser = remoteUsers.find(
+        (u) =>
+          u.id === prev.currentUser.id ||
+          (u.email && prev.currentUser.email && u.email.toLowerCase() === prev.currentUser.email.toLowerCase())
+      );
+      if (liveUser) {
+        nextCurrentUser = liveUser;
+        syncStoredSessionUser(liveUser);
+      }
+    }
+
+    return {
+      ...prev,
+      ...remoteData,
+      users: remoteUsers,
+      members: sanitizedMembers,
+      fees: Array.isArray(remoteData.fees) ? remoteData.fees : [],
+      accounts: Array.isArray(remoteData.accounts) && remoteData.accounts.length > 0 ? remoteData.accounts : prev.accounts,
+      receipts: Array.isArray(remoteData.receipts) ? remoteData.receipts : [],
+      expenses: Array.isArray(remoteData.expenses) ? remoteData.expenses : [],
+      monthlyClosings: Array.isArray(remoteData.monthlyClosings) ? remoteData.monthlyClosings : [],
+      activities: Array.isArray(remoteData.activities) ? remoteData.activities : [],
+      classes: Array.isArray(remoteData.classes) ? remoteData.classes : [],
+      specialties: Array.isArray(remoteData.specialties) ? remoteData.specialties : [],
+      trainingProgress: Array.isArray(remoteData.trainingProgress) ? remoteData.trainingProgress : [],
+      documents: Array.isArray(remoteData.documents) ? remoteData.documents : [],
+      circulars: Array.isArray(remoteData.circulars) ? remoteData.circulars : [],
+      paymentProofs: Array.isArray(remoteData.paymentProofs) ? remoteData.paymentProofs : [],
+      auditLogs: Array.isArray(remoteData.auditLogs) ? remoteData.auditLogs : [],
+      notifications: Array.isArray(remoteData.notifications) ? remoteData.notifications : [],
+      deletionRequests: Array.isArray(remoteData.deletionRequests) ? remoteData.deletionRequests : [],
+      chaplaincyRequests: Array.isArray(remoteData.chaplaincyRequests) ? remoteData.chaplaincyRequests : [],
+      suggestions: Array.isArray(remoteData.suggestions) ? remoteData.suggestions : [],
+      messages: Array.isArray(remoteData.messages) ? remoteData.messages : [],
+      settings: remoteSettings,
+      currentUser: nextCurrentUser,
+    };
+  };
+
+  // Escrita imediata e centralizada no Firestore com garantia de integridade estrita e carimbo temporal único
   const pushToFirestore = async (stateToPush: ClubDatabaseState) => {
     try {
       const now = getNowISOString();
@@ -307,10 +393,23 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         cloudState.members = integrityCheck.sanitizedMembers;
       }
 
-      await setDoc(doc(db, 'club_data', 'main_state'), JSON.parse(JSON.stringify({
-        ...cloudState,
-        updatedAt: cloudState.updatedAt || now,
-      })), { merge: true });
+      const syncTimestamp =
+        !cloudState.updatedAt || cloudState.updatedAt === lastRemoteUpdatedAtRef.current
+          ? now
+          : cloudState.updatedAt;
+
+      lastPushedUpdatedAtRef.current = syncTimestamp;
+
+      await setDoc(
+        doc(db, 'club_data', 'main_state'),
+        JSON.parse(
+          JSON.stringify({
+            ...cloudState,
+            updatedAt: syncTimestamp,
+          })
+        ),
+        { merge: true }
+      );
       setIsQuotaExceeded(false);
     } catch (err: any) {
       if (
@@ -320,57 +419,33 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         err?.message?.includes('quota')
       ) {
         setIsQuotaExceeded(true);
-        console.warn("Firestore quota reached. Running in local storage mode.");
+        console.warn('Cota do Firestore atingida temporariamente.');
       } else if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
-        console.warn("Firestore permissions updating. Data saved securely in local storage.");
+        console.warn('Permissões do Firestore em atualização:', err?.message);
       } else {
-        console.error("Firestore sync write error:", err);
+        console.error('Erro de escrita na sincronização em tempo real do Firestore:', err);
       }
     }
   };
 
-  // Sincronização externa direta (usado no login ou carregamento explícito) com verificação de integridade
+  // Sincronização externa direta (usado no login ou carregamento explícito) sem memória cache permanente
   const syncFromCloud = (remoteState: Partial<ClubDatabaseState>) => {
+    hasLoadedFromCloudRef.current = true;
+    if (remoteState.updatedAt) {
+      lastRemoteUpdatedAtRef.current = remoteState.updatedAt;
+    }
     setState((prev) => {
       isRemoteUpdateRef.current = true;
-      const sanitizedRemote = { ...remoteState };
-      if (Array.isArray(sanitizedRemote.members)) {
-        sanitizedRemote.members = verifyAndRepairMembersIntegrity(sanitizedRemote.members).sanitizedMembers;
-      }
-
-      // Smart-merge para evitar que dados locais criados recentemente sejam apagados por cópia remota antiga
-      const remoteActIds = new Set((sanitizedRemote.activities || []).map((a) => a.id));
-      const localPendingActs = (prev.activities || []).filter((a) => !remoteActIds.has(a.id));
-      const mergedActivities = [...(sanitizedRemote.activities || []), ...localPendingActs];
-
-      const remoteExpIds = new Set((sanitizedRemote.expenses || []).map((e) => e.id));
-      const localPendingExps = (prev.expenses || []).filter((e) => !remoteExpIds.has(e.id));
-      const mergedExpenses = [...(sanitizedRemote.expenses || []), ...localPendingExps];
-
-      const remoteMemIds = new Set((sanitizedRemote.members || []).map((m) => m.id));
-      const localPendingMems = (prev.members || []).filter((m) => !remoteMemIds.has(m.id));
-      const mergedMembers = [...(sanitizedRemote.members || []), ...localPendingMems];
-
-      const merged = {
-        ...prev,
-        ...sanitizedRemote,
-        activities: mergedActivities.length > 0 ? mergedActivities : prev.activities,
-        expenses: mergedExpenses.length > 0 ? mergedExpenses : prev.expenses,
-        members: mergedMembers.length > 0 ? mergedMembers : prev.members,
-        currentUser: prev.currentUser, // Preserva a sessão local deste dispositivo
-      };
-      saveStateToStorage(merged);
-      return merged;
+      return normalizeCloudState(remoteState, prev);
     });
+    setIsCloudLoading(false);
   };
 
   const forceSyncCloud = async () => {
-    // Sanitizar membros antes de forçar sincronização
     const integrity = verifyAndRepairMembersIntegrity(state.members);
-    const updatedState = { ...state, members: integrity.sanitizedMembers };
+    const updatedState = { ...state, members: integrity.sanitizedMembers, updatedAt: getNowISOString() };
     if (integrity.hasIssues) {
       setState(updatedState);
-      saveStateToStorage(updatedState);
     }
     await pushToFirestore(updatedState);
   };
@@ -382,7 +457,6 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const now = getNowISOString();
       const updatedState = { ...state, members: checkResult.sanitizedMembers, updatedAt: now };
       setState(updatedState);
-      saveStateToStorage(updatedState);
       await pushToFirestore(updatedState);
       logAction(
         'audit',
@@ -390,150 +464,154 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         `Verificação de integridade executada: ${checkResult.fixedCount} membro(s) sincronizados com o banco de dados principal do Firestore.`
       );
     } else {
-      // Forçar garantia com o Firestore
       await pushToFirestore(state);
     }
     return { success: true, result: checkResult };
   };
 
-  // 1. CARREGAMENTO INICIAL DIRETO DA NUVEM (CLOUD-FIRST NO ARRANQUE)
+  // 1. TESTE DE CONEXÃO E CARREGAMENTO INICIAL DIRETO DO SERVIDOR DA NUVEM (ZERO CACHE LOCAL)
   useEffect(() => {
-    getDoc(doc(db, 'club_data', 'main_state')).then((snap: any) => {
-      if (snap.exists()) {
-        const cloudData = snap.data() as ClubDatabaseState;
-        if (cloudData && Array.isArray(cloudData.users) && cloudData.users.length > 0) {
-          isRemoteUpdateRef.current = true;
-          if (Array.isArray(cloudData.members)) {
-            cloudData.members = verifyAndRepairMembersIntegrity(cloudData.members).sanitizedMembers;
-          }
-          setState((prev) => {
-            const remoteTime = cloudData.updatedAt ? new Date(cloudData.updatedAt).getTime() : 0;
-            const prevTime = prev.updatedAt ? new Date(prev.updatedAt).getTime() : 0;
-            if (prevTime > 0 && remoteTime > 0 && remoteTime < prevTime) {
-              return prev;
-            }
+    let active = true;
 
-            const remoteActIds = new Set((cloudData.activities || []).map((a) => a.id));
-            const localPendingActs = (prev.activities || []).filter((a) => !remoteActIds.has(a.id));
-            const mergedActivities = [...(cloudData.activities || []), ...localPendingActs];
+    // Garantia contra bloqueio de ecrã caso o dispositivo esteja temporariamente sem rede
+    const safetyTimer = setTimeout(() => {
+      if (active) {
+        hasLoadedFromCloudRef.current = true;
+        setIsCloudLoading(false);
+      }
+    }, 4500);
 
-            const remoteExpIds = new Set((cloudData.expenses || []).map((e) => e.id));
-            const localPendingExps = (prev.expenses || []).filter((e) => !remoteExpIds.has(e.id));
-            const mergedExpenses = [...(cloudData.expenses || []), ...localPendingExps];
+    // Teste rápido de conectividade conforme especificação Firebase
+    getDocFromServer(doc(db, 'test', 'connection')).catch((error: any) => {
+      if (error instanceof Error && error.message.includes('the client is offline')) {
+        console.warn('Aviso de conectividade Firebase: o cliente parece estar offline.');
+      }
+    });
 
-            const remoteMemIds = new Set((cloudData.members || []).map((m) => m.id));
-            const localPendingMems = (prev.members || []).filter((m) => !remoteMemIds.has(m.id));
-            const mergedMembers = [...(cloudData.members || []), ...localPendingMems];
-
-            const merged = {
-              ...prev,
-              ...cloudData,
-              activities: mergedActivities.length > 0 ? mergedActivities : prev.activities,
-              expenses: mergedExpenses.length > 0 ? mergedExpenses : prev.expenses,
-              members: mergedMembers.length > 0 ? mergedMembers : prev.members,
-              currentUser: prev.currentUser,
-            };
-            saveStateToStorage(merged);
-            return merged;
-          });
+    const loadInitialFromCloud = async () => {
+      let snap: any = null;
+      try {
+        snap = await getDocFromServer(doc(db, 'club_data', 'main_state'));
+      } catch {
+        try {
+          snap = await getDoc(doc(db, 'club_data', 'main_state'));
+        } catch {
+          snap = null;
         }
       }
-    }).catch((err: any) => {
-      console.warn("Aviso ao carregar dados da nuvem na inicialização:", err);
+
+      if (!active) return;
+
+      if (snap && snap.exists()) {
+        const cloudData = snap.data() as ClubDatabaseState;
+        if (cloudData) {
+          if (cloudData.updatedAt) {
+            lastRemoteUpdatedAtRef.current = cloudData.updatedAt;
+          }
+          isRemoteUpdateRef.current = true;
+          setState((prev) => normalizeCloudState(cloudData, prev));
+        }
+      } else if (snap && !snap.exists()) {
+        // Base de dados na nuvem totalmente vazia: inicializa apenas com conta técnica limpa (zero dados de teste)
+        const cleanAdmin = resetToCleanAdminOnlyState();
+        isRemoteUpdateRef.current = true;
+        setState((prev) => ({
+          ...cleanAdmin,
+          currentUser: prev.currentUser && prev.currentUser.id === 'INST-001' ? prev.currentUser : cleanAdmin.currentUser,
+        }));
+      }
+
+      hasLoadedFromCloudRef.current = true;
+      setIsCloudLoading(false);
+      clearTimeout(safetyTimer);
+    };
+
+    loadInitialFromCloud().catch((err) => {
+      console.warn('Aviso ao carregar dados da nuvem na inicialização:', err);
+      if (active) {
+        hasLoadedFromCloudRef.current = true;
+        setIsCloudLoading(false);
+      }
     });
+
+    return () => {
+      active = false;
+      clearTimeout(safetyTimer);
+    };
   }, []);
 
-  // 2. SINCRONIZAÇÃO EM TEMPO REAL MULTI-DISPOSITIVO (ONSNAPSHOT)
+  // 2. SINCRONIZAÇÃO 100% EM TEMPO REAL MULTI-DISPOSITIVO (ONSNAPSHOT)
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, 'club_data', 'main_state'), (docSnap) => {
-      if (docSnap.exists()) {
+    const unsub = onSnapshot(
+      doc(db, 'club_data', 'main_state'),
+      (docSnap) => {
+        if (!docSnap.exists()) return;
+        // Ignora ecos locais pendentes enquanto a escrita ainda está em curso neste dispositivo
+        if (docSnap.metadata?.hasPendingWrites) return;
+
         const remoteData = docSnap.data() as ClubDatabaseState;
-        if (remoteData && remoteData.updatedAt) {
-          if (Array.isArray(remoteData.members)) {
-            remoteData.members = verifyAndRepairMembersIntegrity(remoteData.members).sanitizedMembers;
-          }
-          setState((prev) => {
-            const remoteTime = remoteData.updatedAt ? new Date(remoteData.updatedAt).getTime() : 0;
-            const prevTime = prev.updatedAt ? new Date(prev.updatedAt).getTime() : 0;
-            
-            // Ignora se o snapshot remoto for mais antigo que o estado local mais recente deste dispositivo
-            if (prevTime > 0 && remoteTime > 0 && remoteTime < prevTime) {
-              return prev;
-            }
+        if (!remoteData) return;
 
-            if (!prev.updatedAt || remoteData.updatedAt !== prev.updatedAt) {
-              isRemoteUpdateRef.current = true;
+        const remoteUpdatedAt = remoteData.updatedAt || '';
 
-              // Smart-merge activities: preserva todas as atividades remotas e mantém quaisquer atividades locais recém-agendadas
-              const remoteActIds = new Set((remoteData.activities || []).map((a) => a.id));
-              const localPendingActs = (prev.activities || []).filter((a) => !remoteActIds.has(a.id));
-              const mergedActivities = [...(remoteData.activities || []), ...localPendingActs];
-
-              // Smart-merge expenses
-              const remoteExpIds = new Set((remoteData.expenses || []).map((e) => e.id));
-              const localPendingExps = (prev.expenses || []).filter((e) => !remoteExpIds.has(e.id));
-              const mergedExpenses = [...(remoteData.expenses || []), ...localPendingExps];
-
-              // Smart-merge members
-              const remoteMemIds = new Set((remoteData.members || []).map((m) => m.id));
-              const localPendingMems = (prev.members || []).filter((m) => !remoteMemIds.has(m.id));
-              const mergedMembers = [...(remoteData.members || []), ...localPendingMems];
-
-              const merged = {
-                ...prev,
-                ...remoteData,
-                activities: mergedActivities,
-                expenses: mergedExpenses,
-                members: mergedMembers,
-                currentUser: prev.currentUser, // Garante que a sessão deste aparelho não é afetada por outros
-              };
-              saveStateToStorage(merged);
-              return merged;
-            }
-            return prev;
-          });
+        // Evita reprocessar exatamente a mesma versão já aplicada ou recém-enviada por este mesmo dispositivo
+        if (
+          remoteUpdatedAt &&
+          (remoteUpdatedAt === lastRemoteUpdatedAtRef.current || remoteUpdatedAt === lastPushedUpdatedAtRef.current)
+        ) {
+          hasLoadedFromCloudRef.current = true;
+          setIsCloudLoading(false);
+          return;
         }
+
+        lastRemoteUpdatedAtRef.current = remoteUpdatedAt;
+        hasLoadedFromCloudRef.current = true;
+        isRemoteUpdateRef.current = true;
+        setState((prev) => normalizeCloudState(remoteData, prev));
+        setIsCloudLoading(false);
+      },
+      (error) => {
+        if (
+          error?.code === 'resource-exhausted' ||
+          error?.message?.includes('resource-exhausted') ||
+          error?.message?.includes('Quota limit exceeded')
+        ) {
+          setIsQuotaExceeded(true);
+        }
+        console.warn('Aviso na escuta em tempo real do Firestore:', error.message);
       }
-    }, (error) => {
-      if (
-        error?.code === 'resource-exhausted' ||
-        error?.message?.includes('resource-exhausted') ||
-        error?.message?.includes('Quota limit exceeded')
-      ) {
-        setIsQuotaExceeded(true);
-      }
-      console.warn("Firestore sync status (operating with local persistence):", error.message);
-    });
+    );
     return () => unsub();
   }, []);
 
-  // 3. ENVIO CONTÍNUO DE ALTERAÇÕES LOCAIS PARA A NUVEM
+  // 3. ENVIO CONTÍNUO DE ALTERAÇÕES LOCAIS PARA A NUVEM (APÓS CARREGAMENTO INICIAL DA NUVEM)
   useEffect(() => {
-    saveStateToStorage(state);
-    
-    // Não sincroniza na primeira renderização sem alterações
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
+    // Nunca envia o estado inicial vazio antes de confirmar o estado vivo do Firestore
+    if (!hasLoadedFromCloudRef.current) {
       return;
     }
 
-    // Não reenvia se a alteração veio de uma atualização remota recebida
+    // Não reenvia se a alteração veio de uma atualização remota recebida via onSnapshot/getDocFromServer
     if (isRemoteUpdateRef.current) {
       isRemoteUpdateRef.current = false;
       return;
     }
 
-    // Debounce rápido (400ms) para propagar para outros dispositivos imediatamente
+    // Evita escrita duplicada quando a ação já enviou diretamente esta exata versão
+    if (state.updatedAt && state.updatedAt === lastPushedUpdatedAtRef.current) {
+      return;
+    }
+
     const timer = setTimeout(() => {
       pushToFirestore(state);
-    }, 400);
+    }, 150);
 
     return () => clearTimeout(timer);
   }, [state]);
 
   const currentUser = state.currentUser;
 
-  const setCurrentUser = (user: UserAccount, remember: boolean = true) => {
+  const setCurrentUser = (user: UserAccount, remember: boolean = false) => {
     setState((prev) => ({ ...prev, currentUser: user }));
     if (typeof window !== 'undefined') {
       const serialized = JSON.stringify(user);
@@ -624,6 +702,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setState((prev) => ({
       ...prev,
       auditLogs: [entry, ...prev.auditLogs],
+      updatedAt: getNowISOString(),
     }));
   };
 
@@ -3385,14 +3464,22 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ? undefined 
       : (data.linkedMemberId === '' ? undefined : (data.linkedMemberId !== undefined ? data.linkedMemberId : targetUser.linkedMemberId));
 
+    const nowISO = getNowISOString();
+    const isChangingPassword = newPassword !== undefined && newPassword.trim() !== '';
+
     const updatedUsers = state.users.map(u => {
       if (u.id === userId) {
-        const userCopy = {
+        const userCopy: UserAccount = {
           ...u,
           ...data,
           linkedMemberId: effectiveLinkedMemberId,
-          ...(newPassword !== undefined && newPassword.trim() !== '' ? { password: newPassword.trim() } : {}),
-          passwordResetRequested: false,
+          ...(isChangingPassword
+            ? {
+                password: newPassword!.trim(),
+                passwordResetRequested: false,
+                lastPasswordChangedAt: nowISO,
+              }
+            : {}),
         };
         delete (userCopy as any).manualNumber;
         return userCopy;
@@ -3402,19 +3489,38 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     let updatedMembers = state.members;
     if (data.manualNumber !== undefined && effectiveLinkedMemberId) {
-      updatedMembers = state.members.map(m => m.id === effectiveLinkedMemberId ? { ...m, manualNumber: data.manualNumber!.trim() } : m);
+      updatedMembers = state.members.map(m =>
+        m.id === effectiveLinkedMemberId ? { ...m, manualNumber: data.manualNumber!.trim(), updatedAt: nowISO } : m
+      );
     }
 
-    const newState = {
+    const updatedTargetUser = updatedUsers.find(u => u.id === userId);
+    const updatedCurrentUser =
+      state.currentUser.id === userId && updatedTargetUser ? updatedTargetUser : state.currentUser;
+
+    if (state.currentUser.id === userId && updatedTargetUser) {
+      syncStoredSessionUser(updatedTargetUser);
+    }
+
+    const newState: ClubDatabaseState = {
       ...state,
       users: updatedUsers,
       members: updatedMembers,
+      currentUser: updatedCurrentUser,
+      updatedAt: nowISO,
     };
     setState(newState);
-    saveStateToStorage(newState);
     pushToFirestore(newState);
 
-    logAction('audit', 'ATUALIZACAO_CONTA_LOGIN', `Dados de login atualizados para ${targetUser.name}`, userId, targetUser.email);
+    logAction(
+      'audit',
+      isChangingPassword ? 'REDEFINICAO_SENHA' : 'ATUALIZACAO_CONTA_LOGIN',
+      isChangingPassword
+        ? `Palavra-passe atualizada pelo Administrador para ${targetUser.name} e contador de 2 meses automaticamente reiniciado`
+        : `Dados de login atualizados para ${targetUser.name}`,
+      userId,
+      targetUser.email
+    );
     return { success: true };
   };
 
@@ -3563,17 +3669,21 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ? { ...state.currentUser, password: newPassword.trim(), passwordResetRequested: false, lastPasswordChangedAt: nowISO }
       : state.currentUser;
 
-    const newState = {
+    if (state.currentUser.id === userId) {
+      syncStoredSessionUser(updatedCurrentUser);
+    }
+
+    const newState: ClubDatabaseState = {
       ...state,
       users: updatedUsers,
       currentUser: updatedCurrentUser,
+      updatedAt: nowISO,
     };
 
     setState(newState);
-    saveStateToStorage(newState);
     pushToFirestore(newState);
 
-    logAction('audit', 'REDEFINICAO_SENHA', `Palavra-passe redefinida manualmente para o utilizador ${userId} e tempo de 2 meses reiniciado`, userId);
+    logAction('audit', 'REDEFINICAO_SENHA', `Palavra-passe redefinida pelo Administrador para o utilizador ${userId} e tempo de 2 meses reiniciado automaticamente`, userId);
     return { success: true };
   };
 
@@ -3596,15 +3706,29 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Utilizador não encontrado no sistema. Por favor contacte o Administrador.' };
     }
 
+    const nowISO = getNowISOString();
     const updatedUsers = state.users.map(u => u.id === user!.id ? { ...u, passwordResetRequested: true } : u);
-    const newState = {
+    const updatedCurrentUser = state.currentUser.id === user.id ? { ...state.currentUser, passwordResetRequested: true } : state.currentUser;
+    const auditEntry = createAuditLog(
+      user.id,
+      user.name,
+      user.role,
+      'audit',
+      'SOLICITACAO_REDEFINICAO_SENHA',
+      `Solicitação de redefinição de senha para ${user.name}`,
+      user.id,
+      user.name
+    );
+
+    const newState: ClubDatabaseState = {
       ...state,
       users: updatedUsers,
+      currentUser: updatedCurrentUser,
+      auditLogs: [auditEntry, ...state.auditLogs],
+      updatedAt: nowISO,
     };
     setState(newState);
-    saveStateToStorage(newState);
     pushToFirestore(newState);
-    logAction('audit', 'SOLICITACAO_REDEFINICAO_SENHA', `Solicitação de redefinição de senha para ${user.name}`, user.id);
     return { success: true };
   };
 
@@ -3646,14 +3770,16 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       passwordResetRequested: false,
     };
 
-    const newState = {
+    syncStoredSessionUser(updatedUser);
+
+    const newState: ClubDatabaseState = {
       ...state,
       users: state.users.map(u => u.id === user.id ? updatedUser : u),
       currentUser: updatedUser,
+      updatedAt: nowISO,
     };
 
     setState(newState);
-    saveStateToStorage(newState);
     pushToFirestore(newState);
 
     logAction('member_portal', 'REDEFINICAO_PROPRIA_SENHA', 'Utilizador redefiniu a sua própria senha com sucesso no Portal do Membro.', user.id, user.name);
@@ -3663,6 +3789,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const resetAllDemoData = () => {
     const fresh = resetToDemoData();
     setState(fresh);
+    pushToFirestore(fresh);
   };
 
   const resetCleanSlate = () => {
@@ -3671,6 +3798,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     const clean = resetToCleanAdminOnlyState(currentUser);
     setState(clean);
+    pushToFirestore(clean);
     return { success: true };
   };
 
@@ -3885,6 +4013,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         forceSyncCloud,
         runIntegrityVerification,
         isQuotaExceeded,
+        isCloudLoading,
         theme,
         toggleTheme,
       }}

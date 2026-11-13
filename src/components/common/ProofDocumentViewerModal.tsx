@@ -90,8 +90,8 @@ export const ProofDocumentViewerModal: React.FC<ProofDocumentViewerModalProps> =
   const isTreasurerApprover = can('treasury', 'APPROVE');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/75 backdrop-blur-xs overflow-y-auto print:p-0 print:bg-white print:static print:z-auto print:overflow-visible">
-      <div className="relative w-full max-w-4xl bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden my-4 sm:my-6 flex flex-col max-h-[92vh] print:max-h-none print:border-none print:shadow-none print:m-0 print:rounded-none">
+    <div className="print-modal-wrapper fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/75 backdrop-blur-xs overflow-y-auto print:p-0 print:bg-white print:z-auto print:overflow-visible">
+      <div className="printable-document-modal relative w-full max-w-4xl bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden my-4 sm:my-6 flex flex-col max-h-[92vh] print:max-h-none print:border-none print:shadow-none print:m-0 print:rounded-none">
         
         {/* Barra Superior de Ações */}
         <div className="px-5 py-3.5 bg-slate-900 text-white flex items-center justify-between shrink-0 print:hidden">

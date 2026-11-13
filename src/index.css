@@ -47,15 +47,21 @@ html, body {
     size: A4 portrait;
     margin: 10mm;
   }
-  html, body {
+  html, body, #root {
     background-color: white !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
     margin: 0 !important;
     padding: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
   }
   body * {
     visibility: hidden !important;
+  }
+  body:has(> .print-modal-wrapper) > #root {
+    display: none !important;
   }
   .printable-document-modal, .printable-document-modal *, .print-modal-wrapper {
     visibility: visible !important;
@@ -66,16 +72,26 @@ html, body {
     padding: 0 !important;
     background: white !important;
     display: block !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
   }
   .print-modal-wrapper {
-    position: static !important;
-    display: block !important;
+    position: absolute !important;
     top: 0 !important;
-    justify-content: flex-start !important;
-    align-items: flex-start !important;
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    display: block !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: white !important;
+    overflow: visible !important;
   }
   .print-break-inside-avoid {
     break-inside: avoid !important;
+    page-break-inside: avoid !important;
   }
   .print-document-body {
     min-height: auto !important;

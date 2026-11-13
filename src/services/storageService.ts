@@ -86,78 +86,76 @@ export interface ClubDatabaseState {
   updatedAt?: string;
 }
 
-export function loadInitialState(): ClubDatabaseState {
+export function createCleanCloudShellState(): ClubDatabaseState {
+  const placeholderUser: UserAccount = {
+    id: 'USR-GUEST',
+    email: 'sistema@clubedalvorada.ao',
+    name: 'Sistema em Sincronização',
+    role: 'membro',
+    active: true,
+    createdAt: getNowISOString(),
+  };
+
+  return {
+    users: [],
+    members: [],
+    fees: [],
+    accounts: [
+      {
+        id: 'ACC-1',
+        name: 'Caixa Geral',
+        initialBalanceInCents: 0,
+        currentBalanceInCents: 0,
+        active: true,
+        type: 'caixa',
+      },
+    ],
+    receipts: [],
+    expenses: [],
+    monthlyClosings: [],
+    activities: [],
+    classes: [],
+    specialties: [],
+    trainingProgress: [],
+    documents: [],
+    circulars: [],
+    paymentProofs: [],
+    auditLogs: [],
+    notifications: [],
+    deletionRequests: [],
+    chaplaincyRequests: [],
+    suggestions: [],
+    messages: [],
+    settings: {
+      ...INITIAL_SETTINGS,
+      departments: [],
+      units: [],
+      classes: [],
+      currentYear: new Date().getFullYear(),
+    },
+    currentUser: placeholderUser,
+  };
+}
+
+export function clearLegacyLocalDatabaseCache(): void {
   try {
-    const raw = typeof window !== 'undefined' && window.localStorage ? localStorage.getItem(STORAGE_KEY) : null;
-    if (raw) {
-      let parsed: any;
-      try {
-        parsed = JSON.parse(raw);
-      } catch (parseErr) {
-        console.error('LocalStorage corrompido, a limpar cache:', parseErr);
-        if (typeof window !== 'undefined' && window.localStorage) {
-          localStorage.removeItem(STORAGE_KEY);
-        }
-        parsed = null;
-      }
-
-      if (parsed && typeof parsed === 'object') {
-        // Garantir que todas as coleções e arrays essenciais existem e são arrays válidos para evitar erros de renderização
-        parsed.users = Array.isArray(parsed.users) ? parsed.users : INITIAL_USERS;
-        parsed.members = Array.isArray(parsed.members) ? parsed.members : [];
-        parsed.fees = Array.isArray(parsed.fees) ? parsed.fees : INITIAL_FEES;
-        parsed.accounts = Array.isArray(parsed.accounts) ? parsed.accounts : INITIAL_ACCOUNTS;
-        parsed.receipts = Array.isArray(parsed.receipts) ? parsed.receipts : [];
-        parsed.expenses = Array.isArray(parsed.expenses) ? parsed.expenses : [];
-        parsed.monthlyClosings = Array.isArray(parsed.monthlyClosings) ? parsed.monthlyClosings : [];
-        parsed.activities = Array.isArray(parsed.activities) ? parsed.activities : [];
-        parsed.classes = Array.isArray(parsed.classes) && parsed.classes.length > 0 ? parsed.classes : INITIAL_CLASSES;
-        parsed.specialties = Array.isArray(parsed.specialties) && parsed.specialties.length > 0 ? parsed.specialties : INITIAL_SPECIALTIES;
-        parsed.trainingProgress = Array.isArray(parsed.trainingProgress) ? parsed.trainingProgress : [];
-        parsed.documents = Array.isArray(parsed.documents) ? parsed.documents : [];
-        parsed.circulars = Array.isArray(parsed.circulars) ? parsed.circulars : [];
-        parsed.paymentProofs = Array.isArray(parsed.paymentProofs) ? parsed.paymentProofs : [];
-        parsed.auditLogs = Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [];
-        parsed.notifications = Array.isArray(parsed.notifications) ? parsed.notifications : [];
-        parsed.deletionRequests = Array.isArray(parsed.deletionRequests) ? parsed.deletionRequests : [];
-        parsed.chaplaincyRequests = Array.isArray(parsed.chaplaincyRequests) ? parsed.chaplaincyRequests : [];
-        parsed.suggestions = Array.isArray(parsed.suggestions) ? parsed.suggestions : [];
-        parsed.messages = Array.isArray(parsed.messages) ? parsed.messages : [];
-        parsed.settings = parsed.settings || INITIAL_SETTINGS;
-        parsed.currentUser = parsed.currentUser || parsed.users[0] || INITIAL_USERS[1];
-
-        const allowedCategories: MemberCategory[] = ['embaixador', 'lider', 'aspirante'];
-        parsed.members = parsed.members.map((m: any) => {
-          let cat = m.category;
-          if (cat === 'desbravador' || cat === 'aventureiro') cat = 'aspirante';
-          else if (cat === 'conselheiro' || cat === 'apoio') cat = 'lider';
-          else if (!allowedCategories.includes(cat)) cat = 'embaixador';
-          return { ...m, category: cat };
-        });
-
-        // Garantir integridade contínua de contactos de emergência, encarregado e dados de alergias
-        const integrityResult = verifyAndRepairMembersIntegrity(parsed.members);
-        parsed.members = integrityResult.sanitizedMembers;
-
-        return parsed as ClubDatabaseState;
-      }
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem('pioapp_started_clean');
     }
-  } catch (e) {
-    console.error('Falha crítica ao carregar estado inicial do localStorage:', e);
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.removeItem(STORAGE_KEY);
-      }
-    } catch {}
+  } catch {
+    // Ignorado em ambientes restritos
+  }
+}
+
+export function loadInitialState(): ClubDatabaseState {
+  // No navegador, o sistema opera 100% em tempo real via Cloud Firestore sem memória cache permanente em localStorage
+  if (typeof window !== 'undefined') {
+    clearLegacyLocalDatabaseCache();
+    return createCleanCloudShellState();
   }
 
-  // Se o utilizador limpou o sistema ou iniciou limpo, não carregar dados de demonstração (teste)
-  const startedClean = typeof window !== 'undefined' && window.localStorage && localStorage.getItem('pioapp_started_clean') === 'true';
-  if (startedClean) {
-    return resetToCleanAdminOnlyState();
-  }
-
-  // Estado padrão com dados demonstrativos
+  // Em ambiente de testes automatizados Node.js (sem window), devolve o conjunto completo de referência
   return {
     users: INITIAL_USERS,
     members: INITIAL_MEMBERS,
@@ -175,7 +173,7 @@ export function loadInitialState(): ClubDatabaseState {
     paymentProofs: INITIAL_PAYMENT_PROOFS,
     auditLogs: INITIAL_AUDIT_LOGS,
     settings: INITIAL_SETTINGS,
-    currentUser: INITIAL_USERS[1], // Diretor por padrão na demonstração para visualização completa
+    currentUser: INITIAL_USERS[1],
     notifications: INITIAL_NOTIFICATIONS,
     deletionRequests: INITIAL_DELETION_REQUESTS,
     chaplaincyRequests: INITIAL_CHAPLAINCY_REQUESTS,
@@ -184,37 +182,38 @@ export function loadInitialState(): ClubDatabaseState {
   };
 }
 
-export function saveStateToStorage(state: ClubDatabaseState): void {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      } catch (quotaErr) {
-        console.warn('LocalStorage quota atingida, a guardar estado sem anexos pesados:', quotaErr);
-        // Remove anexos pesados de comprovativos da cache local para evitar crash
-        const leanState = {
-          ...state,
-          paymentProofs: (state.paymentProofs || []).map((p) => ({
-            ...p,
-            attachmentBase64: undefined,
-          })),
-        };
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(leanState));
-      }
-    }
-  } catch (e) {
-    console.error('Falha ao persistir dados no localStorage:', e);
-  }
+export function saveStateToStorage(_state: ClubDatabaseState): void {
+  // Sistema 100% em tempo real na nuvem: nenhuma cópia permanente da base de dados é gravada em localStorage
+  clearLegacyLocalDatabaseCache();
 }
 
 export function resetToDemoData(): ClubDatabaseState {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem('pioapp_started_clean');
-  }
-  const state = loadInitialState();
-  saveStateToStorage(state);
-  return state;
+  clearLegacyLocalDatabaseCache();
+  return {
+    users: INITIAL_USERS,
+    members: INITIAL_MEMBERS,
+    fees: INITIAL_FEES,
+    accounts: INITIAL_ACCOUNTS,
+    receipts: INITIAL_RECEIPTS,
+    expenses: INITIAL_EXPENSES,
+    monthlyClosings: INITIAL_MONTHLY_CLOSINGS,
+    activities: INITIAL_ACTIVITIES,
+    classes: INITIAL_CLASSES,
+    specialties: INITIAL_SPECIALTIES,
+    trainingProgress: INITIAL_TRAINING_PROGRESS,
+    documents: INITIAL_DOCUMENTS,
+    circulars: [],
+    paymentProofs: INITIAL_PAYMENT_PROOFS,
+    auditLogs: INITIAL_AUDIT_LOGS,
+    settings: INITIAL_SETTINGS,
+    currentUser: INITIAL_USERS[1],
+    notifications: INITIAL_NOTIFICATIONS,
+    deletionRequests: INITIAL_DELETION_REQUESTS,
+    chaplaincyRequests: INITIAL_CHAPLAINCY_REQUESTS,
+    suggestions: INITIAL_SUGGESTIONS,
+    messages: [],
+    updatedAt: getNowISOString(),
+  };
 }
 
 /**
@@ -224,10 +223,7 @@ export function resetToDemoData(): ClubDatabaseState {
  * o Administrador como o único utilizador cadastrado.
  */
 export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): ClubDatabaseState {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.setItem('pioapp_started_clean', 'true');
-  }
+  clearLegacyLocalDatabaseCache();
   const now = getNowISOString();
   const admin: UserAccount = {
     id: customAdmin?.id || 'USR-ADMIN',
@@ -298,9 +294,9 @@ export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): 
     deletionRequests: [],
     chaplaincyRequests: [],
     suggestions: [],
+    updatedAt: now,
   };
 
-  saveStateToStorage(cleanState);
   return cleanState;
 }
 
@@ -308,7 +304,7 @@ export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): 
  * Limpeza do sistema para liberação de armazenamento na nuvem:
  * Mantém exclusivamente:
  * - Saldo das contas bancárias (accounts com saldos currentBalanceInCents intactos)
- * - Membros registados (members intactos)
+ * - Membros registados ativos (members ativos intactos; elimina arquivados/inativos)
  * - Contas de login no sistema (users intactos)
  * - Configurações e catálogo formativo (settings, classes, specialties)
  *
@@ -327,7 +323,7 @@ export function cleanSystemStorageSpace(
   actorUser?: UserAccount
 ): ClubDatabaseState {
   const now = getNowISOString();
-  const actor = actorUser || currentState.currentUser;
+  const _actor = actorUser || currentState.currentUser;
 
   const cleanedState: ClubDatabaseState = {
     ...currentState,
@@ -360,7 +356,6 @@ export function cleanSystemStorageSpace(
     updatedAt: now,
   };
 
-  saveStateToStorage(cleanedState);
   return cleanedState;
 }
 
@@ -396,20 +391,15 @@ export function generateNextDocumentNumber(
  * Mantém dados históricos, não liquida dívidas e não apaga movimentos anteriores.
  */
 export function openNewFiscalYear(currentState: ClubDatabaseState, newYear: number): ClubDatabaseState {
-  // Cria cópia de segurança antes da alteração
-  saveStateToStorage(currentState);
-
   const newState = {
     ...currentState,
     settings: {
       ...currentState.settings,
       currentYear: newYear,
     },
-    // Limpa apenas o que deve ser zerado para o novo ano (ex: cobranças novas)
-    // Preserva: members, receipts, expenses, activities, auditLogs
+    updatedAt: getNowISOString(),
   };
 
-  saveStateToStorage(newState);
   return newState;
 }
 
