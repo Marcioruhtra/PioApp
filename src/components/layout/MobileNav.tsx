@@ -56,7 +56,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
         </button>
       )}
 
-      {can('treasury', 'VIEW') && (
+      {(can('treasury', 'VIEW') || can('treasury', 'CONFIGURE_QUOTAS') || can('treasury', 'WAIVE_QUOTA_DEBT')) && (
         <button
           onClick={() => onSelectModule('treasury')}
           className="flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] transition-colors"

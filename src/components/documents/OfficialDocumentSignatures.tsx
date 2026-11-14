@@ -11,9 +11,9 @@ interface OfficialDocumentSignaturesProps {
 
 export const OfficialDocumentSignatures: React.FC<OfficialDocumentSignaturesProps> = ({
   signerName,
-  signerRole = "Assinatura do Responsável da Operação",
+  signerRole = "Diretor do Clube",
   secondSignerName,
-  secondSignerRole = "Visto da Direção",
+  secondSignerRole = "Visto · Diretor do Clube",
 }) => {
   return (
     <div className="print-signature-section mt-12 pt-6 border-t border-slate-200 print-break-inside-avoid">

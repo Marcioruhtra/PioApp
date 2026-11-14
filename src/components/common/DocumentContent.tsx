@@ -10,6 +10,7 @@ import {
 import { OfficialDocument } from '../../types';
 import { formatKz } from '../../utils/currency';
 import { formatDateAO } from '../../utils/date';
+import { resolveDocumentOperatorSigner } from '../../utils/documentSigner';
 
 interface DocumentContentProps {
   document: OfficialDocument;
@@ -42,6 +43,8 @@ export const DocumentContent: React.FC<DocumentContentProps> = ({
   getDocumentFormalTitle,
   state,
 }) => {
+  const resolvedSigner = resolveDocumentOperatorSigner(document, state?.users || []);
+
   return (
     <div className="w-full bg-white text-slate-900 print:text-xs">
       <OfficialDocumentHeader
@@ -61,7 +64,8 @@ export const DocumentContent: React.FC<DocumentContentProps> = ({
         recipientName={document.issuedToName}
         recipientLabel={document.documentType === 'recibo' ? 'Cobrar a' : 'Titular'}
         location={headquarters}
-        issuedByName={document.issuedByName}
+        issuedByName={resolvedSigner.name}
+        issuedByRoleLabel={resolvedSigner.roleLabel}
         isCancelled={document.isCancelled}
         cancellationReason={document.cancellationReason}
         isRejected={document.isRejected}
@@ -119,8 +123,8 @@ export const DocumentContent: React.FC<DocumentContentProps> = ({
       </div>
 
       <OfficialDocumentSignatures
-        signerName={document.issuedByName}
-        signerRole={document.documentType === 'recibo' ? 'Tesoureiro Geral do Clube' : 'Responsável Autorizado'}
+        signerName={resolvedSigner.name}
+        signerRole={resolvedSigner.roleLabel}
         clubName={clubName}
         year={document.year}
       />

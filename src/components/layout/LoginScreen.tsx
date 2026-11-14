@@ -15,7 +15,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   sessionExpiredMessage,
   onClearSessionExpiredMessage,
 }) => {
-  const { state, setCurrentUser, requestPasswordReset, syncFromCloud } = useClub();
+  const { state, setCurrentUser, requestPasswordReset, syncFromCloud, isCloudLoading } = useClub();
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
@@ -25,10 +25,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   const GENERIC_LOGIN_ERROR = 'Não foi possível iniciar sessão. Verifique as credenciais ou contacte o administrador.';
 
-  // Pré-carregamento inicial dos dados do clube diretamente do servidor da nuvem (sem cache)
+  // Caso a lista de utilizadores ainda não tenha chegado após o carregamento inicial, tenta sincronizar sem duplicar pedidos simultâneos
   React.useEffect(() => {
-    getDocFromServer(doc(db, 'club_data', 'main_state'))
-      .catch(() => getDoc(doc(db, 'club_data', 'main_state')))
+    if (isCloudLoading || state.users.length > 0 || !db || !(db as any).app) return;
+    getDoc(doc(db, 'club_data', 'main_state'))
       .then((snap) => {
         if (snap && snap.exists()) {
           const cloudData = snap.data();
@@ -40,7 +40,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       .catch((err) => {
         console.warn('Pré-carregamento de utilizadores da nuvem:', err);
       });
-  }, []);
+  }, [isCloudLoading, state.users.length]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -123,12 +123,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       const targetMemberId = matchingMember ? matchingMember.id : null;
       const targetMemberEmail = matchingMember ? matchingMember.email : null;
 
-      // 4. Pesquisa de conta de utilizador ESTRITAMENTE por E-mail ou ligação direta ao membro resolvido pelo Nº de Matrícula/E-mail
+      // 4. Pesquisa de conta de utilizador ESTRITAMENTE por E-mail, Nº de Membro sincronizado ou ligação direta ao membro resolvido
       const user = usersToSearch.find((u: any) => {
         if (!u) return false;
-        if (u.email && u.email.toLowerCase() === cleanLower) return true;
+        if (u.email && u.email.trim().toLowerCase() === cleanLower) return true;
+        if (u.manualNumber && String(u.manualNumber).trim().toLowerCase() === cleanLower) return true;
         if (targetMemberId && u.linkedMemberId && u.linkedMemberId === targetMemberId) return true;
-        if (targetMemberEmail && u.email && u.email.toLowerCase() === targetMemberEmail.toLowerCase()) return true;
+        if (targetMemberEmail && u.email && u.email.trim().toLowerCase() === targetMemberEmail.toLowerCase()) return true;
         return false;
       });
 
@@ -150,7 +151,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         return;
       }
 
-      setCurrentUser(user, rememberMe);
+      const resolvedMember =
+        matchingMember ||
+        (user.linkedMemberId
+          ? membersToSearch.find((m: any) => m && (m.id === user.linkedMemberId || m.manualNumber === user.linkedMemberId))
+          : undefined);
+
+      const syncedLoginUser =
+        resolvedMember && user.role !== 'admin_tecnico' && user.id !== 'INST-001' && user.id !== 'USR-ADMIN'
+          ? {
+              ...user,
+              linkedMemberId: resolvedMember.id,
+              name: resolvedMember.fullName || user.name,
+              email: (resolvedMember.email && resolvedMember.email.trim()) || user.email,
+              phone: (resolvedMember.phone && resolvedMember.phone.trim()) || user.phone,
+              manualNumber: resolvedMember.manualNumber || user.manualNumber,
+            }
+          : user;
+
+      setCurrentUser(syncedLoginUser, rememberMe);
       onLogin();
     } catch (err) {
       console.warn('Erro durante autenticação na nuvem:', err);

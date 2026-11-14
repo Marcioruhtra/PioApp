@@ -30,6 +30,9 @@ import {
   MemberSuggestion,
   Message,
   Circular,
+  AssociateDirective,
+  TeamEvaluation,
+  QuotaDebtWaiver,
 } from '../types';
 import {
   INITIAL_ACCOUNTS,
@@ -81,6 +84,9 @@ export interface ClubDatabaseState {
   chaplaincyRequests: ChaplaincyRequest[];
   suggestions: MemberSuggestion[];
   messages: Message[];
+  associateDirectives?: AssociateDirective[];
+  teamEvaluations?: TeamEvaluation[];
+  quotaWaivers?: QuotaDebtWaiver[];
   settings: ClubSettings;
   currentUser: UserAccount;
   updatedAt?: string;
@@ -126,6 +132,9 @@ export function createCleanCloudShellState(): ClubDatabaseState {
     chaplaincyRequests: [],
     suggestions: [],
     messages: [],
+    associateDirectives: [],
+    teamEvaluations: [],
+    quotaWaivers: [],
     settings: {
       ...INITIAL_SETTINGS,
       departments: [],
@@ -179,6 +188,9 @@ export function loadInitialState(): ClubDatabaseState {
     chaplaincyRequests: INITIAL_CHAPLAINCY_REQUESTS,
     suggestions: INITIAL_SUGGESTIONS,
     messages: [],
+    associateDirectives: [],
+    teamEvaluations: [],
+    quotaWaivers: [],
   };
 }
 
@@ -212,6 +224,9 @@ export function resetToDemoData(): ClubDatabaseState {
     chaplaincyRequests: INITIAL_CHAPLAINCY_REQUESTS,
     suggestions: INITIAL_SUGGESTIONS,
     messages: [],
+    associateDirectives: [],
+    teamEvaluations: [],
+    quotaWaivers: [],
     updatedAt: getNowISOString(),
   };
 }
@@ -294,6 +309,9 @@ export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): 
     deletionRequests: [],
     chaplaincyRequests: [],
     suggestions: [],
+    associateDirectives: [],
+    teamEvaluations: [],
+    quotaWaivers: [],
     updatedAt: now,
   };
 
@@ -352,6 +370,9 @@ export function cleanSystemStorageSpace(
     notifications: [],
     chaplaincyRequests: [],
     suggestions: [],
+    associateDirectives: [],
+    teamEvaluations: [],
+    quotaWaivers: [],
     currentUser: currentState.currentUser,
     updatedAt: now,
   };

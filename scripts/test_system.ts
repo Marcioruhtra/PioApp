@@ -1,9 +1,35 @@
 import { loadInitialState, createCleanCloudShellState, generateNextDocumentNumber, isMemberNumberUnique, findPotentialDuplicateMember, cleanSystemStorageSpace } from '../src/services/storageService';
-import { hasPermission, ROLE_PERMISSIONS_MATRIX, ROLE_LABELS, updatePermission, canViewActivitiesAttendanceTab, canViewAccountInAccessList, filterVisibleAccessAccounts, syncPermissionsMatrix, PERMISSION_CATALOG } from '../src/services/permissionService';
+import {
+  hasPermission,
+  ROLE_PERMISSIONS_MATRIX,
+  ROLE_LABELS,
+  updatePermission,
+  canViewActivitiesAttendanceTab,
+  canViewAccountInAccessList,
+  filterVisibleAccessAccounts,
+  syncPermissionsMatrix,
+  PERMISSION_CATALOG,
+  canGrantAssociateDirectorModule,
+  canAccessAssociateDirectorModule,
+  canGrantWaiveQuotaDebt,
+} from '../src/services/permissionService';
 import { formatKz } from '../src/utils/currency';
 import { formatDateAO } from '../src/utils/date';
 import { INACTIVITY_TIMEOUT_MS, isSessionInactive, getRemainingInactivityMs } from '../src/utils/inactivity';
-import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest } from '../src/types';
+import { syncMemberChangesToUsers, syncUserWithLinkedMember, reconcileUsersAndMembers } from '../src/services/accountSyncService';
+import {
+  countChargeableSundays,
+  calculateMemberQuotaSummary,
+  calculateClubQuotaTotals,
+  hasConfigureQuotaPermission,
+  hasWaiveQuotaDebtPermission,
+} from '../src/services/quotaService';
+import {
+  cleanOperatorDisplayName,
+  resolveDocumentOperatorSigner,
+  resolveReceiptOperatorSigner,
+} from '../src/utils/documentSigner';
+import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver } from '../src/types';
 
 function runTests() {
   console.log("=== INICIANDO BATERIA COMPLETA DE TESTES DO SISTEMA ===");
@@ -720,6 +746,460 @@ function runTests() {
       `Cargo ${ROLE_LABELS[r].label} NÃO visualiza contas de administradores em Contas de Acesso`
     );
   }
+
+  // 23. TESTE DE SINCRONIZAÇÃO CONTÍNUA E BIDIRECIONAL ENTRE CONTAS DE LOGIN E MEMBROS
+  console.log("\n23. Teste de Sincronização Contínua (Conta de Login <-> Ficha do Membro):");
+  const syncMemberBase: Member = {
+    ...testMember,
+    id: 'CDA-MEM-SYNC-01',
+    manualNumber: '2026/701',
+    fullName: 'Mateus Kiala Original',
+    email: 'mateus.original@clubedalvorada.ao',
+    phone: '+244 923 111 222',
+  };
+  const syncUserBase: UserAccount = {
+    id: 'USR-SYNC-01',
+    name: 'Mateus Kiala Original',
+    email: 'mateus.original@clubedalvorada.ao',
+    role: 'membro',
+    linkedMemberId: 'CDA-MEM-SYNC-01',
+    manualNumber: '2026/701',
+    phone: '+244 923 111 222',
+    active: true,
+    createdAt: new Date().toISOString(),
+  };
+
+  // 23.1 Alteração na ficha do membro propaga automaticamente para a conta de login
+  const editedMember: Member = {
+    ...syncMemberBase,
+    fullName: 'Mateus Kiala Atualizado',
+    email: 'mateus.novo@clubedalvorada.ao',
+    manualNumber: '2026/709',
+    phone: '+244 923 999 888',
+  };
+  const usersAfterMemberEdit = syncMemberChangesToUsers(editedMember, [syncUserBase], syncMemberBase);
+  assert(usersAfterMemberEdit[0].name === 'Mateus Kiala Atualizado', "Alteração de nome no membro sincroniza automaticamente para a conta de login");
+  assert(usersAfterMemberEdit[0].email === 'mateus.novo@clubedalvorada.ao', "Alteração de e-mail no membro sincroniza automaticamente para a conta de login");
+  assert(usersAfterMemberEdit[0].manualNumber === '2026/709', "Alteração de Nº de Membro sincroniza automaticamente para a conta de login");
+  assert(usersAfterMemberEdit[0].phone === '+244 923 999 888', "Alteração de telefone no membro sincroniza automaticamente para a conta de login");
+
+  // 23.2 Alteração na conta de login propaga automaticamente de volta para a ficha do membro
+  const { syncedUser: userAfterAccountEdit, updatedMembers: membersAfterAccountEdit } = syncUserWithLinkedMember(
+    usersAfterMemberEdit[0],
+    [editedMember],
+    new Date().toISOString(),
+    {
+      name: 'Mateus Kiala Direção',
+      email: 'mateus.direcao@clubedalvorada.ao',
+      manualNumber: '2026/715',
+      phone: '+244 912 000 111',
+    }
+  );
+  assert(userAfterAccountEdit.name === 'Mateus Kiala Direção' && membersAfterAccountEdit[0].fullName === 'Mateus Kiala Direção', "Alteração de nome na conta de login sincroniza automaticamente para o membro");
+  assert(userAfterAccountEdit.email === 'mateus.direcao@clubedalvorada.ao' && membersAfterAccountEdit[0].email === 'mateus.direcao@clubedalvorada.ao', "Alteração de e-mail na conta de login sincroniza automaticamente para o membro");
+  assert(userAfterAccountEdit.manualNumber === '2026/715' && membersAfterAccountEdit[0].manualNumber === '2026/715', "Alteração de Nº de Membro na conta de login sincroniza automaticamente para o membro");
+  assert(userAfterAccountEdit.phone === '+244 912 000 111' && membersAfterAccountEdit[0].phone === '+244 912 000 111', "Alteração de telefone na conta de login sincroniza automaticamente para o membro");
+
+  // 23.3 Reconciliação contínua (carregamento da nuvem) corrige contas dessincronizadas automaticamente
+  const staleUserFromCloud: UserAccount = {
+    ...syncUserBase,
+    name: 'Nome Antigo',
+    email: 'antigo@clubedalvorada.ao',
+    manualNumber: '2026/000',
+    phone: '000',
+  };
+  const adminAccountFromCloud: UserAccount = {
+    id: 'USR-ADMIN',
+    name: 'Administrador Técnico',
+    email: 'admin@clubedalvorada.ao',
+    role: 'admin_tecnico',
+    active: true,
+    createdAt: new Date().toISOString(),
+  };
+  const reconciled = reconcileUsersAndMembers([staleUserFromCloud, adminAccountFromCloud], [membersAfterAccountEdit[0]]);
+  assert(reconciled.changed, "reconcileUsersAndMembers deteta e repara divergências de dados automaticamente");
+  assert(reconciled.users[0].name === 'Mateus Kiala Direção' && reconciled.users[0].email === 'mateus.direcao@clubedalvorada.ao' && reconciled.users[0].manualNumber === '2026/715', "Reconciliação alinha conta de login com os dados atuais do membro");
+  assert(!reconciled.users[1].linkedMemberId, "Conta institucional de Administrador permanece independente e sem vínculo a membro");
+
+  // 24. TESTE DE REGULARIZAÇÃO DE QUOTAS, PERMISSÕES E RECÁLCULO POR DOMINGO
+  console.log("\n24. Teste de Regularização de Quotas, Grelha de Permissões e Recálculo por Domingo:");
+  assert(hasConfigureQuotaPermission('tesoureiro'), "Tesoureiro tem permissão padrão para definir valor das quotas");
+  assert(hasConfigureQuotaPermission('diretor'), "Diretor tem permissão padrão para definir valor das quotas");
+  assert(hasConfigureQuotaPermission('admin_tecnico'), "Administrador Técnico tem permissão para definir valor das quotas");
+  assert(!hasConfigureQuotaPermission('membro'), "Membro comum NÃO pode alterar o valor das quotas por padrão");
+  assert(!hasConfigureQuotaPermission('diretor_associado'), "Diretor-associado NÃO pode alterar o valor das quotas por padrão");
+
+  const customMatrix = syncPermissionsMatrix(ROLE_PERMISSIONS_MATRIX);
+  customMatrix.secretario.treasury = [...customMatrix.secretario.treasury, 'CONFIGURE_QUOTAS'];
+  assert(hasConfigureQuotaPermission('secretario', customMatrix), "Qualquer cargo autorizado na Grelha de Permissões passa a poder definir quotas");
+
+  const legacyWithoutQuotaPerm: any = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  legacyWithoutQuotaPerm.admin_tecnico.treasury = legacyWithoutQuotaPerm.admin_tecnico.treasury.filter((a: string) => a !== 'CONFIGURE_QUOTAS');
+  legacyWithoutQuotaPerm.diretor.treasury = legacyWithoutQuotaPerm.diretor.treasury.filter((a: string) => a !== 'CONFIGURE_QUOTAS');
+  legacyWithoutQuotaPerm.tesoureiro.treasury = legacyWithoutQuotaPerm.tesoureiro.treasury.filter((a: string) => a !== 'CONFIGURE_QUOTAS');
+  const migratedForQuotas = syncPermissionsMatrix(legacyWithoutQuotaPerm);
+  assert(
+    migratedForQuotas.diretor.treasury.includes('CONFIGURE_QUOTAS') && migratedForQuotas.tesoureiro.treasury.includes('CONFIGURE_QUOTAS'),
+    "syncPermissionsMatrix migra automaticamente CONFIGURE_QUOTAS para Diretor e Tesoureiro em bases antigas"
+  );
+
+  // Contagem exata de domingos (Jan 2026: 4, 11, 18, 25)
+  assert(countChargeableSundays('2026-01-01', '2026-01-25') === 4, "Contagem exata de 4 domingos entre 01/01/2026 e 25/01/2026");
+  assert(countChargeableSundays('2026-02-01', '2026-02-01') === 1, "Domingo exato na data de início e fim conta como 1 domingo cobrável");
+
+  const quotaMemberA: Member = {
+    ...testMember,
+    id: 'MEM-QUOTA-01',
+    manualNumber: '2026/801',
+    fullName: 'Joana Domingos Quota',
+    joinedDate: '2026-01-01',
+    createdAt: '2026-01-01T10:00:00Z',
+  };
+  const quotaMemberNew: Member = {
+    ...testMember,
+    id: 'MEM-QUOTA-02',
+    manualNumber: '2026/802',
+    fullName: 'Pedro Novo Membro',
+    joinedDate: '2026-01-12', // Após os 2 primeiros domingos (4 e 11 de Jan)
+    createdAt: '2026-01-12T10:00:00Z',
+  };
+
+  const quotaConfig500: QuotaConfig = {
+    amountInCents: 50_000, // 500,00 Kz por domingo
+    frequency: 'domingo',
+    cycleStartDate: '2026-01-01',
+    respectMemberJoinDate: true,
+    activeQuotaFeeId: 'FEE-QUOTA-DOMINGO',
+  };
+
+  const quotaReceiptsSample: PaymentReceipt[] = [
+    {
+      id: 'REC-Q-1',
+      receiptNumber: 'REC-2026-9001',
+      memberId: quotaMemberA.id,
+      memberName: quotaMemberA.fullName,
+      feeDefinitionId: 'FEE-QUOTA-DOMINGO',
+      feeTitle: 'Quota Regular (Cada Domingo)',
+      periodLabel: '2 Domingos Janeiro',
+      amountPaidInCents: 100_000, // 1.000,00 Kz pagos
+      paymentMethod: 'numerario',
+      treasurerUserId: 'USR-TES',
+      treasurerName: 'Daniel Kissange',
+      paidAt: '2026-01-18T12:00:00Z',
+      status: 'confirmado',
+    },
+    {
+      id: 'REC-Q-CANCELLED',
+      receiptNumber: 'REC-2026-9002',
+      memberId: quotaMemberA.id,
+      memberName: quotaMemberA.fullName,
+      feeDefinitionId: 'FEE-QUOTA-DOMINGO',
+      feeTitle: 'Quota Regular (Cada Domingo)',
+      periodLabel: 'Recibo anulado',
+      amountPaidInCents: 100_000,
+      paymentMethod: 'numerario',
+      treasurerUserId: 'USR-TES',
+      treasurerName: 'Daniel Kissange',
+      paidAt: '2026-01-19T12:00:00Z',
+      status: 'anulado',
+      isCancelled: true,
+    },
+    {
+      id: 'REC-CAMP-IGNORED',
+      receiptNumber: 'REC-2026-9003',
+      memberId: quotaMemberA.id,
+      memberName: quotaMemberA.fullName,
+      feeDefinitionId: 'FEE-04', // Acampamento, não é quota!
+      feeTitle: 'Inscrição Acampamento Regional no Dondo',
+      periodLabel: 'Acampamento',
+      amountPaidInCents: 1_200_000,
+      paymentMethod: 'transferencia_bancaria',
+      treasurerUserId: 'USR-TES',
+      treasurerName: 'Daniel Kissange',
+      paidAt: '2026-01-20T12:00:00Z',
+      status: 'confirmado',
+    },
+  ];
+
+  const sumA500 = calculateMemberQuotaSummary(quotaMemberA, quotaConfig500, state.fees, quotaReceiptsSample, '2026-01-25');
+  assert(sumA500.periodsCharged === 4 && sumA500.totalDueInCents === 200_000, "4 domingos x 500 Kz = 2.000,00 Kz devidos");
+  assert(sumA500.totalPaidInCents === 100_000, "Recibos anulados e taxas de acampamento são ignorados; apenas 1.000,00 Kz de quota contam");
+  assert(sumA500.balanceDueInCents === 100_000 && sumA500.status === 'parcial', "Saldo devedor parcial calculado corretamente (1.000,00 Kz em dívida)");
+
+  const sumNewMember = calculateMemberQuotaSummary(quotaMemberNew, quotaConfig500, state.fees, quotaReceiptsSample, '2026-01-25');
+  assert(sumNewMember.periodsCharged === 2 && sumNewMember.totalDueInCents === 100_000, "Membro admitido a 12/01 é cobrado apenas pelos 2 domingos seguintes (1.000,00 Kz)");
+
+  // Alterar valor da quota para 1.000,00 Kz recalcula imediatamente quanto deve mantendo o que já pagou
+  const quotaConfig1000: QuotaConfig = { ...quotaConfig500, amountInCents: 100_000 };
+  const sumA1000 = calculateMemberQuotaSummary(quotaMemberA, quotaConfig1000, state.fees, quotaReceiptsSample, '2026-01-25');
+  assert(sumA1000.totalDueInCents === 400_000, "Alteração da quota para 1.000 Kz/domingo recalcula o devido total para 4.000,00 Kz");
+  assert(sumA1000.totalPaidInCents === 100_000 && sumA1000.balanceDueInCents === 300_000, "Valor já pago mantém-se em 1.000,00 Kz e o saldo em dívida recalcula para 3.000,00 Kz");
+
+  // Regularização total do saldo restante (3.000,00 Kz)
+  const fullRegReceipts: PaymentReceipt[] = [
+    ...quotaReceiptsSample,
+    {
+      id: 'REC-Q-FULL',
+      receiptNumber: 'REC-2026-9004',
+      memberId: quotaMemberA.id,
+      memberName: quotaMemberA.fullName,
+      feeDefinitionId: 'FEE-QUOTA-DOMINGO',
+      feeTitle: 'Quota Regular (Cada Domingo)',
+      periodLabel: 'Regularização 3 domingos',
+      amountPaidInCents: 300_000,
+      paymentMethod: 'numerario',
+      treasurerUserId: 'USR-TES',
+      treasurerName: 'Daniel Kissange',
+      paidAt: '2026-01-25T15:00:00Z',
+      status: 'confirmado',
+    },
+  ];
+  const sumAFull = calculateMemberQuotaSummary(quotaMemberA, quotaConfig1000, state.fees, fullRegReceipts, '2026-01-25');
+  assert(sumAFull.balanceDueInCents === 0 && sumAFull.status === 'regularizado' && sumAFull.progressPercent === 100, "Após regularização total, o saldo devedor zera e estado passa para regularizado (100%)");
+
+  const totals = calculateClubQuotaTotals([sumAFull, sumNewMember]);
+  assert(totals.totalMembers === 2 && totals.inDebtCount === 1 && totals.regularizedCount === 1, "Totais do clube contabilizam corretamente membros em dia e em dívida");
+
+  // 25. MÓDULO EXCLUSIVO DO DIRETOR-ASSOCIADO E CONTROLO NA GRELHA DE PERMISSÕES
+  console.log("\n25. Teste do Módulo Exclusivo do Diretor-associado e Grelha de Permissões:");
+  assert(
+    PERMISSION_CATALOG.some((p) => p.module === 'associate_director' && p.action === 'VIEW'),
+    "Catálogo RBAC regista o módulo exclusivo associate_director"
+  );
+  assert(
+    canAccessAssociateDirectorModule('diretor_associado', ROLE_PERMISSIONS_MATRIX),
+    "Diretor-associado acede por padrão ao seu módulo exclusivo"
+  );
+  assert(
+    canAccessAssociateDirectorModule('admin_tecnico', ROLE_PERMISSIONS_MATRIX),
+    "Administrador Técnico acede ao módulo para gestão e supervisão"
+  );
+  assert(
+    !canAccessAssociateDirectorModule('diretor', ROLE_PERMISSIONS_MATRIX),
+    "Diretor do Clube NÃO visualiza o módulo exclusivo sem concessão na grelha"
+  );
+  assert(
+    !canAccessAssociateDirectorModule('secretario', ROLE_PERMISSIONS_MATRIX) &&
+      !canAccessAssociateDirectorModule('tesoureiro', ROLE_PERMISSIONS_MATRIX) &&
+      !canAccessAssociateDirectorModule('instrutor', ROLE_PERMISSIONS_MATRIX) &&
+      !canAccessAssociateDirectorModule('capelao', ROLE_PERMISSIONS_MATRIX) &&
+      !canAccessAssociateDirectorModule('membro', ROLE_PERMISSIONS_MATRIX),
+    "Secretário, Tesoureiro, Instrutor, Capelão e Membro NÃO visualizam o módulo por padrão"
+  );
+  assert(
+    canGrantAssociateDirectorModule('admin_tecnico') &&
+      !canGrantAssociateDirectorModule('diretor') &&
+      !canGrantAssociateDirectorModule('diretor_associado') &&
+      !canGrantAssociateDirectorModule('secretario'),
+    "Apenas o Administrador Técnico pode conceder/revogar acesso ao módulo na grelha"
+  );
+
+  // Simular concessão pela Grelha de Permissões pelo Administrador Técnico para Diretor e Secretário
+  const customGrantedMatrix = syncPermissionsMatrix();
+  customGrantedMatrix.diretor.associate_director = ['VIEW'];
+  assert(
+    canAccessAssociateDirectorModule('diretor', customGrantedMatrix),
+    "Após concessão pelo Administrador na grelha, outro cargo passa a visualizar o módulo"
+  );
+  assert(
+    !canAccessAssociateDirectorModule('secretario', customGrantedMatrix),
+    "Cargos não concedidos permanecem bloqueados após concessão seletiva"
+  );
+
+  // Simular migração de matriz antiga sem a chave associate_director
+  const legacyMatrixWithoutAssoc = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  delete legacyMatrixWithoutAssoc.diretor_associado.associate_director;
+  delete legacyMatrixWithoutAssoc.secretario.associate_director;
+  const migratedAssocMatrix = syncPermissionsMatrix(legacyMatrixWithoutAssoc);
+  assert(
+    canAccessAssociateDirectorModule('diretor_associado', migratedAssocMatrix) &&
+      !canAccessAssociateDirectorModule('secretario', migratedAssocMatrix),
+    "syncPermissionsMatrix inicializa associate_director exclusivo para Diretor-associado em bases legadas"
+  );
+
+  // 26. ZERAR DÍVIDA NA REGULARIZAÇÃO DE QUOTAS E CONTROLO RBAC PELO ADMINISTRADOR
+  console.log("\n26. Teste de Zerar Dívida de Quotas e Controlo na Grelha de Permissões:");
+  assert(
+    PERMISSION_CATALOG.some((p) => p.module === 'treasury' && p.action === 'WAIVE_QUOTA_DEBT'),
+    "Catálogo RBAC inclui a permissão WAIVE_QUOTA_DEBT no módulo Tesouraria"
+  );
+  assert(
+    hasWaiveQuotaDebtPermission('diretor', ROLE_PERMISSIONS_MATRIX) &&
+      hasWaiveQuotaDebtPermission('admin_tecnico', ROLE_PERMISSIONS_MATRIX),
+    "Diretor e Administrador Técnico podem zerar dívida de quotas por padrão"
+  );
+  assert(
+    !hasWaiveQuotaDebtPermission('tesoureiro', ROLE_PERMISSIONS_MATRIX) &&
+      !hasWaiveQuotaDebtPermission('diretor_associado', ROLE_PERMISSIONS_MATRIX) &&
+      !hasWaiveQuotaDebtPermission('secretario', ROLE_PERMISSIONS_MATRIX) &&
+      !hasWaiveQuotaDebtPermission('instrutor', ROLE_PERMISSIONS_MATRIX) &&
+      !hasWaiveQuotaDebtPermission('membro', ROLE_PERMISSIONS_MATRIX),
+    "Tesoureiro, Diretor-associado e restantes cargos não zeram dívida sem concessão do Administrador"
+  );
+  assert(
+    canGrantWaiveQuotaDebt('admin_tecnico') &&
+      !canGrantWaiveQuotaDebt('diretor') &&
+      !canGrantWaiveQuotaDebt('tesoureiro'),
+    "Apenas o Administrador Técnico pode conceder/revogar WAIVE_QUOTA_DEBT na Grelha de Permissões"
+  );
+
+  // Concessão pelo Administrador Técnico a outro cargo na grelha
+  const waiveGrantedMatrix = syncPermissionsMatrix();
+  waiveGrantedMatrix.tesoureiro.treasury = [...waiveGrantedMatrix.tesoureiro.treasury, 'WAIVE_QUOTA_DEBT'];
+  waiveGrantedMatrix.diretor_associado.treasury = ['WAIVE_QUOTA_DEBT'];
+  assert(
+    hasWaiveQuotaDebtPermission('tesoureiro', waiveGrantedMatrix) &&
+      hasWaiveQuotaDebtPermission('diretor_associado', waiveGrantedMatrix),
+    "Após concessão na grelha pelo Administrador, outro cargo passa a poder zerar dívida de quotas"
+  );
+
+  // Migração de matriz legada sem WAIVE_QUOTA_DEBT
+  const legacyMatrixWithoutWaive = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  legacyMatrixWithoutWaive.diretor.treasury = legacyMatrixWithoutWaive.diretor.treasury.filter((a: string) => a !== 'WAIVE_QUOTA_DEBT');
+  legacyMatrixWithoutWaive.admin_tecnico.treasury = legacyMatrixWithoutWaive.admin_tecnico.treasury.filter((a: string) => a !== 'WAIVE_QUOTA_DEBT');
+  const migratedWaiveMatrix = syncPermissionsMatrix(legacyMatrixWithoutWaive);
+  assert(
+    hasWaiveQuotaDebtPermission('diretor', migratedWaiveMatrix) &&
+      hasWaiveQuotaDebtPermission('admin_tecnico', migratedWaiveMatrix) &&
+      !hasWaiveQuotaDebtPermission('tesoureiro', migratedWaiveMatrix),
+    "syncPermissionsMatrix restaura WAIVE_QUOTA_DEBT para Diretor e Admin em bases legadas sem afetar outros cargos"
+  );
+
+  // Cálculo: Zerar dívida total (3.000,00 Kz em dívida sobre 4.000,00 Kz devidos, mantendo 1.000,00 Kz já pagos)
+  const fullWaiver: QuotaDebtWaiver = {
+    id: 'ZRD-2026-0001',
+    memberId: quotaMemberA.id,
+    memberName: quotaMemberA.fullName,
+    amountWaivedInCents: 300_000,
+    grossDueAtWaiverInCents: 400_000,
+    paidAtWaiverInCents: 100_000,
+    previousBalanceInCents: 300_000,
+    cycleYear: 2026,
+    reason: 'Perdão diretivo / regularização extraordinária',
+    waivedByUserId: 'USR-DIR',
+    waivedByName: 'Mateus Kiala',
+    waivedByRole: 'diretor',
+    waivedAt: '2026-01-25T16:00:00Z',
+  };
+  const sumAfterFullWaive = calculateMemberQuotaSummary(quotaMemberA, quotaConfig1000, state.fees, quotaReceiptsSample, '2026-01-25', [fullWaiver]);
+  assert(
+    sumAfterFullWaive.grossDueInCents === 400_000 &&
+      sumAfterFullWaive.totalWaivedInCents === 300_000 &&
+      sumAfterFullWaive.totalDueInCents === 100_000 &&
+      sumAfterFullWaive.totalPaidInCents === 100_000 &&
+      sumAfterFullWaive.balanceDueInCents === 0 &&
+      sumAfterFullWaive.status === 'regularizado' &&
+      sumAfterFullWaive.progressPercent === 100,
+    "Zerar dívida reduz o saldo devedor a 0,00 Kz (regularizado) sem alterar recibos reais nem gerar crédito fantasma"
+  );
+
+  // Cálculo: Novo domingo após zerar dívida passa a cobrar apenas o novo domingo (1.000,00 Kz)
+  const sumNextSundayAfterWaive = calculateMemberQuotaSummary(quotaMemberA, quotaConfig1000, state.fees, quotaReceiptsSample, '2026-02-01', [fullWaiver]);
+  assert(
+    sumNextSundayAfterWaive.periodsCharged === 5 &&
+      sumNextSundayAfterWaive.grossDueInCents === 500_000 &&
+      sumNextSundayAfterWaive.balanceDueInCents === 100_000 &&
+      sumNextSundayAfterWaive.status === 'parcial',
+    "Novo domingo após dívida zerada volta a cobrar normalmente apenas o novo período (1.000,00 Kz)"
+  );
+
+  // Cálculo: Zerar dívida parcial (150.000 centavos de 300.000 em dívida) e reversão
+  const partialWaiver: QuotaDebtWaiver = {
+    ...fullWaiver,
+    id: 'ZRD-2026-0002',
+    amountWaivedInCents: 150_000,
+  };
+  const sumPartialWaive = calculateMemberQuotaSummary(quotaMemberA, quotaConfig1000, state.fees, quotaReceiptsSample, '2026-01-25', [partialWaiver]);
+  assert(
+    sumPartialWaive.totalWaivedInCents === 150_000 && sumPartialWaive.balanceDueInCents === 150_000 && sumPartialWaive.status === 'parcial',
+    "Abate parcial reduz proporcionalmente a dívida (de 3.000 Kz para 1.500 Kz)"
+  );
+
+  const reversedWaiver: QuotaDebtWaiver = {
+    ...fullWaiver,
+    isReversed: true,
+    reversalReason: 'Lançamento por engano',
+    reversedAt: '2026-01-25T17:00:00Z',
+    reversedByUserId: 'USR-DIR',
+    reversedByName: 'Mateus Kiala',
+  };
+  const sumAfterReversal = calculateMemberQuotaSummary(quotaMemberA, quotaConfig1000, state.fees, quotaReceiptsSample, '2026-01-25', [reversedWaiver]);
+  assert(
+    sumAfterReversal.totalWaivedInCents === 0 && sumAfterReversal.balanceDueInCents === 300_000 && sumAfterReversal.status === 'parcial',
+    "Reversão da dívida zerada repõe integralmente o saldo devedor anterior (3.000,00 Kz)"
+  );
+
+  // 27. ASSINATURA COM NOME E CARGO DO AUTOR DA OPERAÇÃO EM RECIBOS E DOCUMENTOS
+  console.log("\n27. Teste de Assinatura com Nome e Cargo do Autor nos Recibos e Documentos:");
+  const recDirector = resolveReceiptOperatorSigner(
+    {
+      treasurerUserId: 'USR-DIR',
+      treasurerName: 'Carlos Mutamba',
+      treasurerRole: 'diretor',
+    },
+    state.users
+  );
+  assert(
+    recDirector.name === 'Carlos Mutamba' && recDirector.roleLabel === 'Diretor do Clube',
+    "Recibo emitido pelo Diretor exibe o seu nome e cargo real (Diretor do Clube), nunca 'Responsável' ou cargo fixo"
+  );
+
+  const recAssoc = resolveReceiptOperatorSigner(
+    {
+      treasurerUserId: 'USR-ASSOC-TEST',
+      treasurerName: 'Ana Paula',
+      treasurerRole: 'diretor_associado',
+    },
+    state.users
+  );
+  assert(
+    recAssoc.name === 'Ana Paula' && recAssoc.roleLabel === 'Diretor-associado',
+    "Recibo emitido pelo Diretor-associado exibe 'Ana Paula' e cargo 'Diretor-associado'"
+  );
+
+  const docLegacyReceipt = resolveDocumentOperatorSigner(
+    {
+      documentType: 'recibo',
+      issuedByUserId: 'USR-TES',
+      issuedByName: 'Daniel Kissange (Tesoureiro)',
+    },
+    state.users
+  );
+  assert(
+    cleanOperatorDisplayName('Daniel Kissange (Tesoureiro)') === 'Daniel Kissange' &&
+      docLegacyReceipt.name === 'Daniel Kissange' &&
+      docLegacyReceipt.roleLabel === 'Tesoureiro',
+    "Documento legado com sufixo entre parênteses limpa o nome e resolve o cargo real 'Tesoureiro'"
+  );
+
+  const docCertAdmin = resolveDocumentOperatorSigner(
+    {
+      documentType: 'certificado',
+      issuedByUserId: 'USR-ADMIN',
+      issuedByName: 'Eng. Manuel Kiluanje',
+      issuedByRole: 'admin_tecnico',
+    },
+    state.users
+  );
+  assert(
+    docCertAdmin.name === 'Eng. Manuel Kiluanje' &&
+      docCertAdmin.roleLabel === 'Administrador Técnico' &&
+      !docCertAdmin.roleLabel.includes('Responsável'),
+    "Certificado emitido pelo Administrador exibe nome completo e cargo 'Administrador Técnico' sem 'Responsável'"
+  );
+
+  const docLookupByIdOnly = resolveDocumentOperatorSigner(
+    {
+      documentType: 'declaracao_membro',
+      issuedByUserId: 'USR-SEC',
+      issuedByName: 'Responsável',
+    },
+    state.users
+  );
+  assert(
+    docLookupByIdOnly.name === 'Esperança Neto' && docLookupByIdOnly.roleLabel === 'Secretário',
+    "Mesmo quando nome legado for 'Responsável', resolve pelo ID o nome real ('Esperança Neto') e cargo ('Secretário')"
+  );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");
   console.log(`Total de Testes: ${passed + failed}`);

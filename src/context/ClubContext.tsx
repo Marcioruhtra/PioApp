@@ -31,6 +31,12 @@ import {
   SuggestionStatus,
   Message,
   Circular,
+  QuotaConfig,
+  QuotaDebtWaiver,
+  AssociateDirective,
+  AssociateDirectivePriority,
+  AssociateDirectiveStatus,
+  TeamEvaluation,
 } from '../types';
 import {
   ClubDatabaseState,
@@ -44,17 +50,37 @@ import {
   findPotentialDuplicateMember,
   openNewFiscalYear as openNewFiscalYearService,
 } from '../services/storageService';
-import { hasPermission, ROLE_PERMISSIONS_MATRIX, updatePermission, syncPermissionsMatrix, ROLE_LABELS } from '../services/permissionService';
+import {
+  hasPermission,
+  ROLE_PERMISSIONS_MATRIX,
+  updatePermission,
+  syncPermissionsMatrix,
+  ROLE_LABELS,
+  canGrantAssociateDirectorModule,
+  canGrantWaiveQuotaDebt,
+} from '../services/permissionService';
 import { createAuditLog } from '../services/auditService';
 import { getNowISOString, formatDateAO, generateManualNumber } from '../utils/date';
 import { formatKz } from '../utils/currency';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { doc, setDoc, getDoc, getDocFromServer, onSnapshot } from 'firebase/firestore';
 import { verifyAndRepairMembersIntegrity, sanitizeMemberIntegrity, IntegrityCheckResult } from '../services/memberIntegrityService';
 import { ToastMessage } from '../components/common/ToastContainer';
 import { playNotificationSound } from '../utils/notificationSound';
 import { showNativeNotification } from '../services/pushService';
 import { isNotificationAuthorizedForUser } from '../utils/notificationSecurity';
+import {
+  isInstitutionalAccountRecord,
+  reconcileUsersAndMembers,
+  syncMemberChangesToUsers,
+  syncUserWithLinkedMember,
+} from '../services/accountSyncService';
+import {
+  DEFAULT_QUOTA_FEE_ID,
+  calculateMemberQuotaSummary,
+  getTodayISODate,
+  resolveQuotaConfig,
+} from '../services/quotaService';
 
 interface ClubContextValue {
   state: ClubDatabaseState;
@@ -89,8 +115,33 @@ interface ClubContextValue {
     customDonorName?: string;
     accountId?: string;
     activityId?: string;
-  }) => { success: boolean; receipt?: PaymentReceipt; error?: string };
+  }) => { success: boolean; receipt?: PaymentReceipt; receiptNumber?: string; error?: string };
   cancelReceipt: (id: string, reason: string) => { success: boolean; error?: string };
+  updateQuotaConfig: (
+    configData: Partial<QuotaConfig> & { amountInCents: number }
+  ) => { success: boolean; config?: QuotaConfig; error?: string };
+  regularizeMemberQuota: (data: {
+    memberId: string;
+    amountPaidInCents: number;
+    paymentMethod: PaymentReceipt['paymentMethod'];
+    periodLabel?: string;
+    accountId?: string;
+    referenceOrProof?: string;
+    notes?: string;
+  }) => { success: boolean; receipt?: PaymentReceipt; receiptNumber?: string; error?: string };
+  waiveMemberQuotaDebt: (data: {
+    memberId: string;
+    reason: string;
+    customAmountInCents?: number;
+  }) => { success: boolean; waiver?: QuotaDebtWaiver; error?: string };
+  waiveAllPendingQuotaDebts: (data: {
+    memberIds: string[];
+    reason: string;
+  }) => { success: boolean; count: number; totalWaivedInCents: number; error?: string };
+  reverseQuotaDebtWaiver: (
+    waiverId: string,
+    reason: string
+  ) => { success: boolean; error?: string };
   createExpense: (data: {
     title: string;
     description: string;
@@ -232,6 +283,35 @@ interface ClubContextValue {
   syncFromCloud: (remoteState: Partial<ClubDatabaseState>) => void;
   forceSyncCloud: () => Promise<void>;
   runIntegrityVerification: () => Promise<{ success: boolean; result: IntegrityCheckResult }>;
+
+  // Gabinete Exclusivo do Diretor-associado
+  createAssociateDirective: (data: {
+    title: string;
+    description: string;
+    targetUnitName: string;
+    assignedLeaderName?: string;
+    priority: AssociateDirectivePriority;
+    dueDate: string;
+    checklistNotes?: string;
+  }) => { success: boolean; directive?: AssociateDirective; error?: string };
+  updateAssociateDirectiveStatus: (
+    id: string,
+    status: AssociateDirectiveStatus,
+    checklistNotes?: string
+  ) => { success: boolean; error?: string };
+  deleteAssociateDirective: (id: string) => { success: boolean; error?: string };
+  saveTeamEvaluation: (data: {
+    unitId: string;
+    unitName: string;
+    periodLabel: string;
+    disciplineScore: number;
+    teamworkScore: number;
+    punctualityScore: number;
+    trainingCommitmentScore: number;
+    observations?: string;
+  }) => { success: boolean; evaluation?: TeamEvaluation; error?: string };
+  deleteTeamEvaluation: (id: string) => { success: boolean; error?: string };
+
   isQuotaExceeded?: boolean;
   isCloudLoading: boolean;
 }
@@ -348,13 +428,15 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     const sanitizedMembers = verifyAndRepairMembersIntegrity(migratedMembers).sanitizedMembers;
+    const reconciled = reconcileUsersAndMembers(remoteUsers, sanitizedMembers);
 
-    // Atualiza em tempo real os dados do utilizador atualmente autenticado neste dispositivo (ex: novo temporizador de senha, cargo, estado ativo)
+    // Atualiza em tempo real os dados do utilizador atualmente autenticado neste dispositivo (ex: nome, email, Nº de Membro, senha, cargo, estado ativo)
     let nextCurrentUser = prev.currentUser;
-    if (prev.currentUser && prev.currentUser.id !== 'INST-001' && remoteUsers.length > 0) {
-      const liveUser = remoteUsers.find(
+    if (prev.currentUser && prev.currentUser.id !== 'INST-001' && reconciled.users.length > 0) {
+      const liveUser = reconciled.users.find(
         (u) =>
           u.id === prev.currentUser.id ||
+          (u.linkedMemberId && prev.currentUser.linkedMemberId && u.linkedMemberId === prev.currentUser.linkedMemberId) ||
           (u.email && prev.currentUser.email && u.email.toLowerCase() === prev.currentUser.email.toLowerCase())
       );
       if (liveUser) {
@@ -366,8 +448,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return {
       ...prev,
       ...remoteData,
-      users: remoteUsers,
-      members: sanitizedMembers,
+      users: reconciled.users,
+      members: reconciled.members,
       fees: Array.isArray(remoteData.fees) ? remoteData.fees : [],
       accounts: Array.isArray(remoteData.accounts) && remoteData.accounts.length > 0 ? remoteData.accounts : prev.accounts,
       receipts: Array.isArray(remoteData.receipts) ? remoteData.receipts : [],
@@ -386,6 +468,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       chaplaincyRequests: Array.isArray(remoteData.chaplaincyRequests) ? remoteData.chaplaincyRequests : [],
       suggestions: Array.isArray(remoteData.suggestions) ? remoteData.suggestions : [],
       messages: Array.isArray(remoteData.messages) ? remoteData.messages : [],
+      associateDirectives: Array.isArray(remoteData.associateDirectives) ? remoteData.associateDirectives : [],
+      teamEvaluations: Array.isArray(remoteData.teamEvaluations) ? remoteData.teamEvaluations : [],
+      quotaWaivers: Array.isArray(remoteData.quotaWaivers) ? remoteData.quotaWaivers : [],
       settings: remoteSettings,
       currentUser: nextCurrentUser,
     };
@@ -399,10 +484,15 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       delete (cloudState as any).deletedUserEmails;
       delete (cloudState as any).deletedUserIds;
 
-      // Garantir integridade de emergência e dados médicos antes de enviar para a nuvem
+      // Garantir integridade e sincronização contínua contas <-> membros antes de enviar para a nuvem
       if (Array.isArray(cloudState.members) && cloudState.members.length > 0) {
         const integrityCheck = verifyAndRepairMembersIntegrity(cloudState.members);
         cloudState.members = integrityCheck.sanitizedMembers;
+      }
+      if (Array.isArray(cloudState.users) && Array.isArray(cloudState.members)) {
+        const syncedCloud = reconcileUsersAndMembers(cloudState.users, cloudState.members);
+        cloudState.users = syncedCloud.users;
+        cloudState.members = syncedCloud.members;
       }
 
       const syncTimestamp =
@@ -481,6 +571,27 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true, result: checkResult };
   };
 
+  const reportFirestorePermissionError = (error: unknown, operationType: 'get' | 'write', path: string) => {
+    const errInfo = {
+      error: error instanceof Error ? error.message : String(error),
+      authInfo: {
+        userId: auth?.currentUser?.uid,
+        email: auth?.currentUser?.email,
+        emailVerified: auth?.currentUser?.emailVerified,
+        isAnonymous: auth?.currentUser?.isAnonymous,
+        tenantId: auth?.currentUser?.tenantId,
+        providerInfo:
+          auth?.currentUser?.providerData?.map((provider: any) => ({
+            providerId: provider.providerId,
+            email: provider.email,
+          })) || [],
+      },
+      operationType,
+      path,
+    };
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+  };
+
   // 1. TESTE DE CONEXÃO E CARREGAMENTO INICIAL DIRETO DO SERVIDOR DA NUVEM (ZERO CACHE LOCAL)
   useEffect(() => {
     let active = true;
@@ -493,22 +604,41 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }, 4500);
 
-    // Teste rápido de conectividade conforme especificação Firebase
-    getDocFromServer(doc(db, 'test', 'connection')).catch((error: any) => {
-      if (error instanceof Error && error.message.includes('the client is offline')) {
-        console.warn('Aviso de conectividade Firebase: o cliente parece estar offline.');
-      }
-    });
-
     const loadInitialFromCloud = async () => {
+      if (!db || !(db as any).app) {
+        hasLoadedFromCloudRef.current = true;
+        setIsCloudLoading(false);
+        clearTimeout(safetyTimer);
+        return;
+      }
+
+      const mainStateRef = doc(db, 'club_data', 'main_state');
       let snap: any = null;
+
       try {
-        snap = await getDocFromServer(doc(db, 'club_data', 'main_state'));
-      } catch {
-        try {
-          snap = await getDoc(doc(db, 'club_data', 'main_state'));
-        } catch {
-          snap = null;
+        snap = await getDocFromServer(mainStateRef);
+      } catch (err: any) {
+        if (err?.code === 'permission-denied') {
+          reportFirestorePermissionError(err, 'get', 'club_data/main_state');
+        } else if (err?.code === 'unavailable' || err?.message?.includes('the client is offline')) {
+          // Breve nova tentativa antes de recuar para leitura padrão/cache
+          await new Promise((r) => setTimeout(r, 1200));
+          if (!active) return;
+          try {
+            snap = await getDocFromServer(mainStateRef);
+          } catch {
+            try {
+              snap = await getDoc(mainStateRef);
+            } catch {
+              snap = null;
+            }
+          }
+        } else {
+          try {
+            snap = await getDoc(mainStateRef);
+          } catch {
+            snap = null;
+          }
         }
       }
 
@@ -554,6 +684,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // 2. SINCRONIZAÇÃO 100% EM TEMPO REAL MULTI-DISPOSITIVO (ONSNAPSHOT)
   useEffect(() => {
+    if (!db || !(db as any).app) return;
+
     const unsub = onSnapshot(
       doc(db, 'club_data', 'main_state'),
       (docSnap) => {
@@ -589,6 +721,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
           error?.message?.includes('Quota limit exceeded')
         ) {
           setIsQuotaExceeded(true);
+        } else if (error?.code === 'permission-denied') {
+          reportFirestorePermissionError(error, 'get', 'club_data/main_state');
         }
         console.warn('Aviso na escuta em tempo real do Firestore:', error.message);
       }
@@ -669,6 +803,20 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateRolePermission = (role: RoleType, module: ModuleName, action: PermissionAction, add: boolean) => {
+    if (module === 'associate_director' && !canGrantAssociateDirectorModule(currentUser.role)) {
+      return {
+        success: false,
+        error: 'Apenas o Administrador Técnico pode conceder ou revogar acesso ao módulo exclusivo do Diretor-associado na grelha de permissões.',
+      };
+    }
+
+    if (module === 'treasury' && action === 'WAIVE_QUOTA_DEBT' && !canGrantWaiveQuotaDebt(currentUser.role)) {
+      return {
+        success: false,
+        error: 'Apenas o Administrador Técnico pode conceder ou revogar a permissão de zerar dívidas de quotas na grelha de permissões.',
+      };
+    }
+
     if (!can('audit', 'ADMIN') && !can('settings', 'EDIT') && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'diretor') {
       return { success: false, error: 'Apenas a Direção ou Administrador pode alterar a matriz de permissões.' };
     }
@@ -850,10 +998,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     const { sanitized: newMember } = sanitizeMemberIntegrity(rawNewMember);
+    const syncedUsers = syncMemberChangesToUsers(newMember, state.users);
 
     const newState = {
       ...state,
       members: [newMember, ...state.members],
+      users: syncedUsers,
+      updatedAt: now,
     };
     setState(newState);
     saveStateToStorage(newState);
@@ -952,41 +1103,49 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const now = getNowISOString();
     let updatedName = '';
     const targetMember = state.members.find((m) => m.id === id);
+    let savedUpdatedMember: Member | undefined;
 
     const updated = state.members.map((m) => {
       if (m.id === id) {
-        updatedName = m.fullName;
+        updatedName = updates.fullName !== undefined ? updates.fullName : m.fullName;
         const merged = { ...m, ...updates, updatedAt: now };
         const { sanitized } = sanitizeMemberIntegrity(merged);
+        savedUpdatedMember = sanitized;
         return sanitized;
       }
       return m;
     });
 
-    // Atualização automática da conta de login vinculada se existir
-    let updatedUsers = state.users;
-    if (targetMember) {
-      const newName = updates.fullName !== undefined ? updates.fullName : targetMember.fullName;
-      const newEmail = updates.email !== undefined ? updates.email : targetMember.email;
+    // Sincronização contínua e automática para todas as contas de login vinculadas (nome, email, Nº de Membro, telefone)
+    const updatedUsers = savedUpdatedMember
+      ? syncMemberChangesToUsers(savedUpdatedMember, state.users, targetMember)
+      : state.users;
 
-      updatedUsers = state.users.map((u) => {
-        if (u.linkedMemberId === id || (targetMember.email && u.email && u.email.toLowerCase() === targetMember.email.toLowerCase())) {
-          return {
-            ...u,
-            name: newName,
-            email: newEmail || u.email,
-          };
-        }
-        return u;
-      });
+    const syncedCurrentUser =
+      state.currentUser.id !== 'INST-001'
+        ? updatedUsers.find(
+            (u) =>
+              u.id === state.currentUser.id ||
+              (savedUpdatedMember && u.linkedMemberId === savedUpdatedMember.id)
+          ) || state.currentUser
+        : state.currentUser;
+
+    if (syncedCurrentUser !== state.currentUser) {
+      syncStoredSessionUser(syncedCurrentUser);
     }
 
-    const newState = { ...state, members: updated, users: updatedUsers };
+    const newState = {
+      ...state,
+      members: updated,
+      users: updatedUsers,
+      currentUser: syncedCurrentUser,
+      updatedAt: now,
+    };
     setState(newState);
     saveStateToStorage(newState);
     pushToFirestore(newState);
 
-    logAction('members', 'EDICAO_MEMBRO', `Atualização cadastral do membro e sincronização de conta de login`, id, updatedName);
+    logAction('members', 'EDICAO_MEMBRO', `Atualização cadastral do membro e sincronização automática com conta de login`, id, updatedName);
     return { success: true };
   };
 
@@ -1339,9 +1498,20 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         return m;
       });
-    } else if (req.operationType === 'eliminacao') {
+    }
+    let updatedUsers = state.users;
+    if (req.operationType === 'eliminacao') {
       // Remoção estrita do membro PRESERVANDO integralmente recibos, movimentos financeiros e documentos (Req 2.4)
       updatedMembers = state.members.filter(m => m.id !== req.targetId);
+      updatedUsers = state.users.map(u => {
+        if (u.linkedMemberId === req.targetId) {
+          const unlinked = { ...u };
+          delete unlinked.linkedMemberId;
+          delete unlinked.manualNumber;
+          return unlinked;
+        }
+        return u;
+      });
     }
 
     const updatedRequests = (state.deletionRequests || []).map(r => {
@@ -1360,7 +1530,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const newState = {
       ...state,
       members: updatedMembers,
+      users: updatedUsers,
       deletionRequests: updatedRequests,
+      updatedAt: now,
     };
 
     setState(newState);
@@ -1467,6 +1639,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       referenceOrProof: data.referenceOrProof,
       treasurerUserId: currentUser.id,
       treasurerName: currentUser.name,
+      treasurerRole: currentUser.role,
       paidAt: getNowISOString(),
       status: 'confirmado',
       notes: data.notes,
@@ -1545,6 +1718,535 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     logAction('treasury', 'ANULACAO_RECIBO', `Recibo ${receipt.receiptNumber} anulado: ${reason}`, id, receipt.receiptNumber, reason);
+    return { success: true };
+  };
+
+  const updateQuotaConfig = (configData: Partial<QuotaConfig> & { amountInCents: number }) => {
+    if (!can('treasury', 'CONFIGURE_QUOTAS') && currentUser.role !== 'admin_tecnico') {
+      return {
+        success: false,
+        error: 'Sem permissão na Grelha de Permissões para definir ou alterar o valor das quotas.',
+      };
+    }
+
+    const sanitizedAmount = Math.round(Number(configData.amountInCents));
+    if (Number.isNaN(sanitizedAmount) || sanitizedAmount < 0) {
+      return { success: false, error: 'Introduza um valor de quota válido em Kz.' };
+    }
+
+    const now = getNowISOString();
+    const baseConfig = resolveQuotaConfig(state.settings, state.fees);
+    const targetFeeId = configData.activeQuotaFeeId || baseConfig.activeQuotaFeeId || DEFAULT_QUOTA_FEE_ID;
+    const frequency = configData.frequency || baseConfig.frequency || 'domingo';
+
+    const nextConfig: QuotaConfig = {
+      ...baseConfig,
+      ...configData,
+      amountInCents: sanitizedAmount,
+      frequency,
+      activeQuotaFeeId: targetFeeId,
+      updatedAt: now,
+      updatedByUserId: currentUser.id,
+      updatedByName: currentUser.name,
+    };
+
+    const quotaFeeTitle =
+      frequency === 'mensal' ? 'Quota Regular (Mensal)' : 'Quota Regular (Cada Domingo)';
+    const quotaFeeCategory = frequency === 'mensal' ? ('quota_mensal' as const) : ('quota_diaria' as const);
+    const quotaFeePeriodicity = frequency === 'mensal' ? ('mensal' as const) : ('diaria' as const);
+
+    const existingFeeIndex = state.fees.findIndex((f) => f.id === targetFeeId);
+    let updatedFees: FeeDefinition[];
+    if (existingFeeIndex >= 0) {
+      updatedFees = state.fees.map((f, idx) =>
+        idx === existingFeeIndex
+          ? {
+              ...f,
+              title: f.id === DEFAULT_QUOTA_FEE_ID ? quotaFeeTitle : f.title,
+              category: quotaFeeCategory,
+              periodicity: quotaFeePeriodicity,
+              amountInCents: sanitizedAmount,
+              active: true,
+              year: state.settings.currentYear,
+            }
+          : f
+      );
+    } else {
+      updatedFees = [
+        {
+          id: targetFeeId,
+          title: quotaFeeTitle,
+          category: quotaFeeCategory,
+          periodicity: quotaFeePeriodicity,
+          amountInCents: sanitizedAmount,
+          targetCategory: 'todas',
+          active: true,
+          year: state.settings.currentYear,
+        },
+        ...state.fees,
+      ];
+    }
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      fees: updatedFees,
+      settings: {
+        ...state.settings,
+        quotaConfig: nextConfig,
+      },
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
+    logAction(
+      'treasury',
+      'ATUALIZACAO_VALOR_QUOTA',
+      `Valor da quota definido para ${formatKz(sanitizedAmount)} (${frequency === 'domingo' ? 'Cada Domingo' : 'Mensal'}) por ${currentUser.name}`,
+      targetFeeId,
+      quotaFeeTitle
+    );
+
+    return { success: true, config: nextConfig };
+  };
+
+  const regularizeMemberQuota = (data: {
+    memberId: string;
+    amountPaidInCents: number;
+    paymentMethod: PaymentReceipt['paymentMethod'];
+    periodLabel?: string;
+    accountId?: string;
+    referenceOrProof?: string;
+    notes?: string;
+  }) => {
+    if (!can('treasury', 'CREATE')) {
+      return { success: false, error: 'Apenas a Tesouraria ou perfis autorizados podem regularizar quotas.' };
+    }
+
+    const paidCents = Math.round(Number(data.amountPaidInCents));
+    if (Number.isNaN(paidCents) || paidCents <= 0) {
+      return { success: false, error: 'O montante a regularizar deve ser superior a zero.' };
+    }
+
+    const member = state.members.find(
+      (m) => m.id === data.memberId || m.manualNumber === data.memberId
+    );
+    if (!member) {
+      return { success: false, error: 'Membro não encontrado para regularização de quota.' };
+    }
+
+    const quotaConfig = resolveQuotaConfig(state.settings, state.fees);
+    const feeId = quotaConfig.activeQuotaFeeId || DEFAULT_QUOTA_FEE_ID;
+    let quotaFee = state.fees.find((f) => f.id === feeId) ||
+      state.fees.find((f) => f.category === 'quota_diaria') ||
+      state.fees.find((f) => f.category === 'quota_mensal');
+
+    const now = getNowISOString();
+    const createdFeeToAdd: FeeDefinition | null = quotaFee
+      ? null
+      : {
+          id: feeId,
+          title:
+            quotaConfig.frequency === 'mensal'
+              ? 'Quota Regular (Mensal)'
+              : 'Quota Regular (Cada Domingo)',
+          category: quotaConfig.frequency === 'mensal' ? 'quota_mensal' : 'quota_diaria',
+          periodicity: quotaConfig.frequency === 'mensal' ? 'mensal' : 'diaria',
+          amountInCents: quotaConfig.amountInCents,
+          targetCategory: 'todas',
+          active: true,
+          year: state.settings.currentYear,
+        };
+
+    if (!quotaFee && createdFeeToAdd) {
+      quotaFee = createdFeeToAdd;
+    }
+
+    const targetAccountId =
+      (data.accountId && state.accounts.some((a) => a.id === data.accountId))
+        ? data.accountId
+        : (data.paymentMethod === 'numerario'
+            ? state.accounts.find((a) => a.type === 'caixa')?.id ||
+              state.accounts.find((a) => a.active)?.id ||
+              state.accounts[0]?.id
+            : state.accounts.find((a) => a.type === 'banco')?.id ||
+              state.accounts.find((a) => a.active)?.id ||
+              state.accounts[0]?.id) || state.accounts[0]?.id;
+
+    const targetAccount = state.accounts.find((a) => a.id === targetAccountId) || state.accounts[0];
+    if (!targetAccount) {
+      return {
+        success: false,
+        error: 'Conta financeira institucional de destino não encontrada. Adicione uma conta em Contas e Balanço.',
+      };
+    }
+
+    const currentYear = state.settings.currentYear;
+    const existingRecNumbers = state.receipts.map((r) => r.receiptNumber);
+    const receiptNumber = generateNextDocumentNumber('REC', currentYear, existingRecNumbers);
+
+    const newReceipt: PaymentReceipt = {
+      id: receiptNumber,
+      receiptNumber,
+      memberId: member.id,
+      memberName: member.fullName,
+      feeDefinitionId: quotaFee!.id,
+      feeTitle: quotaFee!.title,
+      periodLabel:
+        data.periodLabel?.trim() ||
+        `Regularização de Quotas (${quotaConfig.frequency === 'domingo' ? 'Domingos' : 'Mensal'} ${currentYear})`,
+      amountPaidInCents: paidCents,
+      paymentMethod: data.paymentMethod,
+      referenceOrProof: data.referenceOrProof?.trim() || undefined,
+      treasurerUserId: currentUser.id,
+      treasurerName: currentUser.name,
+      treasurerRole: currentUser.role,
+      paidAt: now,
+      status: 'confirmado',
+      notes: data.notes?.trim() || `Regularização de quota registada por ${currentUser.name}.`,
+    };
+
+    setState((prev) => {
+      const updatedAccounts = prev.accounts.map((acc) =>
+        acc.id === targetAccount.id
+          ? { ...acc, currentBalanceInCents: acc.currentBalanceInCents + paidCents }
+          : acc
+      );
+      const nextFees = createdFeeToAdd ? [createdFeeToAdd, ...prev.fees] : prev.fees;
+
+      return {
+        ...prev,
+        updatedAt: now,
+        fees: nextFees,
+        receipts: [newReceipt, ...prev.receipts],
+        accounts: updatedAccounts,
+      };
+    });
+
+    const linkedUser = state.users.find(
+      (u) =>
+        u.linkedMemberId === member.id ||
+        (member.manualNumber && u.manualNumber === member.manualNumber)
+    );
+    if (linkedUser) {
+      addNotification({
+        title: 'Quota Regularizada com Sucesso',
+        message: `O recibo ${receiptNumber} no valor de ${formatKz(paidCents)} foi emitido e creditado na sua conta de quotas.`,
+        category: 'financial',
+        targetModule: 'member_portal',
+        recipientUserId: linkedUser.id,
+        targetMemberId: member.id,
+        isConfidential: true,
+        priority: 'normal',
+      });
+    }
+
+    logAction(
+      'treasury',
+      'REGULARIZACAO_QUOTA',
+      `Quota regularizada para ${member.fullName} (${formatKz(paidCents)}) · Recibo ${receiptNumber} (Conta: ${targetAccount.name})`,
+      newReceipt.id,
+      member.fullName
+    );
+
+    return { success: true, receiptNumber, receipt: newReceipt };
+  };
+
+  const waiveMemberQuotaDebt = (data: {
+    memberId: string;
+    reason: string;
+    customAmountInCents?: number;
+  }) => {
+    if (!can('treasury', 'WAIVE_QUOTA_DEBT') && currentUser.role !== 'admin_tecnico') {
+      return {
+        success: false,
+        error: 'Sem permissão na Grelha de Permissões para zerar dívidas de quotas.',
+      };
+    }
+
+    const cleanReason = (data.reason || '').trim();
+    if (cleanReason.length < 3) {
+      return {
+        success: false,
+        error: 'Indique um motivo ou justificação (mínimo 3 caracteres) para zerar a dívida.',
+      };
+    }
+
+    const member = state.members.find(
+      (m) => m.id === data.memberId || m.manualNumber === data.memberId
+    );
+    if (!member) {
+      return { success: false, error: 'Membro não encontrado para zerar dívida de quota.' };
+    }
+
+    const quotaConfig = resolveQuotaConfig(state.settings, state.fees);
+    const currentWaivers = state.quotaWaivers || [];
+    const summary = calculateMemberQuotaSummary(
+      member,
+      quotaConfig,
+      state.fees,
+      state.receipts,
+      getTodayISODate(),
+      currentWaivers
+    );
+
+    if (summary.balanceDueInCents <= 0) {
+      return {
+        success: false,
+        error: `${member.fullName} não possui saldo em dívida para zerar.`,
+      };
+    }
+
+    const targetAmountInCents =
+      typeof data.customAmountInCents === 'number' && !Number.isNaN(data.customAmountInCents)
+        ? Math.min(summary.balanceDueInCents, Math.max(0, Math.round(data.customAmountInCents)))
+        : summary.balanceDueInCents;
+
+    if (targetAmountInCents <= 0) {
+      return {
+        success: false,
+        error: 'O montante a abater/zerar deve ser superior a zero.',
+      };
+    }
+
+    const currentYear = state.settings.currentYear;
+    const cycleYear = Number((quotaConfig.cycleStartDate || '').slice(0, 4)) || currentYear;
+    const existingIds = currentWaivers.map((w) => w.id);
+    const waiverId = generateNextDocumentNumber('ZRD', currentYear, existingIds);
+    const now = getNowISOString();
+
+    const newWaiver: QuotaDebtWaiver = {
+      id: waiverId,
+      memberId: member.id,
+      memberName: member.fullName,
+      amountWaivedInCents: targetAmountInCents,
+      grossDueAtWaiverInCents: summary.grossDueInCents,
+      paidAtWaiverInCents: summary.totalPaidInCents,
+      previousBalanceInCents: summary.balanceDueInCents,
+      cycleYear,
+      reason: cleanReason,
+      waivedByUserId: currentUser.id,
+      waivedByName: currentUser.name,
+      waivedByRole: currentUser.role,
+      waivedAt: now,
+    };
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'treasury',
+      'ZERAR_DIVIDA_QUOTA',
+      `Dívida de quotas de ${member.fullName} zerada/abatida em ${formatKz(targetAmountInCents)} (Saldo anterior: ${formatKz(summary.balanceDueInCents)}). Motivo: ${cleanReason}`,
+      waiverId,
+      member.fullName,
+      cleanReason
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      quotaWaivers: [newWaiver, ...currentWaivers],
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
+    const linkedUser = state.users.find(
+      (u) =>
+        u.linkedMemberId === member.id ||
+        (member.manualNumber && u.manualNumber === member.manualNumber)
+    );
+    if (linkedUser) {
+      addNotification({
+        title: 'Dívida de Quotas Zerada',
+        message: `A sua dívida de quotas no valor de ${formatKz(targetAmountInCents)} foi zerada/regularizada por ${currentUser.name} (${cleanReason}).`,
+        category: 'financial',
+        targetModule: 'member_portal',
+        recipientUserId: linkedUser.id,
+        targetMemberId: member.id,
+        isConfidential: true,
+        priority: 'normal',
+      });
+    }
+
+    return { success: true, waiver: newWaiver };
+  };
+
+  const waiveAllPendingQuotaDebts = (data: {
+    memberIds: string[];
+    reason: string;
+  }) => {
+    if (!can('treasury', 'WAIVE_QUOTA_DEBT') && currentUser.role !== 'admin_tecnico') {
+      return {
+        success: false,
+        count: 0,
+        totalWaivedInCents: 0,
+        error: 'Sem permissão na Grelha de Permissões para zerar dívidas de quotas.',
+      };
+    }
+
+    const cleanReason = (data.reason || '').trim();
+    if (cleanReason.length < 3) {
+      return {
+        success: false,
+        count: 0,
+        totalWaivedInCents: 0,
+        error: 'Indique um motivo ou justificação (mínimo 3 caracteres) para zerar as dívidas.',
+      };
+    }
+
+    const quotaConfig = resolveQuotaConfig(state.settings, state.fees);
+    const currentWaivers = [...(state.quotaWaivers || [])];
+    const currentYear = state.settings.currentYear;
+    const cycleYear = Number((quotaConfig.cycleStartDate || '').slice(0, 4)) || currentYear;
+    const today = getTodayISODate();
+    const now = getNowISOString();
+
+    const targetIdsSet = new Set(data.memberIds);
+    const newWaivers: QuotaDebtWaiver[] = [];
+    const trackingIds = currentWaivers.map((w) => w.id);
+    let totalWaivedInCents = 0;
+
+    for (const member of state.members) {
+      if (!targetIdsSet.has(member.id)) continue;
+      const summary = calculateMemberQuotaSummary(
+        member,
+        quotaConfig,
+        state.fees,
+        state.receipts,
+        today,
+        currentWaivers
+      );
+      if (summary.balanceDueInCents <= 0) continue;
+
+      const waiverId = generateNextDocumentNumber('ZRD', currentYear, trackingIds);
+      trackingIds.push(waiverId);
+
+      const waiver: QuotaDebtWaiver = {
+        id: waiverId,
+        memberId: member.id,
+        memberName: member.fullName,
+        amountWaivedInCents: summary.balanceDueInCents,
+        grossDueAtWaiverInCents: summary.grossDueInCents,
+        paidAtWaiverInCents: summary.totalPaidInCents,
+        previousBalanceInCents: summary.balanceDueInCents,
+        cycleYear,
+        reason: cleanReason,
+        waivedByUserId: currentUser.id,
+        waivedByName: currentUser.name,
+        waivedByRole: currentUser.role,
+        waivedAt: now,
+      };
+      newWaivers.push(waiver);
+      totalWaivedInCents += summary.balanceDueInCents;
+    }
+
+    if (newWaivers.length === 0) {
+      return {
+        success: false,
+        count: 0,
+        totalWaivedInCents: 0,
+        error: 'Nenhum membro selecionado possui saldo em dívida para zerar.',
+      };
+    }
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'treasury',
+      'ZERAR_DIVIDA_QUOTA_EM_LOTE',
+      `Dívida de quotas zerada em lote para ${newWaivers.length} membro(s), totalizando ${formatKz(totalWaivedInCents)}. Motivo: ${cleanReason}`,
+      newWaivers[0].id,
+      `${newWaivers.length} membros`,
+      cleanReason
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      quotaWaivers: [...newWaivers, ...currentWaivers],
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
+    return {
+      success: true,
+      count: newWaivers.length,
+      totalWaivedInCents,
+    };
+  };
+
+  const reverseQuotaDebtWaiver = (waiverId: string, reason: string) => {
+    if (!can('treasury', 'WAIVE_QUOTA_DEBT') && currentUser.role !== 'admin_tecnico') {
+      return {
+        success: false,
+        error: 'Sem permissão para reverter anulações/isenções de dívida de quotas.',
+      };
+    }
+
+    const cleanReason = (reason || '').trim();
+    if (cleanReason.length < 3) {
+      return {
+        success: false,
+        error: 'Indique o motivo da reversão (mínimo 3 caracteres).',
+      };
+    }
+
+    const currentWaivers = state.quotaWaivers || [];
+    const target = currentWaivers.find((w) => w.id === waiverId);
+    if (!target) {
+      return { success: false, error: 'Registo de dívida zerada não encontrado.' };
+    }
+    if (target.isReversed) {
+      return { success: false, error: 'Este registo já foi revertido anteriormente.' };
+    }
+
+    const now = getNowISOString();
+    const updatedWaivers = currentWaivers.map((w) =>
+      w.id === waiverId
+        ? {
+            ...w,
+            isReversed: true,
+            reversalReason: cleanReason,
+            reversedAt: now,
+            reversedByUserId: currentUser.id,
+            reversedByName: currentUser.name,
+          }
+        : w
+    );
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'treasury',
+      'REVERSAO_DIVIDA_ZERADA',
+      `Revertida a isenção/zero de dívida ${waiverId} de ${target.memberName} (${formatKz(target.amountWaivedInCents)}). Motivo: ${cleanReason}`,
+      waiverId,
+      target.memberName,
+      cleanReason
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      quotaWaivers: updatedWaivers,
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
     return { success: true };
   };
 
@@ -1949,7 +2651,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateActivityStage = (id: string, stage: ClubActivity['stage']) => {
-    if (!can('activities', 'EDIT')) {
+    if (!can('activities', 'EDIT') && !can('associate_director', 'EDIT')) {
       return { success: false, error: 'Sem autorização para alterar a fase da atividade.' };
     }
 
@@ -2126,6 +2828,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       year: currentYear,
       issuedByUserId: currentUser.id,
       issuedByName: currentUser.name,
+      issuedByRole: currentUser.role,
       issuedAt: now,
       contentData: {
         chairPerson: minuteData.chairPerson,
@@ -2623,7 +3326,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       currentUser.role !== 'diretor' &&
       currentUser.role !== 'diretor_associado' &&
       currentUser.role !== 'secretario' &&
-      currentUser.role !== 'admin_tecnico'
+      currentUser.role !== 'admin_tecnico' &&
+      !can('associate_director', 'EDIT')
     ) {
       return { success: false, error: 'Apenas a Direção e o Secretário podem adicionar novas equipas.' };
     }
@@ -2650,7 +3354,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       currentUser.role !== 'diretor' &&
       currentUser.role !== 'diretor_associado' &&
       currentUser.role !== 'secretario' &&
-      currentUser.role !== 'admin_tecnico'
+      currentUser.role !== 'admin_tecnico' &&
+      !can('associate_director', 'EDIT')
     ) {
       return { success: false, error: 'Apenas a Direção e o Secretário podem editar equipas.' };
     }
@@ -2680,7 +3385,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       currentUser.role !== 'diretor' &&
       currentUser.role !== 'diretor_associado' &&
       currentUser.role !== 'secretario' &&
-      currentUser.role !== 'admin_tecnico'
+      currentUser.role !== 'admin_tecnico' &&
+      !can('associate_director', 'EDIT')
     ) {
       return { success: false, error: 'Apenas a Direção e o Secretário podem remover equipas.' };
     }
@@ -2709,7 +3415,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       currentUser.role === 'diretor' ||
       currentUser.role === 'diretor_associado' ||
       currentUser.role === 'admin_tecnico' ||
-      can('members', 'EDIT');
+      can('members', 'EDIT') ||
+      can('associate_director', 'EDIT');
     if (!isAllowed) {
       return { success: false, error: 'Apenas a Direção, Secretaria e Administração podem alocar membros em equipas.' };
     }
@@ -2735,7 +3442,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       currentUser.role === 'secretario' ||
       currentUser.role === 'diretor' ||
       currentUser.role === 'diretor_associado' ||
-      can('members', 'EDIT');
+      can('members', 'EDIT') ||
+      can('associate_director', 'EDIT');
     if (!isAllowed) {
       return { success: false, error: 'Apenas a Direção, Administrador e Secretário podem editar as categorias dos membros.' };
     }
@@ -2843,6 +3551,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       issuedToMemberId: finalIssuedToMemberId,
       issuedByUserId: currentUser.id,
       issuedByName: currentUser.name,
+      issuedByRole: currentUser.role,
       issuedAt: getNowISOString(),
       contentData: content,
       isCancelled: false,
@@ -3376,6 +4085,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         referenceOrProof: proof.referenceCode,
         treasurerUserId: currentUser.id,
         treasurerName: currentUser.name,
+        treasurerRole: currentUser.role,
         paidAt: now,
         status: 'confirmado',
         notes: `Comprovativo validado por ${currentUser.name} (Conta: ${proof.accountName || 'Geral'})`,
@@ -3463,20 +4173,35 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Já existe uma conta de acesso com este endereço de e-mail.' };
     }
 
-    const isInstitutional = user.email.toLowerCase() === 'institucional@clubedalvorada.ao' || 
-                            user.role === 'admin_tecnico' || 
-                            user.role === 'capelao' ||
-                            user.name.toLowerCase().includes('institucional');
+    const isInstitutional = isInstitutionalAccountRecord({
+      id: 'NEW',
+      email: user.email,
+      name: user.name,
+      role: user.role,
+    });
     const linkedMemberId = isInstitutional ? undefined : user.linkedMemberId;
 
     const nowISO = getNowISOString();
     const newId = `USR-${Date.now().toString().slice(-4)}`;
-    const newUser: UserAccount = {
+    const draftUser: UserAccount = {
       ...user,
       id: newId,
       linkedMemberId,
       createdAt: nowISO,
     };
+
+    const { syncedUser: newUser, updatedMembers } = syncUserWithLinkedMember(
+      draftUser,
+      state.members,
+      nowISO,
+      {
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        manualNumber: user.manualNumber,
+        linkedMemberChanged: Boolean(linkedMemberId && (!user.name || !user.email)),
+      }
+    );
 
     const updatedUsers = [...state.users, newUser];
     const auditEntry = createAuditLog(
@@ -3492,6 +4217,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const newState: ClubDatabaseState = {
       ...state,
       users: updatedUsers,
+      members: updatedMembers,
       auditLogs: [auditEntry, ...state.auditLogs],
       updatedAt: nowISO,
     };
@@ -3510,12 +4236,12 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!targetUser) return { success: false, error: 'Utilizador não encontrado.' };
 
     const effectiveRole = data.role || targetUser.role;
-    const isInstitutional = targetUser.id === 'INST-001' || 
-                            targetUser.id === 'USR-ADMIN' || 
-                            targetUser.email.toLowerCase() === 'institucional@clubedalvorada.ao' || 
-                            effectiveRole === 'admin_tecnico' ||
-                            effectiveRole === 'capelao' ||
-                            targetUser.name.toLowerCase().includes('institucional');
+    const isInstitutional = isInstitutionalAccountRecord({
+      id: targetUser.id,
+      email: data.email ?? targetUser.email,
+      name: data.name ?? targetUser.name,
+      role: effectiveRole,
+    });
 
     if (isInstitutional && data.linkedMemberId && data.linkedMemberId.trim() !== '') {
       return { success: false, error: 'A Conta Institucional é estritamente independente e não pode ser vinculada a nenhum membro.' };
@@ -3525,45 +4251,60 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ? undefined 
       : (data.linkedMemberId === '' ? undefined : (data.linkedMemberId !== undefined ? data.linkedMemberId : targetUser.linkedMemberId));
 
-    const nowISO = getNowISOString();
-    const isChangingPassword = newPassword !== undefined && newPassword.trim() !== '';
-
-    const updatedUsers = state.users.map(u => {
-      if (u.id === userId) {
-        const userCopy: UserAccount = {
-          ...u,
-          ...data,
-          linkedMemberId: effectiveLinkedMemberId,
-          ...(isChangingPassword
-            ? {
-                password: newPassword!.trim(),
-                passwordResetRequested: false,
-                lastAdminPasswordResetAt: nowISO,
-              }
-            : {}),
-        };
-        if (isChangingPassword) {
-          delete userCopy.lastPasswordChangedAt;
-        }
-        delete (userCopy as any).manualNumber;
-        return userCopy;
+    if (data.email && data.email.trim()) {
+      const cleanEmail = data.email.trim().toLowerCase();
+      const emailTaken = state.users.some(u => u.id !== userId && u.email.trim().toLowerCase() === cleanEmail);
+      if (emailTaken) {
+        return { success: false, error: 'Já existe outra conta de acesso com este endereço de e-mail.' };
       }
-      return u;
-    });
-
-    let updatedMembers = state.members;
-    if (data.manualNumber !== undefined && effectiveLinkedMemberId) {
-      updatedMembers = state.members.map(m =>
-        m.id === effectiveLinkedMemberId ? { ...m, manualNumber: data.manualNumber!.trim(), updatedAt: nowISO } : m
-      );
     }
 
-    const updatedTargetUser = updatedUsers.find(u => u.id === userId);
-    const updatedCurrentUser =
-      state.currentUser.id === userId && updatedTargetUser ? updatedTargetUser : state.currentUser;
+    if (effectiveLinkedMemberId && data.manualNumber !== undefined && data.manualNumber.trim() !== '') {
+      if (!isMemberNumberUnique(data.manualNumber.trim(), state.members, effectiveLinkedMemberId)) {
+        return { success: false, error: `O Nº de Membro "${data.manualNumber.trim()}" já está atribuído a outro membro.` };
+      }
+    }
 
-    if (state.currentUser.id === userId && updatedTargetUser) {
-      syncStoredSessionUser(updatedTargetUser);
+    const nowISO = getNowISOString();
+    const isChangingPassword = newPassword !== undefined && newPassword.trim() !== '';
+    const linkedMemberChanged = effectiveLinkedMemberId !== targetUser.linkedMemberId;
+
+    const draftUser: UserAccount = {
+      ...targetUser,
+      ...data,
+      linkedMemberId: effectiveLinkedMemberId,
+      ...(isChangingPassword
+        ? {
+            password: newPassword!.trim(),
+            passwordResetRequested: false,
+            lastAdminPasswordResetAt: nowISO,
+          }
+        : {}),
+    };
+    if (isChangingPassword) {
+      delete draftUser.lastPasswordChangedAt;
+    }
+
+    const { syncedUser, updatedMembers } = syncUserWithLinkedMember(
+      draftUser,
+      state.members,
+      nowISO,
+      {
+        name: data.name,
+        email: data.email,
+        phone: data.phone,
+        manualNumber: data.manualNumber,
+        linkedMemberChanged,
+      }
+    );
+
+    const updatedUsers = state.users.map(u => (u.id === userId ? syncedUser : u));
+
+    const updatedCurrentUser =
+      state.currentUser.id === userId ? syncedUser : state.currentUser;
+
+    if (state.currentUser.id === userId) {
+      syncStoredSessionUser(syncedUser);
     }
 
     const newState: ClubDatabaseState = {
@@ -3574,16 +4315,17 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updatedAt: nowISO,
     };
     setState(newState);
+    saveStateToStorage(newState);
     pushToFirestore(newState);
 
     logAction(
       'audit',
       isChangingPassword ? 'REDEFINICAO_SENHA' : 'ATUALIZACAO_CONTA_LOGIN',
       isChangingPassword
-        ? `Palavra-passe atualizada pelo Administrador para ${targetUser.name}; redefinição direta no Portal do Membro desbloqueada para o utilizador`
-        : `Dados de login atualizados para ${targetUser.name}`,
+        ? `Palavra-passe atualizada pelo Administrador para ${syncedUser.name}; redefinição direta no Portal do Membro desbloqueada para o utilizador`
+        : `Dados de login atualizados e sincronizados automaticamente para ${syncedUser.name}`,
       userId,
-      targetUser.email
+      syncedUser.email
     );
     return { success: true };
   };
@@ -3783,14 +4525,16 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const requestPasswordReset = (identifier: string) => {
     const cleanId = identifier.trim();
+    const cleanLower = cleanId.toLowerCase();
     let user = state.users.find(u => 
-      u.email.toLowerCase() === cleanId.toLowerCase() || 
-      u.id.toLowerCase() === cleanId.toLowerCase() ||
-      u.linkedMemberId === cleanId
+      u.email.toLowerCase() === cleanLower || 
+      u.id.toLowerCase() === cleanLower ||
+      u.linkedMemberId === cleanId ||
+      (u.manualNumber && u.manualNumber.toLowerCase() === cleanLower)
     );
     
     if (!user) {
-      const member = state.members.find(m => m.id === cleanId || m.manualNumber === cleanId || m.email?.toLowerCase() === cleanId.toLowerCase());
+      const member = state.members.find(m => m.id === cleanId || m.manualNumber?.toLowerCase() === cleanLower || m.email?.toLowerCase() === cleanLower);
       if (member) {
         user = state.users.find(u => u.linkedMemberId === member.id);
       }
@@ -3955,13 +4699,36 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateFeeDefinition = (id: string, data: Partial<FeeDefinition>) => {
-    if (!can('treasury', 'CREATE_RUBRIC') && !can('treasury', 'EDIT')) {
+    if (!can('treasury', 'CREATE_RUBRIC') && !can('treasury', 'EDIT') && !can('treasury', 'CONFIGURE_QUOTAS')) {
       return { success: false, error: 'Não possui permissão para atualizar rubricas financeiras.' };
     }
-    setState((prev) => ({
-      ...prev,
-      fees: prev.fees.map((f) => f.id === id ? { ...f, ...data } : f),
-    }));
+    const now = getNowISOString();
+    setState((prev) => {
+      const activeQuotaId = resolveQuotaConfig(prev.settings, prev.fees).activeQuotaFeeId;
+      const shouldSyncQuotaAmount =
+        id === activeQuotaId && typeof data.amountInCents === 'number' && data.amountInCents >= 0;
+
+      const updatedFees = prev.fees.map((f) => (f.id === id ? { ...f, ...data } : f));
+      const nextSettings = shouldSyncQuotaAmount
+        ? {
+            ...prev.settings,
+            quotaConfig: {
+              ...resolveQuotaConfig(prev.settings, updatedFees),
+              amountInCents: Math.round(data.amountInCents!),
+              updatedAt: now,
+              updatedByUserId: currentUser.id,
+              updatedByName: currentUser.name,
+            },
+          }
+        : prev.settings;
+
+      return {
+        ...prev,
+        updatedAt: now,
+        fees: updatedFees,
+        settings: nextSettings,
+      };
+    });
     logAction('treasury', 'ATUALIZACAO_RUBRICA', `Rubrica atualizada: ${id}`, id, data.title || '');
     return { success: true };
   };
@@ -4003,6 +4770,252 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
 
+  // --- GABINETE EXCLUSIVO DO DIRETOR-ASSOCIADO: DIRETIVAS & AVALIAÇÕES DE EQUIPAS ---
+  const createAssociateDirective = (data: {
+    title: string;
+    description: string;
+    targetUnitName: string;
+    assignedLeaderName?: string;
+    priority: AssociateDirectivePriority;
+    dueDate: string;
+    checklistNotes?: string;
+  }) => {
+    if (!can('associate_director', 'CREATE')) {
+      return { success: false, error: 'Sem permissão na grelha para emitir diretivas operacionais neste módulo.' };
+    }
+    if (!data.title.trim() || !data.description.trim()) {
+      return { success: false, error: 'Preencha o título e a descrição da diretiva operacional.' };
+    }
+
+    const now = getNowISOString();
+    const newDirective: AssociateDirective = {
+      id: `DIR-${Date.now()}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`,
+      title: data.title.trim(),
+      description: data.description.trim(),
+      targetUnitName: data.targetUnitName.trim() || 'Todas',
+      assignedLeaderName: data.assignedLeaderName?.trim() || undefined,
+      priority: data.priority,
+      dueDate: data.dueDate,
+      status: 'pendente',
+      checklistNotes: data.checklistNotes?.trim() || undefined,
+      createdByUserId: currentUser.id,
+      createdByName: currentUser.name,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const nextDirectives = [newDirective, ...(state.associateDirectives || [])];
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'associate_director',
+      'EMISSAO_DIRETIVA_OPERACIONAL',
+      `Diretiva emitida para ${newDirective.targetUnitName}: ${newDirective.title} (Prazo: ${formatDateAO(newDirective.dueDate)})`,
+      newDirective.id,
+      newDirective.title
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      associateDirectives: nextDirectives,
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
+    return { success: true, directive: newDirective };
+  };
+
+  const updateAssociateDirectiveStatus = (
+    id: string,
+    status: AssociateDirectiveStatus,
+    checklistNotes?: string
+  ) => {
+    const needsApprove = status === 'validado';
+    if (needsApprove ? !can('associate_director', 'APPROVE') && !can('associate_director', 'EDIT') : !can('associate_director', 'EDIT')) {
+      return { success: false, error: 'Sem permissão na grelha para atualizar ou validar esta diretiva.' };
+    }
+
+    const existing = (state.associateDirectives || []).find((d) => d.id === id);
+    if (!existing) {
+      return { success: false, error: 'Diretiva operacional não encontrada.' };
+    }
+
+    const now = getNowISOString();
+    const updatedList = (state.associateDirectives || []).map((d) => {
+      if (d.id !== id) return d;
+      return {
+        ...d,
+        status,
+        checklistNotes: checklistNotes !== undefined ? checklistNotes : d.checklistNotes,
+        updatedAt: now,
+        ...(status === 'validado'
+          ? { validatedByName: currentUser.name, validatedAt: now }
+          : {}),
+      };
+    });
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'associate_director',
+      'ATUALIZACAO_DIRETIVA',
+      `Estado da diretiva "${existing.title}" atualizado para ${status}`,
+      id,
+      existing.title
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      associateDirectives: updatedList,
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
+    return { success: true };
+  };
+
+  const deleteAssociateDirective = (id: string) => {
+    if (!can('associate_director', 'EDIT')) {
+      return { success: false, error: 'Sem permissão na grelha para eliminar diretivas.' };
+    }
+    const existing = (state.associateDirectives || []).find((d) => d.id === id);
+    if (!existing) {
+      return { success: false, error: 'Diretiva não encontrada.' };
+    }
+
+    const now = getNowISOString();
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'associate_director',
+      'REMOCAO_DIRETIVA',
+      `Diretiva operacional removida: ${existing.title}`,
+      id,
+      existing.title
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      associateDirectives: (state.associateDirectives || []).filter((d) => d.id !== id),
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
+    return { success: true };
+  };
+
+  const saveTeamEvaluation = (data: {
+    unitId: string;
+    unitName: string;
+    periodLabel: string;
+    disciplineScore: number;
+    teamworkScore: number;
+    punctualityScore: number;
+    trainingCommitmentScore: number;
+    observations?: string;
+  }) => {
+    if (!can('associate_director', 'CREATE') && !can('associate_director', 'EDIT')) {
+      return { success: false, error: 'Sem permissão na grelha para registar avaliações de equipas.' };
+    }
+    const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
+    const discipline = clamp(data.disciplineScore);
+    const teamwork = clamp(data.teamworkScore);
+    const punctuality = clamp(data.punctualityScore);
+    const training = clamp(data.trainingCommitmentScore);
+    const overallScore = Math.round((discipline + teamwork + punctuality + training) / 4);
+    const now = getNowISOString();
+
+    const newEval: TeamEvaluation = {
+      id: `EVAL-${Date.now()}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`,
+      unitId: data.unitId,
+      unitName: data.unitName,
+      periodLabel: data.periodLabel.trim() || `${state.settings.currentYear}`,
+      disciplineScore: discipline,
+      teamworkScore: teamwork,
+      punctualityScore: punctuality,
+      trainingCommitmentScore: training,
+      overallScore,
+      observations: data.observations?.trim() || undefined,
+      evaluatedByUserId: currentUser.id,
+      evaluatedByName: currentUser.name,
+      evaluatedAt: now,
+    };
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'associate_director',
+      'AVALIACAO_EQUIPA',
+      `Equipa ${data.unitName} avaliada (${newEval.periodLabel}): Pontuação Global ${overallScore}%`,
+      newEval.id,
+      data.unitName
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      teamEvaluations: [newEval, ...(state.teamEvaluations || [])],
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
+    return { success: true, evaluation: newEval };
+  };
+
+  const deleteTeamEvaluation = (id: string) => {
+    if (!can('associate_director', 'EDIT')) {
+      return { success: false, error: 'Sem permissão na grelha para remover avaliações.' };
+    }
+    const existing = (state.teamEvaluations || []).find((e) => e.id === id);
+    if (!existing) {
+      return { success: false, error: 'Avaliação não encontrada.' };
+    }
+
+    const now = getNowISOString();
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'associate_director',
+      'REMOCAO_AVALIACAO_EQUIPA',
+      `Avaliação removida da equipa ${existing.unitName} (${existing.periodLabel})`,
+      id,
+      existing.unitName
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      teamEvaluations: (state.teamEvaluations || []).filter((e) => e.id !== id),
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
+    return { success: true };
+  };
+
   return (
     <ClubContext.Provider
       value={{
@@ -4023,6 +5036,11 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         deleteMemberPhoto,
         createReceipt,
         cancelReceipt,
+        updateQuotaConfig,
+        regularizeMemberQuota,
+        waiveMemberQuotaDebt,
+        waiveAllPendingQuotaDebts,
+        reverseQuotaDebtWaiver,
         createExpense,
         approveExpense,
         rejectExpense,
@@ -4107,6 +5125,11 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         syncFromCloud,
         forceSyncCloud,
         runIntegrityVerification,
+        createAssociateDirective,
+        updateAssociateDirectiveStatus,
+        deleteAssociateDirective,
+        saveTeamEvaluation,
+        deleteTeamEvaluation,
         isQuotaExceeded,
         isCloudLoading,
         theme,

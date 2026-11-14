@@ -911,23 +911,29 @@ export const ActivitiesModule: React.FC = () => {
                     {currentActivity.minute && (
                       <button
                         onClick={() => {
-                          setPrintedDoc({
-                            id: currentActivity.minute!.id,
-                            documentNumber: currentActivity.minute!.minuteNumber,
-                            documentType: 'ata',
-                            title: `Ata da Reunião - ${currentActivity.title}`,
-                            year: state.settings.currentYear,
-                            issuedByUserId: currentUser.id,
-                            issuedByName: currentUser.name,
-                            issuedAt: currentActivity.minute!.date,
-                            contentData: {
-                              chairPerson: currentActivity.minute!.chairPerson,
-                              secretary: currentActivity.minute!.secretary,
-                              local: currentActivity.minute!.location,
-                              deliberacao: currentActivity.minute!.deliberations,
-                            },
-                            isCancelled: false,
-                          });
+                          const existingMinuteDoc = state.documents.find(
+                            (d) => d.documentNumber === currentActivity.minute!.minuteNumber
+                          );
+                          setPrintedDoc(
+                            existingMinuteDoc || {
+                              id: currentActivity.minute!.id,
+                              documentNumber: currentActivity.minute!.minuteNumber,
+                              documentType: 'ata',
+                              title: `Ata da Reunião - ${currentActivity.title}`,
+                              year: state.settings.currentYear,
+                              issuedByUserId: currentUser.id,
+                              issuedByName: currentUser.name,
+                              issuedByRole: currentUser.role,
+                              issuedAt: currentActivity.minute!.date,
+                              contentData: {
+                                chairPerson: currentActivity.minute!.chairPerson,
+                                secretary: currentActivity.minute!.secretary,
+                                local: currentActivity.minute!.location,
+                                deliberacao: currentActivity.minute!.deliberations,
+                              },
+                              isCancelled: false,
+                            }
+                          );
                         }}
                         className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded flex items-center gap-1.5 cursor-pointer"
                       >

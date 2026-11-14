@@ -34,6 +34,7 @@ import { AuditAndAdminModule } from './components/modules/AuditAndAdminModule';
 import { ChaplaincyModule } from './components/modules/ChaplaincyModule';
 import { SuggestionsModule } from './components/modules/SuggestionsModule';
 import { MessagingModule } from './components/modules/MessagingModule';
+import { AssociateDirectorModule } from './components/modules/AssociateDirectorModule';
 
 const LAST_ACTIVITY_STORAGE_KEY = 'pioapp_last_activity_at';
 const INACTIVITY_LOGOUT_MESSAGE =
@@ -235,8 +236,8 @@ const MainAppContent: React.FC = () => {
   const handleLogout = () => performLogout();
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 flex flex-col font-sans selection:bg-blue-900 selection:text-white w-full max-w-full overflow-x-hidden min-w-0">
-      {/* Topo Institucional */}
+    <div className="min-h-screen pt-16 bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 flex flex-col font-sans selection:bg-blue-900 selection:text-white w-full max-w-full overflow-x-clip min-w-0">
+      {/* Topo Institucional Fixo */}
       <Navbar
         onToggleSidebar={() => setIsMobileOpen(!isMobileOpen)}
         onOpenNotifications={() => setIsNotificationsOpen(true)}
@@ -253,7 +254,7 @@ const MainAppContent: React.FC = () => {
       )}
 
       {/* Layout com Sidebar e Área de Conteúdo */}
-      <div className="flex-1 flex w-full max-w-full min-w-0 overflow-x-hidden">
+      <div className="flex-1 flex w-full max-w-full min-w-0 overflow-x-clip">
         {/* Barra Lateral de Navegação */}
         <Sidebar
           activeModule={activeModule}
@@ -274,6 +275,9 @@ const MainAppContent: React.FC = () => {
           <div className="w-full max-w-7xl mx-auto min-w-0">
             {activeModule === 'dashboard' && (
               <DashboardModule onNavigate={(mod) => setActiveModule(mod)} />
+            )}
+            {activeModule === 'associate_director' && can('associate_director', 'VIEW') && (
+              <AssociateDirectorModule onNavigate={(mod) => setActiveModule(mod)} />
             )}
             {activeModule === 'members' && <MembersModule />}
             {activeModule === 'treasury' && <TreasuryModule />}

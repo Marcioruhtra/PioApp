@@ -107,8 +107,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, onOpenNotificat
   };
 
   return (
-    <header className="sticky top-0 z-30 bg-slate-900 border-b border-slate-800 text-white w-full max-w-full overflow-x-hidden">
-      <div className="px-3 sm:px-6 h-16 flex items-center justify-between gap-2 sm:gap-4 max-w-full">
+    <>
+      <header className="fixed top-0 left-0 right-0 z-40 h-16 bg-slate-900 border-b border-slate-800 text-white w-full max-w-full overflow-x-clip shadow-sm print:hidden">
+        <div className="px-3 sm:px-6 h-16 flex items-center justify-between gap-2 sm:gap-4 max-w-full">
         {/* Lado Esquerdo: Menu Mobile + Nome Institucional */}
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <button
@@ -207,13 +208,14 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, onOpenNotificat
             </div>
           </div>
         </div>
-      </div>
+        </div>
+      </header>
 
       {/* Modal do Cartão Digital do Próprio Utilizador */}
       <MemberDigitalCardModal
         member={isMyCardOpen ? myMemberRecord : null}
         onClose={() => setIsMyCardOpen(false)}
       />
-    </header>
+    </>
   );
 };

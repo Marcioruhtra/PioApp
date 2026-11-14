@@ -113,13 +113,13 @@ export const AuditAndAdminModule: React.FC = () => {
     setEditUserTargetUser(u);
     const linkedMember = state.members.find(m => m.id === u.linkedMemberId);
     setEditUserForm({
-      name: u.name,
-      email: u.email,
+      name: linkedMember?.fullName || u.name,
+      email: (linkedMember?.email && linkedMember.email.trim()) || u.email,
       role: u.role,
-      phone: u.phone || '',
+      phone: (linkedMember?.phone && linkedMember.phone.trim()) || u.phone || '',
       active: u.active,
       password: '',
-      manualNumber: linkedMember?.manualNumber || '',
+      manualNumber: linkedMember?.manualNumber || u.manualNumber || '',
       linkedMemberId: u.linkedMemberId || '',
     });
   };
@@ -169,19 +169,32 @@ export const AuditAndAdminModule: React.FC = () => {
       return;
     }
 
+    const linkedMem = newUserForm.linkedMemberId
+      ? state.members.find(m => m.id === newUserForm.linkedMemberId)
+      : undefined;
+
     const res = createUserAccount({
       name: newUserForm.name.trim(),
       email: newUserForm.email.trim(),
       role: newUserForm.role,
       linkedMemberId: newUserForm.linkedMemberId || undefined,
-      phone: newUserForm.phone.trim() || undefined,
+      manualNumber: linkedMem?.manualNumber || undefined,
+      phone: newUserForm.phone.trim() || linkedMem?.phone || undefined,
       active: true,
       password: newUserForm.password.trim() || undefined,
     });
 
     if (res.success) {
       setIsNewUserModalOpen(false);
-      showFeedback('success', `Conta de utilizador criada com sucesso para ${newUserForm.name}.`);
+      setNewUserForm({
+        name: '',
+        email: '',
+        role: 'membro',
+        linkedMemberId: '',
+        phone: '',
+        password: '',
+      });
+      showFeedback('success', `Conta de utilizador criada e sincronizada com sucesso para ${newUserForm.name}.`);
     } else {
       showFeedback('error', res.error || 'Erro ao criar conta de utilizador.');
     }
@@ -810,6 +823,7 @@ export const AuditAndAdminModule: React.FC = () => {
               }, {} as Record<string, typeof PERMISSION_CATALOG>)).map(([module, permissions]) => {
                 const moduleLabels: Record<string, string> = {
                   dashboard: 'Painel Geral',
+                  associate_director: 'Gabinete Diretor-associado (Exclusivo)',
                   members: 'Membros',
                   treasury: 'Tesouraria',
                   activities: 'Atividades e Reuniões',
@@ -824,28 +838,46 @@ export const AuditAndAdminModule: React.FC = () => {
                   suggestions: 'Sugestões à Direção',
                   messaging: 'Mensagens e Comunicados',
                 };
+                const isAssociateExclusive = module === 'associate_director';
+                const canToggleModulePerm = isAssociateExclusive
+                  ? currentUser.role === 'admin_tecnico'
+                  : can('audit', 'ADMIN') || can('settings', 'EDIT') || currentUser.role === 'admin_tecnico' || currentUser.role === 'diretor';
+
                 return (
-                  <div key={module} className="border border-slate-200 rounded-lg p-4 bg-slate-50/50">
-                    <h3 className="font-bold text-xs uppercase text-slate-900 mb-3 tracking-wide">{moduleLabels[module] || module}</h3>
+                  <div key={module} className={`border rounded-lg p-4 ${isAssociateExclusive ? 'border-blue-200 bg-blue-50/40' : 'border-slate-200 bg-slate-50/50'}`}>
+                    <h3 className="font-bold text-xs uppercase text-slate-900 mb-1 tracking-wide">{moduleLabels[module] || module}</h3>
+                    {isAssociateExclusive && (
+                      <p className="text-[11px] text-slate-600 mb-3">
+                        Módulo exclusivo do Diretor-associado. Outros cargos apenas o visualizam mediante concessão expressa do Administrador Técnico.
+                      </p>
+                    )}
+                    {!isAssociateExclusive && <div className="mb-2" />}
                     <div className="space-y-2">
                       {permissions.map(p => {
                         const activeMatrix = state.settings.permissionsMatrix || ROLE_PERMISSIONS_MATRIX;
                         const roleModules = activeMatrix[selectedRoleForRBAC] || ROLE_PERMISSIONS_MATRIX[selectedRoleForRBAC];
                         const hasThisPerm = (roleModules?.[p.module as ModuleName] || ROLE_PERMISSIONS_MATRIX[selectedRoleForRBAC]?.[p.module as ModuleName] || []).includes(p.action);
+                        const isAdminOnlyPerm = isAssociateExclusive || p.action === 'WAIVE_QUOTA_DEBT';
+                        const canToggleThisPerm = isAdminOnlyPerm
+                          ? currentUser.role === 'admin_tecnico'
+                          : canToggleModulePerm;
                         return (
-                          <label key={`${p.module}-${p.action}`} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer hover:text-blue-900">
+                          <label key={`${p.module}-${p.action}`} className={`flex items-center gap-2 text-xs ${canToggleThisPerm ? 'text-slate-700 cursor-pointer hover:text-blue-900' : 'text-slate-400 cursor-not-allowed'}`}>
                             <input 
                               type="checkbox" 
                               checked={hasThisPerm}
-                              disabled={!can('audit', 'ADMIN') && !can('settings', 'EDIT') && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'diretor'}
+                              disabled={!canToggleThisPerm}
                               onChange={(e) => {
                                 const res = updateRolePermission(selectedRoleForRBAC, p.module as any, p.action, e.target.checked);
                                 if (!res.success) showFeedback('error', res.error || 'Erro ao alterar permissão.');
                                 else showFeedback('success', `Permissão ${p.action} (${ROLE_LABELS[selectedRoleForRBAC]?.label}) ${e.target.checked ? 'atribuída' : 'revogada'} com sucesso.`);
                               }}
-                              className="w-3.5 h-3.5 text-blue-900 rounded focus:ring-blue-900 cursor-pointer"
+                              className="w-3.5 h-3.5 text-blue-900 rounded focus:ring-blue-900 cursor-pointer disabled:cursor-not-allowed"
                             />
-                            {p.description}
+                            <span>{p.description}</span>
+                            {p.action === 'WAIVE_QUOTA_DEBT' && currentUser.role !== 'admin_tecnico' && (
+                              <span className="text-[10px] text-slate-400">(Apenas Admin)</span>
+                            )}
                           </label>
                         );
                       })}
@@ -1171,59 +1203,81 @@ export const AuditAndAdminModule: React.FC = () => {
         maxWidth="md"
       >
         <form onSubmit={handleCreateAccount} className="space-y-4 text-xs">
-          <div>
-            <label className="block text-slate-700 font-semibold mb-1">Membro a Vincular (Opcional)</label>
-            <select
-              value={newUserForm.linkedMemberId}
-              onChange={(e) => {
-                const val = e.target.value;
-                const mem = state.members.find((m) => m.id === val);
-                setNewUserForm({
-                  ...newUserForm,
-                  linkedMemberId: val,
-                  name: mem ? mem.fullName : '',
-                  email: mem ? (mem.email || `${mem.id.toLowerCase()}@clubedalvorada.ao`) : '',
-                });
-              }}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-            >
-              <option value="">-- Sem vínculo obrigatório --</option>
-              {state.members
-                .filter((m) => m.status === 'ativo' && !state.users.some((u) => u.linkedMemberId === m.id))
-                .map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.fullName} ({m.manualNumber})
-                  </option>
-                ))}
-            </select>
-          </div>
+          {newUserForm.role === 'admin_tecnico' ? (
+            <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg text-slate-600 text-[11px] space-y-1">
+              <span className="font-bold text-blue-900 block flex items-center gap-1">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                Conta Institucional Independente
+              </span>
+              <p>
+                A conta Institucional não poderá ser vinculada a um membro, obrigatoriamente, porque será uma conta independente do Clube.
+              </p>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-slate-700 font-semibold mb-1">Membro a Vincular (Opcional — Sincronização Automática)</label>
+              <select
+                value={newUserForm.linkedMemberId}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const mem = state.members.find((m) => m.id === val);
+                  setNewUserForm({
+                    ...newUserForm,
+                    linkedMemberId: val,
+                    name: mem ? mem.fullName : '',
+                    email: mem ? (mem.email || `${mem.id.toLowerCase()}@clubedalvorada.ao`) : '',
+                    phone: mem ? (mem.phone || '') : '',
+                  });
+                }}
+                className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              >
+                <option value="">-- Sem Membro Vinculado (Conta Avulsa) --</option>
+                {state.members
+                  .filter((m) => m.status === 'ativo' && !state.users.some((u) => u.linkedMemberId === m.id))
+                  .map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.fullName} (Matrícula: {m.id} | Nº Membro: {m.manualNumber || 'S/N'})
+                    </option>
+                  ))}
+              </select>
+            </div>
+          )}
 
           <div>
             <label className="block text-slate-700 font-semibold mb-1">
-              Nome de Exibição {newUserForm.linkedMemberId && <span className="text-[10px] text-blue-800 font-normal">(Sincronizado com o registo da secretária)</span>}
+              Nome de Exibição {newUserForm.linkedMemberId && <span className="text-[10px] text-blue-800 font-normal">(Sincronizado com o membro)</span>}
             </label>
             <input
               type="text"
               value={newUserForm.name}
-              onChange={(e) => !newUserForm.linkedMemberId && setNewUserForm({ ...newUserForm, name: e.target.value })}
-              readOnly={Boolean(newUserForm.linkedMemberId)}
-              className={`w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900 ${newUserForm.linkedMemberId ? 'bg-slate-100 text-slate-700 cursor-not-allowed' : ''}`}
+              onChange={(e) => setNewUserForm({ ...newUserForm, name: e.target.value })}
+              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
               required
             />
           </div>
 
           <div>
             <label className="block text-slate-700 font-semibold mb-1">
-              Endereço de E-mail {newUserForm.linkedMemberId && <span className="text-[10px] text-blue-800 font-normal">(Sincronizado com o registo da secretária)</span>}
+              Endereço de E-mail {newUserForm.linkedMemberId && <span className="text-[10px] text-blue-800 font-normal">(Sincronizado com o membro)</span>}
             </label>
             <input
               type="email"
               placeholder="utilizador@clubedalvorada.ao"
               value={newUserForm.email}
-              onChange={(e) => !newUserForm.linkedMemberId && setNewUserForm({ ...newUserForm, email: e.target.value })}
-              readOnly={Boolean(newUserForm.linkedMemberId)}
-              className={`w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900 ${newUserForm.linkedMemberId ? 'bg-slate-100 text-slate-700 cursor-not-allowed' : ''}`}
+              onChange={(e) => setNewUserForm({ ...newUserForm, email: e.target.value })}
+              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
               required
+            />
+          </div>
+
+          <div>
+            <label className="block text-slate-700 font-semibold mb-1">Telefone (Opcional)</label>
+            <input
+              type="text"
+              placeholder="+244 9XX XXX XXX"
+              value={newUserForm.phone}
+              onChange={(e) => setNewUserForm({ ...newUserForm, phone: e.target.value })}
+              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
             />
           </div>
 
@@ -1243,7 +1297,14 @@ export const AuditAndAdminModule: React.FC = () => {
             <label className="block text-slate-700 font-semibold mb-1">Papel Institucional</label>
             <select
               value={newUserForm.role}
-              onChange={(e) => setNewUserForm({ ...newUserForm, role: e.target.value as RoleType })}
+              onChange={(e) => {
+                const nextRole = e.target.value as RoleType;
+                setNewUserForm({
+                  ...newUserForm,
+                  role: nextRole,
+                  linkedMemberId: nextRole === 'admin_tecnico' ? '' : newUserForm.linkedMemberId,
+                });
+              }}
               className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
             >
               {(['membro', 'instrutor', 'tesoureiro', 'secretario', 'capelao', 'diretor_associado', 'diretor', 'admin_tecnico'] as RoleType[]).map((roleOption) => (
@@ -1253,34 +1314,6 @@ export const AuditAndAdminModule: React.FC = () => {
               ))}
             </select>
           </div>
-
-          {newUserForm.role === 'admin_tecnico' ? (
-            <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg text-slate-600 text-[11px] space-y-1">
-              <span className="font-bold text-blue-900 block flex items-center gap-1">
-                <ShieldCheck className="w-3.5 h-3.5" />
-                Conta Institucional Independente
-              </span>
-              <p>
-                A conta Institucional não poderá ser vinculada a um membro, obrigatoriamente, porque será uma conta independente do Clube.
-              </p>
-            </div>
-          ) : (
-            <div>
-              <label className="block text-slate-700 font-semibold mb-1">Vincular a Membro da Secretaria (Opcional)</label>
-              <select
-                value={newUserForm.linkedMemberId}
-                onChange={(e) => setNewUserForm({ ...newUserForm, linkedMemberId: e.target.value })}
-                className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900 text-xs"
-              >
-                <option value="">-- Sem Membro Vinculado (Conta Avulsa) --</option>
-                {state.members.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.fullName} (Matrícula: {m.id} | Nº Membro: {m.manualNumber || 'S/N'})
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
 
           <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-3">
             <button
@@ -1674,14 +1707,13 @@ export const AuditAndAdminModule: React.FC = () => {
               )}
               <div>
                 <label className="block text-slate-700 font-semibold mb-1">
-                  Nome de Exibição {editUserForm.linkedMemberId && <span className="text-[10px] text-blue-800 font-normal">(Sincronizado)</span>}
+                  Nome de Exibição {editUserForm.linkedMemberId && <span className="text-[10px] text-blue-800 font-normal">(Sincronizado automaticamente)</span>}
                 </label>
                 <input
                   type="text"
                   value={editUserForm.name}
-                  onChange={(e) => !editUserForm.linkedMemberId && setEditUserForm({ ...editUserForm, name: e.target.value })}
-                  readOnly={Boolean(editUserForm.linkedMemberId)}
-                  className={`w-full p-2 border border-slate-200 rounded ${editUserForm.linkedMemberId ? 'bg-slate-100 text-slate-700 cursor-not-allowed' : ''}`}
+                  onChange={(e) => setEditUserForm({ ...editUserForm, name: e.target.value })}
+                  className="w-full p-2 border border-slate-200 rounded"
                   required
                 />
               </div>
@@ -1712,6 +1744,7 @@ export const AuditAndAdminModule: React.FC = () => {
                           linkedMemberId: val,
                           name: mem ? mem.fullName : editUserForm.name,
                           email: mem ? (mem.email || `${mem.id.toLowerCase()}@clubedalvorada.ao`) : editUserForm.email,
+                          phone: mem ? (mem.phone || editUserForm.phone) : editUserForm.phone,
                           manualNumber: mem ? (mem.manualNumber || '') : editUserForm.manualNumber,
                         });
                       }}
@@ -1727,7 +1760,7 @@ export const AuditAndAdminModule: React.FC = () => {
                         ))}
                     </select>
                     <p className="mt-1 text-[11px] text-slate-500">
-                      Vincular esta conta a um membro permite o acesso ao Portal do Membro com o histórico e dados oficiais.
+                      Vincular esta conta a um membro mantém o nome, e-mail, telefone e Nº de Membro sempre sincronizados em tempo real.
                     </p>
                   </div>
 
@@ -1741,7 +1774,7 @@ export const AuditAndAdminModule: React.FC = () => {
                       className="w-full p-2 border border-slate-200 rounded font-mono"
                     />
                     <p className="mt-1 text-[11px] text-slate-500">
-                      O Administrador pode editar o Nº de Membro definido pela secretária para login. O Nº de matrícula gerado pelo sistema é imutável.
+                      Alterações neste campo atualizam automaticamente o Nº de Membro na ficha da Secretaria e vice-versa.
                     </p>
                   </div>
                 </>
@@ -1749,15 +1782,27 @@ export const AuditAndAdminModule: React.FC = () => {
 
               <div>
                 <label className="block text-slate-700 font-semibold mb-1">
-                  E-mail {editUserForm.linkedMemberId && <span className="text-[10px] text-blue-800 font-normal">(Sincronizado)</span>}
+                  E-mail {editUserForm.linkedMemberId && <span className="text-[10px] text-blue-800 font-normal">(Sincronizado automaticamente)</span>}
                 </label>
                 <input
                   type="email"
                   value={editUserForm.email}
-                  onChange={(e) => !editUserForm.linkedMemberId && setEditUserForm({ ...editUserForm, email: e.target.value })}
-                  readOnly={Boolean(editUserForm.linkedMemberId)}
-                  className={`w-full p-2 border border-slate-200 rounded ${editUserForm.linkedMemberId ? 'bg-slate-100 text-slate-700 cursor-not-allowed' : ''}`}
+                  onChange={(e) => setEditUserForm({ ...editUserForm, email: e.target.value })}
+                  className="w-full p-2 border border-slate-200 rounded"
                   required
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">
+                  Telefone {editUserForm.linkedMemberId && <span className="text-[10px] text-blue-800 font-normal">(Sincronizado automaticamente)</span>}
+                </label>
+                <input
+                  type="text"
+                  placeholder="+244 9XX XXX XXX"
+                  value={editUserForm.phone}
+                  onChange={(e) => setEditUserForm({ ...editUserForm, phone: e.target.value })}
+                  className="w-full p-2 border border-slate-200 rounded"
                 />
               </div>
 

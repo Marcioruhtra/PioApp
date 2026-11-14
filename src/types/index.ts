@@ -27,10 +27,13 @@ export type PermissionAction =
   | 'CREATE_ACCOUNT'
   | 'DELETE_ACCOUNT'
   | 'CREATE_RUBRIC'
-  | 'DELETE_RUBRIC';
+  | 'DELETE_RUBRIC'
+  | 'CONFIGURE_QUOTAS'
+  | 'WAIVE_QUOTA_DEBT';
 
 export type ModuleName =
   | 'dashboard'
+  | 'associate_director'
   | 'members'
   | 'treasury'
   | 'activities'
@@ -51,6 +54,7 @@ export interface UserAccount {
   name: string;
   role: RoleType;
   linkedMemberId?: string;
+  manualNumber?: string;
   active: boolean;
   phone?: string;
   password?: string;
@@ -145,6 +149,7 @@ export interface PaymentReceipt {
   referenceOrProof?: string;
   treasurerUserId: string;
   treasurerName: string;
+  treasurerRole?: RoleType;
   paidAt: string; // Data real de pagamento
   status: PaymentStatus;
   notes?: string;
@@ -326,6 +331,7 @@ export interface OfficialDocument {
   issuedToMemberId?: string;
   issuedByUserId: string;
   issuedByName: string;
+  issuedByRole?: RoleType;
   issuedAt: string;
   contentData: Record<string, unknown>;
   isCancelled: boolean;
@@ -463,6 +469,41 @@ export interface DeletionRequest {
   executedByName?: string;
 }
 
+export type QuotaBillingFrequency = 'domingo' | 'mensal';
+
+export interface QuotaConfig {
+  amountInCents: number; // Valor padrão da Quota em cêntimos de Kz (ex: 50000 = 500,00 Kz)
+  categoryAmountsInCents?: Partial<Record<MemberCategory, number>>; // Valores opcionais por categoria
+  frequency: QuotaBillingFrequency; // 'domingo' (cada domingo é cobrada a quota) ou 'mensal'
+  cycleStartDate: string; // Data de início da contagem (AAAA-MM-DD)
+  respectMemberJoinDate: boolean; // Se true, membros admitidos após cycleStartDate pagam a partir da admissão
+  activeQuotaFeeId?: string; // ID da rubrica oficial vinculada às quotas
+  updatedAt?: string;
+  updatedByUserId?: string;
+  updatedByName?: string;
+}
+
+export interface QuotaDebtWaiver {
+  id: string; // ex: ZRD-2026-0001
+  memberId: string;
+  memberName: string;
+  amountWaivedInCents: number; // Dívida zerada/perdoada em cêntimos de Kz
+  grossDueAtWaiverInCents: number; // Total bruto devido no momento da operação
+  paidAtWaiverInCents: number; // Total já pago no momento da operação
+  previousBalanceInCents: number; // Saldo em dívida imediatamente antes de zerar
+  cycleYear: number;
+  reason: string;
+  waivedByUserId: string;
+  waivedByName: string;
+  waivedByRole: RoleType;
+  waivedAt: string;
+  isReversed?: boolean;
+  reversalReason?: string;
+  reversedAt?: string;
+  reversedByUserId?: string;
+  reversedByName?: string;
+}
+
 export interface ClubSettings {
   clubName: string;
   headquarters?: string;
@@ -480,6 +521,7 @@ export interface ClubSettings {
   classes: { id: string; name: string; requirementsCount: number; active: boolean }[];
   documentTemplates: Record<DocumentType, string>; // Conteúdo padrão de modelos
   permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>;
+  quotaConfig?: QuotaConfig;
 }
 
 export type ChaplaincyCategory = 'pedido_oracao' | 'aconselhamento' | 'visita_apoio' | 'outro';
@@ -564,4 +606,42 @@ export interface Circular {
   priority: 'normal' | 'alta' | 'urgente';
   readBy: string[];
 }
+
+export type AssociateDirectivePriority = 'normal' | 'alta' | 'urgente';
+export type AssociateDirectiveStatus = 'pendente' | 'em_curso' | 'concluido' | 'validado';
+
+export interface AssociateDirective {
+  id: string;
+  title: string;
+  description: string;
+  targetUnitName: string; // Nome da equipa ou 'Todas'
+  assignedLeaderName?: string;
+  priority: AssociateDirectivePriority;
+  dueDate: string; // AAAA-MM-DD
+  status: AssociateDirectiveStatus;
+  checklistNotes?: string;
+  createdByUserId: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+  validatedByName?: string;
+  validatedAt?: string;
+}
+
+export interface TeamEvaluation {
+  id: string;
+  unitId: string;
+  unitName: string;
+  periodLabel: string;
+  disciplineScore: number; // 0-100
+  teamworkScore: number; // 0-100
+  punctualityScore: number; // 0-100
+  trainingCommitmentScore: number; // 0-100
+  overallScore: number; // Média 0-100
+  observations?: string;
+  evaluatedByUserId: string;
+  evaluatedByName: string;
+  evaluatedAt: string;
+}
+
 

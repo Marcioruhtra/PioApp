@@ -1,6 +1,7 @@
 import React from 'react';
 import { X, User, LogOut } from 'lucide-react';
 import { ModuleName } from '../../types';
+import { useClub } from '../../context/ClubContext';
 
 interface Props {
   isOpen: boolean;
@@ -10,8 +11,10 @@ interface Props {
 }
 
 export const AndroidDrawer: React.FC<Props> = ({ isOpen, onClose, onSelectModule, onLogout }) => {
+  const { can } = useClub();
   const modules: { id: ModuleName; name: string }[] = [
     { id: 'dashboard', name: 'Dashboard' },
+    { id: 'associate_director', name: 'Diretor-associado' },
     { id: 'members', name: 'Membros' },
     { id: 'treasury', name: 'Tesouraria' },
     { id: 'activities', name: 'Atividades' },
@@ -23,6 +26,12 @@ export const AndroidDrawer: React.FC<Props> = ({ isOpen, onClose, onSelectModule
     { id: 'settings', name: 'Configurações' },
     { id: 'audit', name: 'Auditoria' },
   ];
+
+  const visibleModules = modules.filter((mod) =>
+    mod.id === 'treasury'
+      ? can('treasury', 'VIEW') || can('treasury', 'CONFIGURE_QUOTAS') || can('treasury', 'WAIVE_QUOTA_DEBT')
+      : can(mod.id, 'VIEW')
+  );
 
   if (!isOpen) return null;
 
@@ -36,7 +45,7 @@ export const AndroidDrawer: React.FC<Props> = ({ isOpen, onClose, onSelectModule
             <span className="font-bold">Perfil</span>
         </div>
         <div className="space-y-4">
-          {modules.map((mod) => (
+          {visibleModules.map((mod) => (
             <button key={mod.id} onClick={() => { onSelectModule(mod.id); onClose(); }} className="block text-lg font-medium">{mod.name}</button>
           ))}
           <button onClick={onLogout} className="flex items-center gap-2 text-red-600 font-bold pt-6"><LogOut size={20} /> Sair</button>

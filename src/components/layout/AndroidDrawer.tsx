@@ -16,6 +16,7 @@ import {
   X,
   Heart,
   Send,
+  Briefcase,
 } from 'lucide-react';
 import { ModuleName } from '../../types';
 import { useClub } from '../../context/ClubContext';
@@ -48,6 +49,7 @@ export const AndroidDrawer: React.FC<AndroidDrawerProps> = ({
 
   const navItems: NavItem[] = [
     { id: 'dashboard', label: 'Painel Principal', icon: LayoutDashboard },
+    { id: 'associate_director', label: 'Diretor-associado', icon: Briefcase },
     { id: 'members', label: 'Gestão de Membros', icon: Users, badge: state.members.filter((m) => m.status === 'ativo').length },
     { id: 'treasury', label: 'Tesouraria (Kz)', icon: Wallet, badge: pendingProofs > 0 ? pendingProofs : undefined },
     { id: 'activities', label: 'Atividades e Reuniões', icon: Calendar },
@@ -63,7 +65,11 @@ export const AndroidDrawer: React.FC<AndroidDrawerProps> = ({
     { id: 'audit', label: 'Auditoria e Acessos', icon: ShieldAlert },
   ];
 
-  const visibleItems = navItems.filter((item) => can(item.id, 'VIEW'));
+  const visibleItems = navItems.filter((item) =>
+    item.id === 'treasury'
+      ? can('treasury', 'VIEW') || can('treasury', 'CONFIGURE_QUOTAS') || can('treasury', 'WAIVE_QUOTA_DEBT')
+      : can(item.id, 'VIEW')
+  );
 
   if (!isOpen) return null;
 

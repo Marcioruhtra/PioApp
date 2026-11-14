@@ -38,6 +38,7 @@ interface NotificationCenterModalProps {
 
 const MODULE_LABELS: Record<string, string> = {
   dashboard: 'Painel Principal',
+  associate_director: 'Diretor-associado',
   members: 'Membros',
   treasury: 'Tesouraria',
   activities: 'Atividades',

@@ -46,6 +46,11 @@ import { PrintDocumentModal } from '../common/PrintDocumentModal';
 import { ProofDocumentViewerModal } from '../common/ProofDocumentViewerModal';
 import { MemberDigitalCardModal } from '../common/MemberDigitalCardModal';
 import { processProofFile } from '../../utils/fileUpload';
+import {
+  calculateMemberQuotaSummary,
+  getTodayISODate,
+  resolveQuotaConfig,
+} from '../../services/quotaService';
 
 const SUGGESTION_CATEGORY_MAP: Record<SuggestionCategory, { label: string; badgeBg: string; text: string }> = {
   geral: { label: 'Geral', badgeBg: 'bg-slate-100 border-slate-300 text-slate-800', text: 'text-slate-800' },
@@ -92,6 +97,18 @@ export const MemberPortalModule: React.FC = () => {
   const myProofs = state.paymentProofs.filter((p) => p.memberId === member?.id);
   const myTraining = state.trainingProgress.filter((p) => p.memberId === member?.id);
   const myCirculars = (state.circulars || []).filter(c => c.targetRoles.includes(currentUser.role));
+
+  const activeQuotaConfig = resolveQuotaConfig(state.settings, state.fees);
+  const myQuotaSummary = member
+    ? calculateMemberQuotaSummary(
+        member,
+        activeQuotaConfig,
+        state.fees,
+        state.receipts,
+        getTodayISODate(),
+        state.quotaWaivers || []
+      )
+    : null;
 
   const myMessages = (state.messages || []).filter((msg) => {
     if (!member) return false;
@@ -518,6 +535,138 @@ export const MemberPortalModule: React.FC = () => {
             </div>
           </div>
 
+          {/* Situação Pessoal das Quotas (Recalculada Automaticamente) */}
+          {myQuotaSummary && (
+            <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-5 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div>
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+                    <Wallet className="w-4 h-4 text-blue-900" />
+                    <span>Situação das Minhas Quotas</span>
+                  </h2>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Valor definido pela Tesouraria/Direção: <strong>{formatKz(myQuotaSummary.unitQuotaInCents)}</strong> por{' '}
+                    {myQuotaSummary.frequency === 'domingo' ? 'domingo' : 'mês'} · {myQuotaSummary.periodsCharged}{' '}
+                    {myQuotaSummary.frequency === 'domingo'
+                      ? myQuotaSummary.periodsCharged === 1
+                        ? 'domingo cobrado'
+                        : 'domingos cobrados'
+                      : myQuotaSummary.periodsCharged === 1
+                      ? 'mês cobrado'
+                      : 'meses cobrados'}{' '}
+                    desde {formatDateAO(myQuotaSummary.effectiveStartDate)}.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-bold uppercase border ${
+                      myQuotaSummary.status === 'regularizado'
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : myQuotaSummary.status === 'antecipado'
+                        ? 'bg-blue-50 text-blue-800 border-blue-200'
+                        : myQuotaSummary.status === 'parcial'
+                        ? 'bg-amber-50 text-amber-800 border-amber-200'
+                        : 'bg-rose-50 text-rose-800 border-rose-200'
+                    }`}
+                  >
+                    {myQuotaSummary.status === 'regularizado'
+                      ? 'Regularizado'
+                      : myQuotaSummary.status === 'antecipado'
+                      ? 'Antecipado'
+                      : myQuotaSummary.status === 'parcial'
+                      ? 'Pagamento Parcial'
+                      : 'Em Atraso'}
+                  </span>
+                  {myQuotaSummary.balanceDueInCents > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetFeeId =
+                          activeQuotaConfig.activeQuotaFeeId ||
+                          state.fees.find((f) => f.category === 'quota_diaria' || f.category === 'quota_mensal')?.id ||
+                          state.fees[0]?.id ||
+                          '';
+                        setProofForm((prev) => ({
+                          ...prev,
+                          feeDefinitionId: targetFeeId,
+                          amountStr: String(Math.round(myQuotaSummary.balanceDueInCents / 100)),
+                        }));
+                        setIsProofModalOpen(true);
+                      }}
+                      className="px-3 py-1.5 text-[11px] font-bold text-white bg-blue-900 hover:bg-blue-800 rounded-lg shadow-xs transition-colors"
+                    >
+                      Enviar Comprovativo de Regularização
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                  <div className="text-[10px] font-bold uppercase text-slate-500">Total Devido no Ciclo</div>
+                  <div className="text-base font-black text-slate-900 mt-0.5 tabular-nums">
+                    {formatKz(myQuotaSummary.totalDueInCents)}
+                  </div>
+                  {myQuotaSummary.totalWaivedInCents > 0 && (
+                    <div className="text-[10px] text-amber-800 mt-0.5 tabular-nums">
+                      Dívida zerada/isenta: {formatKz(myQuotaSummary.totalWaivedInCents)}
+                    </div>
+                  )}
+                </div>
+                <div className="p-3 bg-emerald-50/60 rounded-lg border border-emerald-200">
+                  <div className="text-[10px] font-bold uppercase text-emerald-700">Já Pago (Confirmado)</div>
+                  <div className="text-base font-black text-emerald-800 mt-0.5 tabular-nums">
+                    {formatKz(myQuotaSummary.totalPaidInCents)}
+                  </div>
+                </div>
+                <div
+                  className={`p-3 rounded-lg border ${
+                    myQuotaSummary.balanceDueInCents > 0
+                      ? 'bg-rose-50/70 border-rose-200'
+                      : 'bg-blue-50/70 border-blue-200'
+                  }`}
+                >
+                  <div className="text-[10px] font-bold uppercase text-slate-600">
+                    {myQuotaSummary.creditInCents > 0 ? 'Crédito Antecipado' : 'Saldo em Dívida'}
+                  </div>
+                  <div
+                    className={`text-base font-black mt-0.5 tabular-nums ${
+                      myQuotaSummary.balanceDueInCents > 0
+                        ? 'text-rose-700'
+                        : myQuotaSummary.creditInCents > 0
+                        ? 'text-blue-800'
+                        : 'text-emerald-700'
+                    }`}
+                  >
+                    {myQuotaSummary.creditInCents > 0
+                      ? `+${formatKz(myQuotaSummary.creditInCents)}`
+                      : formatKz(myQuotaSummary.balanceDueInCents)}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-[11px] text-slate-600 mb-1">
+                  <span>Progresso de Regularização</span>
+                  <span className="font-bold text-slate-900 tabular-nums">{myQuotaSummary.progressPercent}%</span>
+                </div>
+                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      myQuotaSummary.status === 'regularizado' || myQuotaSummary.status === 'antecipado'
+                        ? 'bg-emerald-600'
+                        : myQuotaSummary.status === 'parcial'
+                        ? 'bg-amber-500'
+                        : 'bg-rose-500'
+                    }`}
+                    style={{ width: `${myQuotaSummary.progressPercent}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
       {/* Grid de Seções do Membro */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Bloco 1: Meus Recibos Oficiais */}
@@ -557,6 +706,7 @@ export const MemberPortalModule: React.FC = () => {
                           issuedToMemberId: member?.manualNumber || r.memberId,
                           issuedByUserId: r.treasurerUserId,
                           issuedByName: r.treasurerName,
+                          issuedByRole: r.treasurerRole,
                           issuedAt: r.paidAt,
                           contentData: {
                             valor: formatKz(r.amountPaidInCents),

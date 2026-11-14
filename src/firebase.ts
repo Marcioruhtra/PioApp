@@ -1,24 +1,35 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut as fbSignOut, signInWithEmailAndPassword, setPersistence, browserLocalPersistence, browserSessionPersistence } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, initializeFirestore } from 'firebase/firestore';
 import { getMessaging } from 'firebase/messaging';
 import firebaseConfig from '../firebase-applet-config.json';
 
-let app: any = null;
+let appInstance: any = null;
 let dbInstance: any = null;
 let authInstance: any = null;
 let messagingInstance: any = null;
 let googleProviderInstance: any = null;
 
 try {
-  app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-  dbInstance = (firebaseConfig as any).firestoreDatabaseId ? getFirestore(app, (firebaseConfig as any).firestoreDatabaseId) : getFirestore(app);
-  authInstance = getAuth(app);
+  appInstance = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+  const dbId = (firebaseConfig as any).firestoreDatabaseId as string | undefined;
+  const firestoreSettings = {
+    experimentalForceLongPolling: true,
+    ignoreUndefinedProperties: true,
+  };
+  try {
+    dbInstance = dbId
+      ? initializeFirestore(appInstance, firestoreSettings, dbId)
+      : initializeFirestore(appInstance, firestoreSettings);
+  } catch {
+    dbInstance = dbId ? getFirestore(appInstance, dbId) : getFirestore(appInstance);
+  }
+  authInstance = getAuth(appInstance);
   // Default to session persistence to avoid localStorage, but we can upgrade to local for 'remember me'
   setPersistence(authInstance, browserSessionPersistence);
 } catch (e) {
   console.warn('Firebase initialization warning (running in offline/mock mode):', e);
-  app = { name: '[DEFAULT]' };
+  appInstance = { name: '[DEFAULT]' };
   dbInstance = {} as any;
   authInstance = { currentUser: null, onAuthStateChanged: () => () => {} } as any;
 }
@@ -29,10 +40,10 @@ try {
     window.isSecureContext &&
     'Notification' in window &&
     'serviceWorker' in navigator &&
-    app && app.name
+    appInstance && appInstance.name
   ) {
     try {
-      messagingInstance = getMessaging(app);
+      messagingInstance = getMessaging(appInstance);
     } catch {
       // Ignored if messaging restricted
     }
@@ -47,6 +58,7 @@ try {
   googleProviderInstance = {} as any;
 }
 
+export const app = appInstance;
 export const db = dbInstance;
 export const auth = authInstance;
 export const messaging = messagingInstance;

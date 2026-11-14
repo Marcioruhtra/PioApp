@@ -16,6 +16,14 @@ export interface PermissionDefinition {
 export const PERMISSION_CATALOG: PermissionDefinition[] = [
   // Painel Geral
   { module: 'dashboard', action: 'VIEW', description: 'Consultar painel e indicadores gerais' },
+
+  // Gabinete Exclusivo do Diretor-associado (Acesso a outros cargos apenas mediante concessão do Administrador)
+  { module: 'associate_director', action: 'VIEW', description: 'Aceder ao módulo exclusivo do Diretor-associado' },
+  { module: 'associate_director', action: 'CREATE', description: 'Emitir diretivas operacionais e avaliações de equipas' },
+  { module: 'associate_director', action: 'EDIT', description: 'Gerir equipas, alocações de membros e tarefas operacionais' },
+  { module: 'associate_director', action: 'APPROVE', description: 'Validar cumprimento de diretivas e prontidão de equipas' },
+  { module: 'associate_director', action: 'EXPORT', description: 'Exportar mapas executivos de equipas e supervisão' },
+  { module: 'associate_director', action: 'PRINT', description: 'Imprimir boletins executivos de supervisão' },
   
   // Membros
   { module: 'members', action: 'VIEW', description: 'Consultar catálogo de membros' },
@@ -41,7 +49,9 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   { module: 'treasury', action: 'DELETE_ACCOUNT', description: 'Remover conta financeira institucional' },
   { module: 'treasury', action: 'CREATE_RUBRIC', description: 'Adicionar novas rubricas/taxas financeiras' },
   { module: 'treasury', action: 'DELETE_RUBRIC', description: 'Remover rubricas/taxas financeiras' },
-  { module: 'treasury', action: 'ADMIN', description: 'Configurar contas bancárias, caixa e quotas' },
+  { module: 'treasury', action: 'CONFIGURE_QUOTAS', description: 'Definir e alterar o valor das quotas do clube' },
+  { module: 'treasury', action: 'WAIVE_QUOTA_DEBT', description: 'Zerar dívida de quotas de membros (Concedido pelo Administrador)' },
+  { module: 'treasury', action: 'ADMIN', description: 'Configurar contas bancárias, caixa e parâmetros fiscais' },
 
   // Atividades e Reuniões
   { module: 'activities', action: 'VIEW', description: 'Consultar calendário e atas' },
@@ -111,8 +121,9 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
 export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, PermissionAction[]>> = {
   admin_tecnico: {
     dashboard: ['VIEW'],
+    associate_director: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
     members: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
-    treasury: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'ARCHIVE', 'ADMIN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC'],
+    treasury: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'ARCHIVE', 'ADMIN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
     activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
     documents: ['VIEW', 'EXPORT', 'PRINT', 'ADMIN'],
@@ -127,8 +138,9 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   },
   diretor: {
     dashboard: ['VIEW'],
+    associate_director: [],
     members: ['VIEW', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
-    treasury: ['VIEW', 'CREATE', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC'],
+    treasury: ['VIEW', 'CREATE', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
     activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT'],
     documents: ['VIEW', 'CREATE', 'ARCHIVE', 'PRINT', 'EXPORT'],
@@ -143,6 +155,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   },
   diretor_associado: {
     dashboard: ['VIEW'],
+    associate_director: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT'],
     members: ['VIEW', 'EDIT', 'EXPORT', 'PRINT'],
     treasury: [],
     activities: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT'],
@@ -159,6 +172,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   },
   secretario: {
     dashboard: ['VIEW'],
+    associate_director: [],
     members: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'APPROVE'],
     treasury: ['VIEW'],
     activities: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT'],
@@ -175,8 +189,9 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   },
   tesoureiro: {
     dashboard: ['VIEW'],
+    associate_director: [],
     members: ['VIEW'],
-    treasury: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC'],
+    treasury: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS'],
     activities: ['VIEW'],
     training: ['VIEW'],
     documents: ['VIEW', 'CREATE', 'PRINT', 'EXPORT'],
@@ -191,6 +206,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   },
   instrutor: {
     dashboard: ['VIEW'],
+    associate_director: [],
     members: ['VIEW'],
     treasury: [],
     activities: ['VIEW', 'EDIT'],
@@ -207,6 +223,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   },
   membro: {
     dashboard: ['VIEW'],
+    associate_director: [],
     members: [],
     treasury: [],
     activities: ['VIEW'],
@@ -223,6 +240,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   },
   capelao: {
     dashboard: ['VIEW'],
+    associate_director: [],
     members: ['VIEW'],
     treasury: [],
     activities: ['VIEW'],
@@ -314,6 +332,8 @@ export const ACTION_LABELS: Record<PermissionAction, string> = {
   DELETE: 'Eliminar',
   CREATE_RUBRIC: 'Adicionar Rubricas',
   DELETE_RUBRIC: 'Remover Rubricas',
+  CONFIGURE_QUOTAS: 'Definir Quotas',
+  WAIVE_QUOTA_DEBT: 'Zerar Dívida de Quotas',
 };
 
 /**
@@ -329,6 +349,8 @@ export const syncPermissionsMatrix = (
   const roles = Object.keys(base) as RoleType[];
   const newActions: PermissionAction[] = ['CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC'];
   const isLegacy = !newActions.some(act => synced.admin_tecnico?.treasury?.includes(act));
+  const needsQuotaPermSync = !synced.admin_tecnico?.treasury?.includes('CONFIGURE_QUOTAS');
+  const needsWaiveDebtPermSync = !synced.admin_tecnico?.treasury?.includes('WAIVE_QUOTA_DEBT');
 
   for (const role of roles) {
     if (!synced[role]) {
@@ -345,11 +367,19 @@ export const syncPermissionsMatrix = (
             synced[role].activities.push(act);
           }
         }
-      } else if (mod === 'treasury' && isLegacy) {
-        for (const newAct of newActions) {
-          if (base[role].treasury.includes(newAct) && !synced[role].treasury.includes(newAct)) {
-            synced[role].treasury.push(newAct);
+      } else if (mod === 'treasury') {
+        if (isLegacy) {
+          for (const newAct of newActions) {
+            if (base[role].treasury.includes(newAct) && !synced[role].treasury.includes(newAct)) {
+              synced[role].treasury.push(newAct);
+            }
           }
+        }
+        if (needsQuotaPermSync && base[role].treasury.includes('CONFIGURE_QUOTAS') && !synced[role].treasury.includes('CONFIGURE_QUOTAS')) {
+          synced[role].treasury.push('CONFIGURE_QUOTAS');
+        }
+        if (needsWaiveDebtPermSync && base[role].treasury.includes('WAIVE_QUOTA_DEBT') && !synced[role].treasury.includes('WAIVE_QUOTA_DEBT')) {
+          synced[role].treasury.push('WAIVE_QUOTA_DEBT');
         }
       }
     }
@@ -385,4 +415,35 @@ export const filterVisibleAccessAccounts = <T extends { role: RoleType }>(
   if (viewerRole === 'admin_tecnico') return accounts;
   return accounts.filter((acc) => canViewAccountInAccessList(viewerRole, acc.role));
 };
+
+/**
+ * Apenas o Administrador Técnico pode conceder ou revogar permissões do módulo exclusivo
+ * do Diretor-associado na grelha de permissões.
+ */
+export const canGrantAssociateDirectorModule = (actorRole: RoleType): boolean => {
+  return actorRole === 'admin_tecnico';
+};
+
+/**
+ * Verifica se um cargo tem acesso ao módulo exclusivo do Diretor-associado segundo a grelha ativa.
+ */
+export const canAccessAssociateDirectorModule = (
+  role: RoleType,
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>
+): boolean => {
+  if (role === 'admin_tecnico') return true;
+  if (permissionsMatrix?.[role] && Array.isArray(permissionsMatrix[role].associate_director)) {
+    return permissionsMatrix[role].associate_director.includes('VIEW');
+  }
+  return hasPermission(role, 'associate_director', 'VIEW');
+};
+
+/**
+ * Apenas o Administrador Técnico pode conceder ou revogar a permissão de zerar dívidas de quotas
+ * na grelha de permissões para outros cargos.
+ */
+export const canGrantWaiveQuotaDebt = (actorRole: RoleType): boolean => {
+  return actorRole === 'admin_tecnico';
+};
+
 

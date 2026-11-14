@@ -4,6 +4,8 @@ import { OfficialDocument } from '../../types';
 import { formatDateAO } from '../../utils/date';
 import { useClub } from '../../context/ClubContext';
 import { formatKz } from '../../utils/currency';
+import { resolveDocumentOperatorSigner } from '../../utils/documentSigner';
+import { ROLE_LABELS } from '../../services/permissionService';
 import {
   OfficialDocumentHeader,
   OfficialDocumentMetadata,
@@ -68,7 +70,12 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
     ? resolvedMember.manualNumber
     : String(content.memberId || document?.issuedToMemberId || '');
 
-  if (!document) return null;
+  const resolvedSigner = document
+    ? resolveDocumentOperatorSigner(document, state.users)
+    : null;
+  const directorUser = state.users.find((u) => u.role === 'diretor');
+
+  if (!document || !resolvedSigner) return null;
 
   const handlePrint = () => {
     window.print();
@@ -95,7 +102,7 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
     text = text.replace(/\{morada_clube\}/g, address);
     text = text.replace(/\{telefone_clube\}/g, `${phone} / ${alternatePhone}`);
     text = text.replace(/\{email_clube\}/g, email);
-    text = text.replace(/\{diretor\}/g, document.issuedByName || 'Direção Executiva');
+    text = text.replace(/\{diretor\}/g, directorUser?.name || resolvedSigner.name);
     text = text.replace(/\{data_atual\}/g, formatDateAO(new Date().toISOString()));
     text = text.replace(/\{numero_documento\}/g, document.documentNumber);
     text = text.replace(/\{tipo_documento\}/g, document.documentType);
@@ -185,7 +192,8 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
             recipientName={document.issuedToName}
             recipientLabel={document.documentType === 'recibo' ? 'Cobrar a' : 'Titular'}
             location={headquarters}
-            issuedByName={document.issuedByName}
+            issuedByName={resolvedSigner.name}
+            issuedByRoleLabel={resolvedSigner.roleLabel}
             isCancelled={document.isCancelled}
             cancellationReason={document.cancellationReason}
             isRejected={document.isRejected}
@@ -585,31 +593,22 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
             )}
           </div>
 
-          {/* 5. Linha de Assinatura Única com Carimbo Institucional do Clube */}
+          {/* 5. Linha de Assinatura com Nome e Cargo do Autor da Operação */}
           <OfficialDocumentSignatures
-            signerName={document.issuedByName}
-            signerRole={
-              document.documentType === 'recibo'
-                ? 'Tesoureiro Geral do Clube'
-                : document.documentType === 'declaracao_membro'
-                ? (state.users.find(u => u.name === document.issuedByName)?.role === 'diretor_associado'
-                    ? 'Diretor-associado do Clube'
-                    : 'Diretor do Clube')
-                : document.documentType === 'ata'
-                ? 'Secretário Geral da Sessão'
-                : state.users.find(u => u.name === document.issuedByName)?.role === 'diretor_associado'
-                ? 'Diretor-associado do Clube'
-                : 'Responsável Autorizado'
-            }
+            signerName={resolvedSigner.name}
+            signerRole={resolvedSigner.roleLabel}
             secondSignerName={
-              document.documentType === 'ata' || document.documentType === 'certificado' || document.documentType === 'mapa_financeiro'
-                ? (state.users.find(u => u.role === 'diretor')?.name || 'Carlos Mutamba')
+              (document.documentType === 'ata' || document.documentType === 'certificado' || document.documentType === 'mapa_financeiro') &&
+              directorUser &&
+              directorUser.id !== resolvedSigner.userId &&
+              directorUser.name.trim().toLowerCase() !== resolvedSigner.name.trim().toLowerCase()
+                ? directorUser.name
                 : undefined
             }
             secondSignerRole={
-              document.documentType === 'ata'
-                ? 'Presidente da Mesa Diretiva'
-                : 'Visto da Direção Geral'
+              directorUser
+                ? `${document.documentType === 'ata' ? 'Presidente da Mesa · ' : 'Visto · '}${ROLE_LABELS[directorUser.role]?.label || 'Diretor do Clube'}`
+                : 'Diretor do Clube'
             }
             clubName={clubName}
             year={document.year}

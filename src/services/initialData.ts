@@ -260,6 +260,16 @@ export const INITIAL_MEMBERS: Member[] = [
 
 export const INITIAL_FEES: FeeDefinition[] = [
   {
+    id: 'FEE-QUOTA-DOMINGO',
+    title: 'Quota Regular (Cada Domingo)',
+    category: 'quota_diaria',
+    periodicity: 'diaria',
+    amountInCents: 50000, // 500,00 Kz por domingo
+    targetCategory: 'todas',
+    active: true,
+    year: 2026,
+  },
+  {
     id: 'FEE-01',
     title: 'Quota Mensal - Embaixadores',
     category: 'quota_mensal',
@@ -344,6 +354,7 @@ export const INITIAL_RECEIPTS: PaymentReceipt[] = [
     referenceOrProof: 'MCX-982137491',
     treasurerUserId: 'USR-TES',
     treasurerName: 'Daniel Kissange',
+    treasurerRole: 'tesoureiro',
     paidAt: '2026-03-10T14:20:00Z',
     status: 'confirmado',
     notes: 'Pagamento efetuado via Multicaixa Express.',
@@ -361,6 +372,7 @@ export const INITIAL_RECEIPTS: PaymentReceipt[] = [
     referenceOrProof: 'TRF-BFA-1092837',
     treasurerUserId: 'USR-TES',
     treasurerName: 'Daniel Kissange',
+    treasurerRole: 'tesoureiro',
     paidAt: '2026-02-15T10:00:00Z',
     status: 'confirmado',
     notes: 'Transferência BFA confirmada em extrato.',
@@ -774,7 +786,8 @@ export const INITIAL_DOCUMENTS: OfficialDocument[] = [
     issuedToName: 'Adilson Vunge',
     issuedToMemberId: 'PIO-MEM-001',
     issuedByUserId: 'USR-TES',
-    issuedByName: 'Daniel Kissange (Tesoureiro)',
+    issuedByName: 'Daniel Kissange',
+    issuedByRole: 'tesoureiro',
     issuedAt: '2026-03-10T14:20:00Z',
     contentData: {
       valor: '2.500,00 Kz',
@@ -791,7 +804,8 @@ export const INITIAL_DOCUMENTS: OfficialDocument[] = [
     title: 'Ata da 1ª Reunião Ordinária da Diretoria 2026',
     year: 2026,
     issuedByUserId: 'USR-SEC',
-    issuedByName: 'Esperança Neto (Secretária)',
+    issuedByName: 'Esperança Neto',
+    issuedByRole: 'secretario',
     issuedAt: '2026-03-15T18:00:00Z',
     contentData: {
       local: 'Sede do Clube D\'Alvorada, Talatona',
@@ -809,7 +823,8 @@ export const INITIAL_DOCUMENTS: OfficialDocument[] = [
     issuedToName: 'Adilson Vunge',
     issuedToMemberId: 'PIO-MEM-001',
     issuedByUserId: 'USR-DIR',
-    issuedByName: 'Carlos Mutamba (Diretor)',
+    issuedByName: 'Carlos Mutamba',
+    issuedByRole: 'diretor',
     issuedAt: '2026-03-20T10:00:00Z',
     contentData: {
       finalidade: 'Efeito de justificação de atividade cívica e frequência escolar',
@@ -989,6 +1004,13 @@ export const INITIAL_SETTINGS: ClubSettings = {
     declaracao_membro: 'Declaração de membro ativo...',
     certificado: 'Certificado de investidura...',
     relatorio_anual: 'Relatório anual...',
+  },
+  quotaConfig: {
+    amountInCents: 50000, // 500,00 Kz por domingo
+    frequency: 'domingo',
+    cycleStartDate: '2026-01-01',
+    respectMemberJoinDate: true,
+    activeQuotaFeeId: 'FEE-QUOTA-DOMINGO',
   },
 };
 

@@ -3,10 +3,11 @@
  * Mantém sincronia absoluta com firebase-applet-config.json e ambiente de produção.
  */
 
-import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
-import { getAuth, Auth } from 'firebase/auth';
-import { getFirestore, Firestore } from 'firebase/firestore';
+import { FirebaseApp } from 'firebase/app';
+import { Auth } from 'firebase/auth';
+import { Firestore } from 'firebase/firestore';
 import configJson from '../../firebase-applet-config.json';
+import { app as sharedApp, auth as sharedAuth, db as sharedDb } from '../firebase';
 
 export interface FirebaseConnectionStatus {
   isConfigured: boolean;
@@ -27,19 +28,9 @@ const firebaseConfig = {
 
 const missing = ['apiKey', 'projectId', 'authDomain'].filter((key) => !(firebaseConfig as any)[key]);
 
-let app: FirebaseApp | null = null;
-let auth: Auth | null = null;
-let db: Firestore | null = null;
-
-if (missing.length === 0) {
-  try {
-    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-    auth = getAuth(app);
-    db = (configJson as any).firestoreDatabaseId ? getFirestore(app, (configJson as any).firestoreDatabaseId) : getFirestore(app);
-  } catch (err) {
-    console.warn('Erro ao inicializar Firebase Live SDK:', err);
-  }
-}
+const app: FirebaseApp | null = missing.length === 0 ? sharedApp : null;
+const auth: Auth | null = missing.length === 0 ? sharedAuth : null;
+const db: Firestore | null = missing.length === 0 ? sharedDb : null;
 
 export const firebaseStatus: FirebaseConnectionStatus = {
   isConfigured: missing.length === 0 && app !== null,

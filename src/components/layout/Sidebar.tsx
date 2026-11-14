@@ -18,6 +18,7 @@ import {
   LogOut,
   Heart,
   Send,
+  Briefcase,
 } from 'lucide-react';
 import { ModuleName } from '../../types';
 import { useClub } from '../../context/ClubContext';
@@ -65,12 +66,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
     ? (state.circulars || []).filter(c => !c.readBy.includes(currentUser.linkedMemberId!)).length
     : 0;
 
+  const openDirectivesCount = (state.associateDirectives || []).filter(
+    (d) => d.status === 'pendente' || d.status === 'em_curso'
+  ).length;
+
   const navItems: NavItem[] = [
     {
       id: 'dashboard',
       label: 'Painel Principal',
       icon: LayoutDashboard,
       description: 'Visão geral e indicadores',
+    },
+    {
+      id: 'associate_director',
+      label: 'Diretor-associado',
+      icon: Briefcase,
+      badge: openDirectivesCount > 0 ? openDirectivesCount : undefined,
+      description: 'Gabinete exclusivo de supervisão e equipas',
     },
     {
       id: 'members',
@@ -158,8 +170,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
   ];
 
-  // Filtra itens com base nas permissões de visualização
-  const visibleItems = navItems.filter((item) => can(item.id, 'VIEW'));
+  // Filtra itens com base nas permissões de visualização (ou permissões específicas de Quotas na Tesouraria)
+  const visibleItems = navItems.filter((item) =>
+    item.id === 'treasury'
+      ? can('treasury', 'VIEW') || can('treasury', 'CONFIGURE_QUOTAS') || can('treasury', 'WAIVE_QUOTA_DEBT')
+      : can(item.id, 'VIEW')
+  );
 
   return (
     <>

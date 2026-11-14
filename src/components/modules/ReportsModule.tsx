@@ -12,9 +12,11 @@ import {
 import { useClub } from '../../context/ClubContext';
 import { formatKz } from '../../utils/currency';
 import { formatDateAO } from '../../utils/date';
+import { ROLE_LABELS } from '../../services/permissionService';
+import { OfficialDocumentSignatures } from '../documents';
 
 export const ReportsModule: React.FC = () => {
-  const { state, can } = useClub();
+  const { state, can, currentUser } = useClub();
   const [reportType, setReportType] = useState<
     'members' | 'treasury' | 'activities' | 'training'
   >('members');
@@ -303,6 +305,15 @@ export const ReportsModule: React.FC = () => {
               </tbody>
             </table>
           </div>
+        )}
+
+        {currentUser && (
+          <OfficialDocumentSignatures
+            signerName={currentUser.name}
+            signerRole={ROLE_LABELS[currentUser.role]?.label || currentUser.role}
+            clubName={state.settings.clubName}
+            year={state.settings.currentYear}
+          />
         )}
       </div>
     </div>

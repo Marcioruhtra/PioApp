@@ -19,6 +19,7 @@ import {
   Award,
   CheckSquare,
   Layers,
+  Briefcase,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import { formatKz } from '../../utils/currency';
@@ -163,10 +164,19 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
                 <span>Registar Membro</span>
               </button>
             )}
+            {can('associate_director', 'VIEW') && (
+              <button
+                onClick={() => onNavigate('associate_director')}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-xs cursor-pointer"
+              >
+                <Briefcase className="w-3.5 h-3.5" />
+                <span>Gabinete Diretor-associado</span>
+              </button>
+            )}
             {currentUser.role === 'diretor_associado' && (
               <button
                 onClick={() => onNavigate('reports')}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-xs cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 rounded-lg transition-colors shadow-xs cursor-pointer"
               >
                 <BarChart3 className="w-3.5 h-3.5" />
                 <span>Relatórios Oficiais</span>

@@ -10,6 +10,7 @@ interface OfficialDocumentMetadataProps {
   recipientLabel?: string;
   location?: string;
   issuedByName?: string;
+  issuedByRoleLabel?: string;
   isCancelled?: boolean;
   cancellationReason?: string;
   isRejected?: boolean;
@@ -25,6 +26,7 @@ export const OfficialDocumentMetadata: React.FC<OfficialDocumentMetadataProps> =
   recipientLabel = "Cobrar a",
   location = "Luanda, Município de Talatona",
   issuedByName,
+  issuedByRoleLabel,
   isCancelled,
   cancellationReason,
   isRejected,
@@ -73,6 +75,9 @@ export const OfficialDocumentMetadata: React.FC<OfficialDocumentMetadataProps> =
             <div className="text-slate-600">
               <span>Registado por: </span>
               <span className="font-medium text-slate-800">{issuedByName}</span>
+              {issuedByRoleLabel && (
+                <span className="text-slate-500"> ({issuedByRoleLabel})</span>
+              )}
             </div>
           )}
         </div>
