@@ -26,7 +26,7 @@ import {
 import { useClub } from '../../context/ClubContext';
 import { UserAccount, RoleType, ModuleName } from '../../types';
 import { formatDateAO, formatDateTimeAO } from '../../utils/date';
-import { ROLE_LABELS, PERMISSION_CATALOG, ROLE_PERMISSIONS_MATRIX } from '../../services/permissionService';
+import { ROLE_LABELS, PERMISSION_CATALOG, ROLE_PERMISSIONS_MATRIX, filterVisibleAccessAccounts } from '../../services/permissionService';
 import { firebaseStatus } from '../../services/firebaseConfig';
 import { Modal } from '../common/Modal';
 import { IntegrityCheckResult } from '../../services/memberIntegrityService';
@@ -50,6 +50,8 @@ export const AuditAndAdminModule: React.FC = () => {
     runIntegrityVerification,
     forceSyncCloud,
   } = useClub();
+
+  const visibleAccessAccounts = filterVisibleAccessAccounts(state.users, currentUser.role);
 
   const [isVerifyingIntegrity, setIsVerifyingIntegrity] = useState(false);
   const [isTestingCloudSync, setIsTestingCloudSync] = useState(false);
@@ -379,7 +381,7 @@ export const AuditAndAdminModule: React.FC = () => {
           }`}
         >
           <Users className="w-4 h-4" />
-          <span>Contas de Acesso ({state.users.length})</span>
+          <span>Contas de Acesso ({visibleAccessAccounts.length})</span>
         </button>
         {currentUser.role === 'admin_tecnico' && (
           <>
@@ -458,7 +460,13 @@ export const AuditAndAdminModule: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
-                {state.users.map((u) => {
+                {visibleAccessAccounts.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-6 px-4 text-center text-slate-500">
+                      Nenhuma conta de acesso disponível para visualização neste perfil.
+                    </td>
+                  </tr>
+                ) : visibleAccessAccounts.map((u) => {
                   const linkedMember = state.members.find((m) => m.id === u.linkedMemberId);
 
                   return (
@@ -564,7 +572,7 @@ export const AuditAndAdminModule: React.FC = () => {
                                         setResetPasswordTargetUser(u);
                                       }}
                                       className="px-2.5 py-1 text-[11px] font-bold bg-amber-600 text-white rounded hover:bg-amber-700 transition-colors shadow-xs"
-                                      title="Atender solicitação de redefinição e reiniciar contador de 2 meses"
+                                      title="Atender solicitação de redefinição e liberar redefinição direta no Portal do Membro"
                                     >
                                       Redefinir Senha
                                     </button>
@@ -687,7 +695,7 @@ export const AuditAndAdminModule: React.FC = () => {
                                 <button
                                   onClick={() => setRoleChangeTargetUser(u)}
                                   className="px-2.5 py-1 text-[11px] font-semibold bg-blue-900 text-white rounded hover:bg-blue-800 transition-colors shadow-xs"
-                                  title="Promover a Secretário, Tesoureiro, Instrutor ou Membro"
+                                  title="Promover a Diretor-associado, Secretário, Tesoureiro, Instrutor, Capelão ou Membro"
                                 >
                                   Promover Cargo
                                 </button>
@@ -808,18 +816,22 @@ export const AuditAndAdminModule: React.FC = () => {
                   training: 'Formação',
                   documents: 'Documentos Oficiais',
                   member_portal: 'Portal do Membro',
-                  requests: 'Pedidos e Avisos',
+                  requests: 'Circulares e Avisos',
                   reports: 'Relatórios',
                   settings: 'Configurações',
                   audit: 'Auditoria',
-                  chaplaincy: 'Capelania Digital'
+                  chaplaincy: 'Capelania Digital',
+                  suggestions: 'Sugestões à Direção',
+                  messaging: 'Mensagens e Comunicados',
                 };
                 return (
                   <div key={module} className="border border-slate-200 rounded-lg p-4 bg-slate-50/50">
                     <h3 className="font-bold text-xs uppercase text-slate-900 mb-3 tracking-wide">{moduleLabels[module] || module}</h3>
                     <div className="space-y-2">
                       {permissions.map(p => {
-                        const hasThisPerm = (state.settings.permissionsMatrix || ROLE_PERMISSIONS_MATRIX)[selectedRoleForRBAC][p.module as ModuleName]?.includes(p.action) || false;
+                        const activeMatrix = state.settings.permissionsMatrix || ROLE_PERMISSIONS_MATRIX;
+                        const roleModules = activeMatrix[selectedRoleForRBAC] || ROLE_PERMISSIONS_MATRIX[selectedRoleForRBAC];
+                        const hasThisPerm = (roleModules?.[p.module as ModuleName] || ROLE_PERMISSIONS_MATRIX[selectedRoleForRBAC]?.[p.module as ModuleName] || []).includes(p.action);
                         return (
                           <label key={`${p.module}-${p.action}`} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer hover:text-blue-900">
                             <input 
@@ -1234,13 +1246,11 @@ export const AuditAndAdminModule: React.FC = () => {
               onChange={(e) => setNewUserForm({ ...newUserForm, role: e.target.value as RoleType })}
               className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
             >
-              <option value="membro">Membro / Encarregado</option>
-              <option value="instrutor">Instrutor / Formação</option>
-              <option value="tesoureiro">Tesoureiro</option>
-              <option value="secretario">Secretário</option>
-              <option value="diretor">Diretor</option>
-              <option value="capelao">Capelão</option>
-              <option value="admin_tecnico">Administrador Técnico (Institucional)</option>
+              {(['membro', 'instrutor', 'tesoureiro', 'secretario', 'capelao', 'diretor_associado', 'diretor', 'admin_tecnico'] as RoleType[]).map((roleOption) => (
+                <option key={roleOption} value={roleOption}>
+                  {ROLE_LABELS[roleOption]?.label || roleOption}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -1302,7 +1312,7 @@ export const AuditAndAdminModule: React.FC = () => {
             if (!resetPasswordTargetUser || !newPasswordInput.trim()) return;
             const res = manualPasswordReset(resetPasswordTargetUser.id, newPasswordInput.trim());
             if (res.success) {
-              showFeedback('success', `Palavra-passe de ${resetPasswordTargetUser.name} redefinida com sucesso e contador de 2 meses automaticamente reiniciado.`);
+              showFeedback('success', `Palavra-passe de ${resetPasswordTargetUser.name} redefinida com sucesso. O utilizador já pode redefinir a sua própria senha no Portal do Membro.`);
               setResetPasswordTargetUser(null);
               setNewPasswordInput('');
             } else {
@@ -1312,7 +1322,7 @@ export const AuditAndAdminModule: React.FC = () => {
           className="space-y-4 text-xs"
         >
           <p className="text-slate-600">
-            Introduza a nova palavra-passe oficial para o utilizador <strong>{resetPasswordTargetUser?.email}</strong>. Ao confirmar, a solicitação será concluída e o contador de 2 meses para nova alteração direta será <strong>automaticamente reiniciado</strong>.
+            Introduza a nova palavra-passe oficial para o utilizador <strong>{resetPasswordTargetUser?.email}</strong>. Ao confirmar, a solicitação será concluída e o utilizador ficará <strong>imediatamente autorizado a redefinir a sua própria palavra-passe no Portal do Membro</strong>.
           </p>
           <div>
             <label className="block text-slate-700 font-semibold mb-1">Nova Palavra-passe</label>
@@ -1361,20 +1371,20 @@ export const AuditAndAdminModule: React.FC = () => {
                   <span>Competência do Diretor:</span>
                 </p>
                 <p className="mt-1 text-slate-600">
-                  O Diretor pode promover a todos os cargos operacionais (<strong>Secretário</strong>, <strong>Tesoureiro</strong>, <strong>Instrutor</strong> e <strong>Membro</strong>). Não é permitido promover a <strong>Administrador Técnico</strong> nem a <strong>Diretor</strong>.
+                  O Diretor pode promover a todos os cargos operacionais (<strong>Diretor-associado</strong>, <strong>Secretário</strong>, <strong>Tesoureiro</strong>, <strong>Instrutor</strong>, <strong>Capelão</strong> e <strong>Membro</strong>). Não é permitido promover a <strong>Administrador Técnico</strong> nem a <strong>Diretor</strong>.
                 </p>
               </div>
             ) : (
               <div className="p-3 bg-slate-50 border border-slate-200 text-slate-800 rounded-lg">
                 <p className="font-bold text-slate-900">Gestão de Papéis pelo Administrador:</p>
                 <p className="mt-0.5 text-slate-600">
-                  O Administrador Técnico pode promover ou alterar o cargo para qualquer função institucional ativa no clube.
+                  O Administrador Técnico pode promover ou alterar o cargo para qualquer função institucional ativa no clube (incluindo Diretor-associado, Diretor e Capelão).
                 </p>
               </div>
             )}
 
             <div className="space-y-2">
-              {(['secretario', 'tesoureiro', 'instrutor', 'membro', 'diretor', 'capelao', 'admin_tecnico'] as RoleType[])
+              {(['diretor_associado', 'secretario', 'tesoureiro', 'instrutor', 'capelao', 'membro', 'diretor', 'admin_tecnico'] as RoleType[])
                 .filter((r) => {
                   // Se for Diretor: NÃO pode promover a Administrador nem a Diretor
                   if (currentUser.role === 'diretor' && !can('audit', 'ADMIN')) {
@@ -1570,7 +1580,7 @@ export const AuditAndAdminModule: React.FC = () => {
                 <li><strong>Eliminação de todo o dinheiro e finanças</strong>: Todas as receitas, despesas, recibos e comprovativos são eliminados (saldo a 0,00 Kz).</li>
                 <li><strong>Eliminação de todos os documentos oficiais</strong>: Todas as atas, declarações e certificados emitidos são removidos.</li>
                 <li><strong>Eliminação de classes e especialidades</strong>: Todas as classes, especialidades e progressos formativos são esvaziados.</li>
-                <li><strong>Eliminação de todas as outras contas de acesso</strong>: Todos os diretores, secretários, tesoureiros e instrutores são removidos.</li>
+                <li><strong>Eliminação de todas as outras contas de acesso</strong>: Todos os diretores, diretores-associados, secretários, tesoureiros, instrutores e capelães são removidos.</li>
                 <li><strong>Conta única mantida</strong>: Apenas a sua conta de Administrador Técnico continuará ativa no sistema como o primeiro e único registo.</li>
               </ul>
             </div>
@@ -1647,7 +1657,7 @@ export const AuditAndAdminModule: React.FC = () => {
                 
                 if (res.success) {
                   const pwdUpdatedMsg = editUserForm.password.trim()
-                    ? ' e o contador de 2 meses para alteração pelo utilizador foi reiniciado.'
+                    ? ' e a redefinição direta no Portal do Membro foi liberada para o utilizador.'
                     : '.';
                   showFeedback('success', `Conta de ${editUserTargetUser.name} atualizada com sucesso${pwdUpdatedMsg}`);
                   setEditUserTargetUser(null);
@@ -1659,7 +1669,7 @@ export const AuditAndAdminModule: React.FC = () => {
             >
               {editUserTargetUser.passwordResetRequested && (
                 <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg text-[11px]">
-                  <strong>Solicitação de Redefinição Pendente:</strong> Este utilizador pediu alteração de senha. Ao definir uma nova palavra-passe abaixo, o pedido é concluído e o tempo de 2 meses (60 dias) reinicia automaticamente.
+                  <strong>Solicitação de Redefinição Pendente:</strong> Este utilizador pediu alteração de senha. Ao definir uma nova palavra-passe abaixo, o pedido é concluído e o utilizador poderá redefinir a sua própria senha diretamente no Portal do Membro.
                 </div>
               )}
               <div>
@@ -1758,12 +1768,11 @@ export const AuditAndAdminModule: React.FC = () => {
                   onChange={(e) => setEditUserForm({ ...editUserForm, role: e.target.value as RoleType })}
                   className="w-full p-2 border border-slate-200 rounded"
                 >
-                  <option value="membro">Membro</option>
-                  <option value="instrutor">Instrutor</option>
-                  <option value="tesoureiro">Tesoureiro</option>
-                  <option value="secretario">Secretário</option>
-                  <option value="diretor">Diretor</option>
-                  <option value="admin_tecnico">Admin Técnico</option>
+                  {(['membro', 'instrutor', 'tesoureiro', 'secretario', 'capelao', 'diretor_associado', 'diretor', 'admin_tecnico'] as RoleType[]).map((roleOption) => (
+                    <option key={roleOption} value={roleOption}>
+                      {ROLE_LABELS[roleOption]?.label || roleOption}
+                    </option>
+                  ))}
                 </select>
               </div>
 

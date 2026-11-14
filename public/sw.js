@@ -1,5 +1,5 @@
 // Service Worker for PioApp PWA (Network-First for Real-Time Synchronization)
-const CACHE_NAME = 'cda-cache-v3';
+const CACHE_NAME = 'cda-cache-v4';
 
 self.addEventListener('install', () => {
   self.skipWaiting();

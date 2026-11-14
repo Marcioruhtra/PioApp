@@ -14,6 +14,8 @@ import {
   Shield,
   LogOut,
   X,
+  Heart,
+  Send,
 } from 'lucide-react';
 import { ModuleName } from '../../types';
 import { useClub } from '../../context/ClubContext';
@@ -53,8 +55,11 @@ export const AndroidDrawer: React.FC<AndroidDrawerProps> = ({
     { id: 'documents', label: 'Documentos Oficiais', icon: FileText },
     { id: 'member_portal', label: 'Portal do Membro', icon: UserCheck },
     { id: 'requests', label: 'Circulares & Avisos', icon: MessageSquare },
+    { id: 'chaplaincy', label: 'Capelania Digital', icon: Heart },
     { id: 'reports', label: 'Relatórios Oficiais', icon: BarChart3 },
     { id: 'settings', label: 'Configurações', icon: Settings },
+    { id: 'suggestions', label: 'Sugestões à Direção', icon: MessageSquare },
+    { id: 'messaging', label: 'Mensagens', icon: Send },
     { id: 'audit', label: 'Auditoria e Acessos', icon: ShieldAlert },
   ];
 

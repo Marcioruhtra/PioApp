@@ -100,6 +100,11 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   { module: 'suggestions', action: 'VIEW', description: 'Consultar sugestões' },
   { module: 'suggestions', action: 'CREATE', description: 'Enviar sugestão' },
   { module: 'suggestions', action: 'APPROVE', description: 'Responder sugestões (Diretor)' },
+
+  // Mensagens
+  { module: 'messaging', action: 'VIEW', description: 'Consultar central de mensagens' },
+  { module: 'messaging', action: 'CREATE', description: 'Enviar mensagens para membros, equipas ou clube' },
+  { module: 'messaging', action: 'ADMIN', description: 'Eliminar mensagens no histórico' },
 ];
 
 // Matriz de permissões por papel institucional (Gerenciada pelo Admin)
@@ -134,6 +139,22 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     audit: ['VIEW'],
     chaplaincy: ['VIEW', 'CREATE', 'APPROVE'],
     suggestions: ['VIEW', 'APPROVE'],
+    messaging: ['VIEW', 'CREATE'],
+  },
+  diretor_associado: {
+    dashboard: ['VIEW'],
+    members: ['VIEW', 'EDIT', 'EXPORT', 'PRINT'],
+    treasury: [],
+    activities: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT'],
+    training: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
+    documents: ['VIEW', 'CREATE', 'PRINT', 'EXPORT'],
+    member_portal: ['VIEW'],
+    requests: ['VIEW', 'CREATE', 'APPROVE'],
+    reports: ['VIEW', 'EXPORT', 'PRINT'],
+    settings: ['VIEW'],
+    audit: ['VIEW'],
+    chaplaincy: ['VIEW', 'CREATE'],
+    suggestions: [],
     messaging: ['VIEW', 'CREATE'],
   },
   secretario: {
@@ -229,12 +250,14 @@ export const hasPermission = (
 };
 
 export const updatePermission = (role: RoleType, module: ModuleName, action: PermissionAction, add: boolean) => {
+  if (!ROLE_PERMISSIONS_MATRIX[role]) return;
+  const current = ROLE_PERMISSIONS_MATRIX[role][module] || [];
   if (add) {
-    if (!ROLE_PERMISSIONS_MATRIX[role][module].includes(action)) {
-      ROLE_PERMISSIONS_MATRIX[role][module].push(action);
+    if (!current.includes(action)) {
+      ROLE_PERMISSIONS_MATRIX[role][module] = [...current, action];
     }
   } else {
-    ROLE_PERMISSIONS_MATRIX[role][module] = ROLE_PERMISSIONS_MATRIX[role][module].filter(a => a !== action);
+    ROLE_PERMISSIONS_MATRIX[role][module] = current.filter(a => a !== action);
   }
 };
 
@@ -249,6 +272,10 @@ export const ROLE_LABELS: Record<RoleType, { label: string; description: string 
   diretor: {
     label: 'Diretor do Clube',
     description: 'Acesso operacional amplo, aprovação de despesas e atividades, validação final de formação.',
+  },
+  diretor_associado: {
+    label: 'Diretor-associado',
+    description: 'Supervisão administrativa, gestão de equipas, relatórios e acompanhamento de atividades (sem funções financeiras ou espirituais exclusivas).',
   },
   secretario: {
     label: 'Secretário',
@@ -298,42 +325,64 @@ export const syncPermissionsMatrix = (
   const base: Record<RoleType, Record<ModuleName, PermissionAction[]>> = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
   if (!existingMatrix) return base;
 
+  const synced: Record<RoleType, Record<ModuleName, PermissionAction[]>> = JSON.parse(JSON.stringify(existingMatrix));
   const roles = Object.keys(base) as RoleType[];
   const newActions: PermissionAction[] = ['CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC'];
-  const isLegacy = !newActions.some(act => existingMatrix.admin_tecnico?.treasury?.includes(act));
+  const isLegacy = !newActions.some(act => synced.admin_tecnico?.treasury?.includes(act));
 
   for (const role of roles) {
-    if (!existingMatrix[role]) {
-      existingMatrix[role] = base[role];
+    if (!synced[role]) {
+      synced[role] = JSON.parse(JSON.stringify(base[role]));
       continue;
     }
     const modules = Object.keys(base[role]) as ModuleName[];
     for (const mod of modules) {
-      if (!existingMatrix[role][mod]) {
-        existingMatrix[role][mod] = [...base[role][mod]];
+      if (!Array.isArray(synced[role][mod])) {
+        synced[role][mod] = [...base[role][mod]];
       } else if (mod === 'activities') {
         for (const act of base[role].activities) {
-          if (!existingMatrix[role].activities.includes(act)) {
-            existingMatrix[role].activities.push(act);
+          if (!synced[role].activities.includes(act)) {
+            synced[role].activities.push(act);
           }
         }
       } else if (mod === 'treasury' && isLegacy) {
         for (const newAct of newActions) {
-          if (base[role].treasury.includes(newAct) && !existingMatrix[role].treasury.includes(newAct)) {
-            existingMatrix[role].treasury.push(newAct);
+          if (base[role].treasury.includes(newAct) && !synced[role].treasury.includes(newAct)) {
+            synced[role].treasury.push(newAct);
           }
         }
       }
     }
   }
 
-  return existingMatrix;
+  return synced;
 };
 
 /**
- * Em Gestão de Atividades e Reuniões, os papéis membro, capelão e tesoureiro
- * não podem visualizar nem aceder à sub-aba de Presenças e Frequência.
+ * Em Gestão de Atividades e Reuniões, os papéis membro, capelão, tesoureiro e diretor_associado
+ * não visualizam a sub-aba sensível de Presenças e Frequência.
  */
 export const canViewActivitiesAttendanceTab = (role: RoleType): boolean => {
-  return role !== 'membro' && role !== 'capelao' && role !== 'tesoureiro';
+  return role !== 'membro' && role !== 'capelao' && role !== 'tesoureiro' && role !== 'diretor_associado';
 };
+
+/**
+ * Em Auditoria e Acessos -> "Contas de Acesso", apenas Administradores (admin_tecnico) podem
+ * visualizar contas de administradores; outros cargos e funções visualizam apenas contas não-administradoras.
+ */
+export const canViewAccountInAccessList = (
+  viewerRole: RoleType,
+  targetAccountRole: RoleType
+): boolean => {
+  if (viewerRole === 'admin_tecnico') return true;
+  return targetAccountRole !== 'admin_tecnico';
+};
+
+export const filterVisibleAccessAccounts = <T extends { role: RoleType }>(
+  accounts: T[],
+  viewerRole: RoleType
+): T[] => {
+  if (viewerRole === 'admin_tecnico') return accounts;
+  return accounts.filter((acc) => canViewAccountInAccessList(viewerRole, acc.role));
+};
+

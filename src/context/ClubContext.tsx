@@ -674,9 +674,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     updatePermission(role, module, action, add);
-    const currentMatrix = state.settings.permissionsMatrix || JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
-    const roleMat = currentMatrix[role] ? { ...currentMatrix[role] } : {};
-    const modActions = roleMat[module] ? [...roleMat[module]] : [];
+    const currentMatrix = syncPermissionsMatrix(state.settings.permissionsMatrix);
+    const roleMat = { ...currentMatrix[role] };
+    const modActions = Array.isArray(roleMat[module]) ? [...roleMat[module]] : [];
 
     if (add) {
       if (!modActions.includes(action)) modActions.push(action);
@@ -688,7 +688,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const newMatrix = { ...currentMatrix, [role]: roleMat };
     updateSettings({ permissionsMatrix: newMatrix });
-    logAction('audit', 'ALTERACAO_PERMISSAO', `Permissão ${module}:${action} para o papel ${role} alterada para ${add ? 'Atribuída' : 'Revogada'}`);
+    logAction('audit', 'ALTERACAO_PERMISSAO', `Permissão ${module}:${action} para o papel ${ROLE_LABELS[role]?.label || role} alterada para ${add ? 'Atribuída' : 'Revogada'}`);
     return { success: true };
   };
 
@@ -935,7 +935,12 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateMember = (id: string, updates: Partial<Member>) => {
-    const isAllowed = can('members', 'EDIT') || currentUser.role === 'admin_tecnico' || currentUser.role === 'secretario' || currentUser.role === 'diretor';
+    const isAllowed =
+      can('members', 'EDIT') ||
+      currentUser.role === 'admin_tecnico' ||
+      currentUser.role === 'secretario' ||
+      currentUser.role === 'diretor' ||
+      currentUser.role === 'diretor_associado';
     if (!isAllowed) {
       return { success: false, error: 'Sem permissão para editar dados do membro.' };
     }
@@ -1181,7 +1186,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const notif: ClubNotification = {
       id: `NOTIF-AUTH-${Date.now()}`,
       title: `Pedido de Autorização: ${operationType === 'eliminacao' ? 'Eliminação' : 'Arquivamento'} de Membro`,
-      message: `${currentUser.name} (${currentUser.role}) solicitou autorização para ${operationType} do membro ${member.fullName} (${member.manualNumber || member.id}). Motivo: ${reason.trim()}`,
+      message: `${currentUser.name} (${ROLE_LABELS[currentUser.role]?.label || currentUser.role}) solicitou autorização para ${operationType} do membro ${member.fullName} (${member.manualNumber || member.id}). Motivo: ${reason.trim()}`,
       timestamp: getNowISOString(),
       read: false,
       category: 'member',
@@ -2614,8 +2619,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const addUnit = (name: string, category: MemberCategory | 'mista', leaderUserId?: string) => {
-    if (currentUser.role !== 'diretor' && currentUser.role !== 'secretario' && currentUser.role !== 'admin_tecnico') {
-      return { success: false, error: 'Apenas o Diretor e o Secretário podem adicionar novas equipas/unidades.' };
+    if (
+      currentUser.role !== 'diretor' &&
+      currentUser.role !== 'diretor_associado' &&
+      currentUser.role !== 'secretario' &&
+      currentUser.role !== 'admin_tecnico'
+    ) {
+      return { success: false, error: 'Apenas a Direção e o Secretário podem adicionar novas equipas.' };
     }
     const newUnit = {
       id: `UNT-${Date.now().toString().slice(-4)}`,
@@ -2636,8 +2646,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateUnit = (id: string, name: string, category: MemberCategory | 'mista', leaderUserId?: string) => {
-    if (currentUser.role !== 'diretor' && currentUser.role !== 'secretario' && currentUser.role !== 'admin_tecnico') {
-      return { success: false, error: 'Apenas o Diretor e o Secretário podem editar equipas/unidades.' };
+    if (
+      currentUser.role !== 'diretor' &&
+      currentUser.role !== 'diretor_associado' &&
+      currentUser.role !== 'secretario' &&
+      currentUser.role !== 'admin_tecnico'
+    ) {
+      return { success: false, error: 'Apenas a Direção e o Secretário podem editar equipas.' };
     }
     const trimmedName = name.trim();
     let oldName = '';
@@ -2661,8 +2676,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const deleteUnit = (id: string) => {
-    if (currentUser.role !== 'diretor' && currentUser.role !== 'secretario' && currentUser.role !== 'admin_tecnico') {
-      return { success: false, error: 'Apenas o Diretor e o Secretário podem remover equipas/unidades.' };
+    if (
+      currentUser.role !== 'diretor' &&
+      currentUser.role !== 'diretor_associado' &&
+      currentUser.role !== 'secretario' &&
+      currentUser.role !== 'admin_tecnico'
+    ) {
+      return { success: false, error: 'Apenas a Direção e o Secretário podem remover equipas.' };
     }
     let unitName = '';
     setState((prev) => {
@@ -2684,9 +2704,14 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const assignMemberToUnit = (memberId: string, unitOrTeam?: string) => {
-    const isAllowed = currentUser.role === 'secretario' || currentUser.role === 'diretor' || currentUser.role === 'admin_tecnico' || can('members', 'EDIT');
+    const isAllowed =
+      currentUser.role === 'secretario' ||
+      currentUser.role === 'diretor' ||
+      currentUser.role === 'diretor_associado' ||
+      currentUser.role === 'admin_tecnico' ||
+      can('members', 'EDIT');
     if (!isAllowed) {
-      return { success: false, error: 'Apenas a Secretaria e a Administração podem alocar membros em equipas.' };
+      return { success: false, error: 'Apenas a Direção, Secretaria e Administração podem alocar membros em equipas.' };
     }
     const now = getNowISOString();
     let memberName = '';
@@ -2705,9 +2730,14 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateMemberCategory = (memberId: string, category: MemberCategory) => {
-    const isAllowed = currentUser.role === 'admin_tecnico' || currentUser.role === 'secretario' || currentUser.role === 'diretor' || can('members', 'EDIT');
+    const isAllowed =
+      currentUser.role === 'admin_tecnico' ||
+      currentUser.role === 'secretario' ||
+      currentUser.role === 'diretor' ||
+      currentUser.role === 'diretor_associado' ||
+      can('members', 'EDIT');
     if (!isAllowed) {
-      return { success: false, error: 'Apenas o Administrador e o Secretário podem editar as categorias dos membros.' };
+      return { success: false, error: 'Apenas a Direção, Administrador e Secretário podem editar as categorias dos membros.' };
     }
     const now = getNowISOString();
     let memberName = '';
@@ -2861,7 +2891,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // --- PORTAL DO MEMBRO & PEDIDOS ---
   // --- CIRCULARES ---
   const createCircular = (data: Omit<Circular, 'id' | 'publishedAt' | 'publishedByUserId' | 'publishedByName' | 'readBy'>) => {
-    if (!can('requests', 'CREATE') && currentUser.role !== 'diretor' && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'secretario') {
+    if (
+      !can('requests', 'CREATE') &&
+      currentUser.role !== 'diretor' &&
+      currentUser.role !== 'diretor_associado' &&
+      currentUser.role !== 'admin_tecnico' &&
+      currentUser.role !== 'secretario'
+    ) {
       return { success: false, error: 'Sem autorização para publicar circulares oficiais.' };
     }
 
@@ -3433,24 +3469,36 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
                             user.name.toLowerCase().includes('institucional');
     const linkedMemberId = isInstitutional ? undefined : user.linkedMemberId;
 
+    const nowISO = getNowISOString();
     const newId = `USR-${Date.now().toString().slice(-4)}`;
     const newUser: UserAccount = {
       ...user,
       id: newId,
       linkedMemberId,
-      createdAt: getNowISOString(),
+      createdAt: nowISO,
     };
 
     const updatedUsers = [...state.users, newUser];
-    const newState = {
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'audit',
+      'CRIACAO_CONTA',
+      `Conta criada para ${newUser.name} (${ROLE_LABELS[newUser.role]?.label || newUser.role})`,
+      newId,
+      newUser.email
+    );
+    const newState: ClubDatabaseState = {
       ...state,
       users: updatedUsers,
+      auditLogs: [auditEntry, ...state.auditLogs],
+      updatedAt: nowISO,
     };
     setState(newState);
     saveStateToStorage(newState);
     pushToFirestore(newState);
 
-    logAction('audit', 'CRIACAO_CONTA', `Conta criada para ${newUser.name} (${newUser.role})`, newId, newUser.email);
     return { success: true };
   };
 
@@ -3461,11 +3509,12 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const targetUser = state.users.find(u => u.id === userId);
     if (!targetUser) return { success: false, error: 'Utilizador não encontrado.' };
 
+    const effectiveRole = data.role || targetUser.role;
     const isInstitutional = targetUser.id === 'INST-001' || 
                             targetUser.id === 'USR-ADMIN' || 
                             targetUser.email.toLowerCase() === 'institucional@clubedalvorada.ao' || 
-                            targetUser.role === 'admin_tecnico' ||
-                            targetUser.role === 'capelao' ||
+                            effectiveRole === 'admin_tecnico' ||
+                            effectiveRole === 'capelao' ||
                             targetUser.name.toLowerCase().includes('institucional');
 
     if (isInstitutional && data.linkedMemberId && data.linkedMemberId.trim() !== '') {
@@ -3489,10 +3538,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
             ? {
                 password: newPassword!.trim(),
                 passwordResetRequested: false,
-                lastPasswordChangedAt: nowISO,
+                lastAdminPasswordResetAt: nowISO,
               }
             : {}),
         };
+        if (isChangingPassword) {
+          delete userCopy.lastPasswordChangedAt;
+        }
         delete (userCopy as any).manualNumber;
         return userCopy;
       }
@@ -3528,7 +3580,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       'audit',
       isChangingPassword ? 'REDEFINICAO_SENHA' : 'ATUALIZACAO_CONTA_LOGIN',
       isChangingPassword
-        ? `Palavra-passe atualizada pelo Administrador para ${targetUser.name} e contador de 2 meses automaticamente reiniciado`
+        ? `Palavra-passe atualizada pelo Administrador para ${targetUser.name}; redefinição direta no Portal do Membro desbloqueada para o utilizador`
         : `Dados de login atualizados para ${targetUser.name}`,
       userId,
       targetUser.email
@@ -3627,19 +3679,40 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    setState((prev) => ({
-      ...prev,
-      users: prev.users.map(u => u.id === userId ? { ...u, role: newRole } : u)
-    }));
+    const nowISO = getNowISOString();
+    const updatedUsers = state.users.map(u => (u.id === userId ? { ...u, role: newRole } : u));
+    const updatedTargetUser = updatedUsers.find(u => u.id === userId);
+    const updatedCurrentUser =
+      state.currentUser.id === userId && updatedTargetUser ? updatedTargetUser : state.currentUser;
 
-    logAction(
+    if (state.currentUser.id === userId && updatedTargetUser) {
+      syncStoredSessionUser(updatedTargetUser);
+    }
+
+    const roleLabel = ROLE_LABELS[newRole]?.label || newRole;
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
       'audit',
       'ALTERACAO_CARGO',
-      `${currentUser.role === 'diretor' ? 'Diretor' : 'Administrador'} alterou o cargo de ${targetUser.name} para ${newRole}`,
+      `${currentUser.role === 'diretor' ? 'Diretor' : 'Administrador'} alterou o cargo de ${targetUser.name} para ${roleLabel}`,
       userId,
       targetUser.name,
-      newRole
+      roleLabel
     );
+
+    const newState: ClubDatabaseState = {
+      ...state,
+      users: updatedUsers,
+      currentUser: updatedCurrentUser,
+      auditLogs: [auditEntry, ...state.auditLogs],
+      updatedAt: nowISO,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    pushToFirestore(newState);
     return { success: true };
   };
 
@@ -3671,14 +3744,23 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Apenas o Administrador Técnico pode redefinir palavras-passe.' };
     }
     const nowISO = getNowISOString();
+    const applyAdminPasswordReset = (u: UserAccount): UserAccount => {
+      const copy: UserAccount = {
+        ...u,
+        password: newPassword.trim(),
+        passwordResetRequested: false,
+        lastAdminPasswordResetAt: nowISO,
+      };
+      delete copy.lastPasswordChangedAt;
+      return copy;
+    };
+
     const updatedUsers = state.users.map(u => 
-      u.id === userId 
-        ? { ...u, password: newPassword.trim(), passwordResetRequested: false, lastPasswordChangedAt: nowISO } 
-        : u
+      u.id === userId ? applyAdminPasswordReset(u) : u
     );
 
     const updatedCurrentUser = state.currentUser.id === userId
-      ? { ...state.currentUser, password: newPassword.trim(), passwordResetRequested: false, lastPasswordChangedAt: nowISO }
+      ? applyAdminPasswordReset(state.currentUser)
       : state.currentUser;
 
     if (state.currentUser.id === userId) {
@@ -3695,7 +3777,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setState(newState);
     pushToFirestore(newState);
 
-    logAction('audit', 'REDEFINICAO_SENHA', `Palavra-passe redefinida pelo Administrador para o utilizador ${userId} e tempo de 2 meses reiniciado automaticamente`, userId);
+    logAction('audit', 'REDEFINICAO_SENHA', `Palavra-passe redefinida pelo Administrador para o utilizador ${userId}; redefinição direta no Portal do Membro desbloqueada para o utilizador`, userId);
     return { success: true };
   };
 
@@ -3781,6 +3863,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       lastPasswordChangedAt: nowISO,
       passwordResetRequested: false,
     };
+    delete updatedUser.lastAdminPasswordResetAt;
 
     syncStoredSessionUser(updatedUser);
 

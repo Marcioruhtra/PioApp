@@ -6,6 +6,7 @@
 export type RoleType = 
   | 'admin_tecnico' 
   | 'diretor' 
+  | 'diretor_associado'
   | 'secretario' 
   | 'tesoureiro' 
   | 'instrutor' 
@@ -57,6 +58,7 @@ export interface UserAccount {
   createdAt: string;
   passwordResetRequested?: boolean;
   lastPasswordChangedAt?: string;
+  lastAdminPasswordResetAt?: string;
 }
 
 export type MemberCategory = 

@@ -83,7 +83,24 @@ async function startServer() {
     });
   }
 
-  const port = Number(process.env.PORT) || 3000;
+  const args = process.argv.slice(2);
+  let cliPort: number | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--port' && args[i + 1]) {
+      const parsed = Number(args[i + 1]);
+      if (!Number.isNaN(parsed) && parsed > 0) cliPort = parsed;
+    } else if (args[i].startsWith('--port=')) {
+      const parsed = Number(args[i].split('=')[1]);
+      if (!Number.isNaN(parsed) && parsed > 0) cliPort = parsed;
+    }
+  }
+
+  const envPort = Number(process.env.PORT);
+  const defaultAppPort = Number(process.env.DEFAULT_APP_PORT) || 3000;
+  const port =
+    cliPort ||
+    (!isProduction && envPort === 8080 ? defaultAppPort : envPort || defaultAppPort);
+
   app.listen(port, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${port}`);
   });

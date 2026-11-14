@@ -38,6 +38,7 @@ import { EmptyState } from '../common/EmptyState';
 import { isMemberNumberUnique, findPotentialDuplicateMember } from '../../services/storageService';
 import { MemberDigitalCardModal } from '../common/MemberDigitalCardModal';
 import { processProfilePhoto } from '../../utils/fileUpload';
+import { ROLE_LABELS } from '../../services/permissionService';
 
 export const MembersModule: React.FC = () => {
   const {
@@ -65,9 +66,11 @@ export const MembersModule: React.FC = () => {
   const isAdmin = currentUser.role === 'admin_tecnico' || can('audit', 'ADMIN');
   const isSecretary = currentUser.role === 'secretario';
   const isDirector = currentUser.role === 'diretor';
+  const isAssociateDirector = currentUser.role === 'diretor_associado';
   const isDirectorOrSecretary = isDirector || isSecretary || isAdmin;
-  const canEdit = can('members', 'EDIT') || isSecretary || isAdmin || isDirector;
-  const canEditCategory = isAdmin || isSecretary || isDirector;
+  const canManageTeams = isDirector || isAssociateDirector || isSecretary || isAdmin;
+  const canEdit = can('members', 'EDIT') || isSecretary || isAdmin || isDirector || isAssociateDirector;
+  const canEditCategory = isAdmin || isSecretary || isDirector || isAssociateDirector;
 
   // Visualização e Navegação
   const [activeView, setActiveView] = useState<'members' | 'authorizations'>('members');
@@ -534,7 +537,7 @@ export const MembersModule: React.FC = () => {
             </button>
           )}
 
-          {isDirectorOrSecretary && (
+          {canManageTeams && (
             <button
               onClick={() => {
                 setEditingUnitId(null);
@@ -906,7 +909,9 @@ export const MembersModule: React.FC = () => {
                           </td>
                           <td className="py-3 px-4">
                             <div className="font-semibold text-slate-900">{req.requestedByName}</div>
-                            <div className="text-[10px] text-slate-500 capitalize">{(req.requestedByRole || 'Membro').replace('_', ' ')}</div>
+                            <div className="text-[10px] text-slate-500">
+                              {req.requestedByRole ? (ROLE_LABELS[req.requestedByRole]?.label || req.requestedByRole) : 'Membro'}
+                            </div>
                             <div className="text-[10px] text-slate-400 mt-0.5">{formatDateAO(req.requestedAt)}</div>
                           </td>
                           <td className="py-3 px-4 max-w-xs">
@@ -1895,7 +1900,7 @@ export const MembersModule: React.FC = () => {
                     .filter((u) => u.active)
                     .map((usr) => (
                       <option key={usr.id} value={usr.id}>
-                        {usr.name} ({usr.role})
+                        {usr.name} ({ROLE_LABELS[usr.role]?.label || usr.role})
                       </option>
                     ))}
                 </select>
@@ -1981,7 +1986,7 @@ export const MembersModule: React.FC = () => {
                           </div>
 
                           <p className="text-[11px] text-slate-600 mt-1">
-                            Líder da Equipa: <strong className="text-slate-800">{leaderUser ? `${leaderUser.name} (${leaderUser.role})` : 'Nenhum líder vinculado'}</strong>
+                            Líder da Equipa: <strong className="text-slate-800">{leaderUser ? `${leaderUser.name} (${ROLE_LABELS[leaderUser.role]?.label || leaderUser.role})` : 'Nenhum líder vinculado'}</strong>
                           </p>
 
                           {/* Mistura de Categorias na Equipa */}

@@ -319,6 +319,7 @@ export const DocumentsModule: React.FC = () => {
                 <span className="bg-blue-100 dark:bg-slate-800 text-blue-900 dark:text-blue-200 px-1.5 py-0.5 rounded font-mono text-[11px]">&#123;numero_documento&#125;</span>
                 <span className="bg-blue-100 dark:bg-slate-800 text-blue-900 dark:text-blue-200 px-1.5 py-0.5 rounded font-mono text-[11px]">&#123;tipo_documento&#125;</span>
                 <span className="bg-blue-100 dark:bg-slate-800 text-blue-900 dark:text-blue-200 px-1.5 py-0.5 rounded font-mono text-[11px]">&#123;cargo_diretor&#125;</span>
+                <span className="bg-blue-100 dark:bg-slate-800 text-blue-900 dark:text-blue-200 px-1.5 py-0.5 rounded font-mono text-[11px]">&#123;diretor_associado&#125;</span>
                 <span className="bg-blue-100 dark:bg-slate-800 text-blue-900 dark:text-blue-200 px-1.5 py-0.5 rounded font-mono text-[11px]">&#123;secretario&#125;</span>
                 <span className="bg-blue-100 dark:bg-slate-800 text-blue-900 dark:text-blue-200 px-1.5 py-0.5 rounded font-mono text-[11px]">&#123;tesoureiro&#125;</span>
                 <span className="bg-blue-100 dark:bg-slate-800 text-blue-900 dark:text-blue-200 px-1.5 py-0.5 rounded font-mono text-[11px]">&#123;capelao&#125;</span>

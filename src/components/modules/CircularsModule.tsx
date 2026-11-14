@@ -30,7 +30,7 @@ export const CircularsModule: React.FC = () => {
   const [circularForm, setCircularForm] = useState({
     title: '',
     content: '',
-    targetRoles: ['membro', 'instrutor', 'secretario', 'tesoureiro', 'diretor', 'admin_tecnico'] as RoleType[],
+    targetRoles: ['membro', 'instrutor', 'secretario', 'tesoureiro', 'diretor_associado', 'diretor', 'admin_tecnico'] as RoleType[],
     priority: 'normal' as Circular['priority'],
   });
 
@@ -50,7 +50,7 @@ export const CircularsModule: React.FC = () => {
       setCircularForm({
         title: '',
         content: '',
-        targetRoles: ['membro', 'instrutor', 'secretario', 'tesoureiro', 'diretor', 'admin_tecnico'],
+        targetRoles: ['membro', 'instrutor', 'secretario', 'tesoureiro', 'diretor_associado', 'diretor', 'admin_tecnico'],
         priority: 'normal',
       });
     }

@@ -1,5 +1,5 @@
 import { loadInitialState, createCleanCloudShellState, generateNextDocumentNumber, isMemberNumberUnique, findPotentialDuplicateMember, cleanSystemStorageSpace } from '../src/services/storageService';
-import { hasPermission, ROLE_PERMISSIONS_MATRIX, updatePermission, canViewActivitiesAttendanceTab } from '../src/services/permissionService';
+import { hasPermission, ROLE_PERMISSIONS_MATRIX, ROLE_LABELS, updatePermission, canViewActivitiesAttendanceTab, canViewAccountInAccessList, filterVisibleAccessAccounts, syncPermissionsMatrix, PERMISSION_CATALOG } from '../src/services/permissionService';
 import { formatKz } from '../src/utils/currency';
 import { formatDateAO } from '../src/utils/date';
 import { INACTIVITY_TIMEOUT_MS, isSessionInactive, getRemainingInactivityMs } from '../src/utils/inactivity';
@@ -613,30 +613,45 @@ function runTests() {
   assert(testState.receipts.some(r => r.memberId === authMember.id), "REQ. 2.4 CUMPRIDO: Recibos financeiros continuam preservados após eliminação do membro");
   assert(testState.receipts.find(r => r.id === 'REC-2026-999')?.amountPaidInCents === 200000, "Valor do recibo histórico permanece inalterado para auditoria");
 
-  // 18. TESTE DE SISTEMA 100% TEMPO REAL (SEM DADOS DE TESTE) E REINÍCIO DE TEMPORIZADOR DE SENHA
-  console.log("\n18. Teste de Estado Limpo na Nuvem & Reinício de Temporizador de 2 Meses após Redefinição pelo Admin:");
+  // 18. TESTE DE SISTEMA 100% TEMPO REAL (SEM DADOS DE TESTE) E DESBLOQUEIO DO PORTAL APÓS REDEFINIÇÃO PELO ADMIN
+  console.log("\n18. Teste de Estado Limpo na Nuvem & Desbloqueio no Portal após Redefinição pelo Admin:");
   const cloudShell = createCleanCloudShellState();
   assert(cloudShell.members.length === 0, "Estado inicial da nuvem no navegador não cria membros de teste automaticamente");
   assert(cloudShell.activities.length === 0, "Estado inicial da nuvem no navegador não cria atividades de teste automaticamente");
   assert(cloudShell.receipts.length === 0, "Estado inicial da nuvem no navegador não cria recibos de teste automaticamente");
 
   const fortyDaysAgo = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
-  const userWithPendingReset = {
+  const userWithPendingReset: typeof testState.users[number] = {
     ...testState.users[0],
     passwordResetRequested: true,
     lastPasswordChangedAt: fortyDaysAgo,
   };
-  // Admin altera a senha após solicitação
+  // Admin altera a senha após solicitação: limpa bloqueio de 60 dias para permitir redefinição no Portal do Membro
   const resetTimestamp = new Date().toISOString();
-  const afterAdminReset = {
+  const afterAdminReset: typeof testState.users[number] = {
     ...userWithPendingReset,
     password: 'NovaSenhaAdmin2026',
     passwordResetRequested: false,
-    lastPasswordChangedAt: resetTimestamp,
+    lastAdminPasswordResetAt: resetTimestamp,
   };
-  const restartedElapsedDays = (Date.now() - new Date(afterAdminReset.lastPasswordChangedAt).getTime()) / (1000 * 60 * 60 * 24);
+  delete afterAdminReset.lastPasswordChangedAt;
+
+  const isPortalUnlockedAfterAdminReset = !afterAdminReset.lastPasswordChangedAt;
   assert(!afterAdminReset.passwordResetRequested, "Solicitação de redefinição pendente é concluída após alteração pelo Administrador");
-  assert(restartedElapsedDays < 1, "Temporizador da regra de 2 meses reinicia automaticamente para 60 dias a contar da alteração feita pelo Administrador");
+  assert(isPortalUnlockedAfterAdminReset, "Redefinição pelo Administrador desbloqueia imediatamente a redefinição direta no Portal do Membro");
+
+  // Utilizador redefine sua própria senha no Portal do Membro e então inicia novo ciclo de 60 dias
+  const memberResetTimestamp = new Date().toISOString();
+  const afterMemberSelfReset: typeof testState.users[number] = {
+    ...afterAdminReset,
+    password: 'MinhaNovaSenhaPessoal2026',
+    lastPasswordChangedAt: memberResetTimestamp,
+  };
+  delete afterMemberSelfReset.lastAdminPasswordResetAt;
+
+  const memberCooldownElapsed = (Date.now() - new Date(afterMemberSelfReset.lastPasswordChangedAt!).getTime()) / (1000 * 60 * 60 * 24);
+  assert(!afterMemberSelfReset.lastAdminPasswordResetAt, "Sinalizador de redefinição assistida é limpo após o membro definir sua senha pessoal");
+  assert(memberCooldownElapsed < 1, "Novo ciclo de 60 dias inicia somente após o membro concluir a redefinição no Portal do Membro");
 
   // 19. TESTE DE SEGURANÇA GLOBAL: ENCERRAMENTO AUTOMÁTICO POR INATIVIDADE (5 MINUTOS)
   console.log("\n19. Teste de Encerramento Automático de Sessão após 5 Minutos de Inatividade:");
@@ -653,10 +668,58 @@ function runTests() {
   assert(!canViewActivitiesAttendanceTab('membro'), "Membro NÃO pode visualizar a sub-aba de Presenças & Frequência");
   assert(!canViewActivitiesAttendanceTab('capelao'), "Capelão NÃO pode visualizar a sub-aba de Presenças & Frequência");
   assert(!canViewActivitiesAttendanceTab('tesoureiro'), "Tesoureiro NÃO pode visualizar a sub-aba de Presenças & Frequência");
+  assert(!canViewActivitiesAttendanceTab('diretor_associado'), "Diretor-associado NÃO precisa aceder à sub-aba sensível de Presenças & Frequência");
   assert(canViewActivitiesAttendanceTab('secretario'), "Secretário pode visualizar a sub-aba de Presenças & Frequência");
   assert(canViewActivitiesAttendanceTab('diretor'), "Diretor pode visualizar a sub-aba de Presenças & Frequência");
   assert(canViewActivitiesAttendanceTab('instrutor'), "Instrutor pode visualizar a sub-aba de Presenças & Frequência");
   assert(canViewActivitiesAttendanceTab('admin_tecnico'), "Administrador Técnico pode visualizar a sub-aba de Presenças & Frequência");
+
+  // 21. TESTE DO CARGO DIRETOR-ASSOCIADO (SUPERVISÃO, RELATÓRIOS E EQUIPAS SEM FINANÇAS/CAPELANIA EXCLUSIVA)
+  console.log("\n21. Teste do Cargo Diretor-associado e Segregação de Funções:");
+  assert(ROLE_LABELS.diretor_associado?.label === 'Diretor-associado', "Etiqueta institucional 'Diretor-associado' registada corretamente");
+  assert(hasPermission('diretor_associado', 'members', 'VIEW') && hasPermission('diretor_associado', 'members', 'EDIT'), "Diretor-associado pode consultar membros e gerir equipas");
+  assert(hasPermission('diretor_associado', 'reports', 'VIEW') && hasPermission('diretor_associado', 'reports', 'EXPORT'), "Diretor-associado tem acesso e exportação de relatórios oficiais");
+  assert(hasPermission('diretor_associado', 'activities', 'VIEW') && hasPermission('diretor_associado', 'activities', 'EDIT'), "Diretor-associado pode monitorizar e editar atividades e reuniões");
+  assert(hasPermission('diretor_associado', 'audit', 'VIEW') && hasPermission('diretor_associado', 'settings', 'VIEW'), "Diretor-associado tem visão de supervisão administrativa em auditoria e configurações");
+  assert(!hasPermission('diretor_associado', 'treasury', 'VIEW') && !hasPermission('diretor_associado', 'treasury', 'CREATE') && !hasPermission('diretor_associado', 'treasury', 'APPROVE'), "Diretor-associado NÃO possui responsabilidades nem acesso financeiro de tesouraria");
+  assert(!hasPermission('diretor_associado', 'chaplaincy', 'APPROVE'), "Diretor-associado NÃO possui funções espirituais exclusivas de atendimento do capelão");
+
+  // Simular matriz legada da nuvem sem diretor_associado e verificar injeção automática
+  const legacyMatrixWithoutAssociate: any = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  delete legacyMatrixWithoutAssociate.diretor_associado;
+  delete legacyMatrixWithoutAssociate.diretor.messaging;
+  const syncedMatrix = syncPermissionsMatrix(legacyMatrixWithoutAssociate);
+  assert(!legacyMatrixWithoutAssociate.diretor_associado, "syncPermissionsMatrix não muta a matriz original recebida");
+  assert(Boolean(syncedMatrix.diretor_associado) && syncedMatrix.diretor_associado.members.includes('EDIT'), "syncPermissionsMatrix injeta automaticamente o cargo Diretor-associado em bases de dados legadas");
+  assert(Array.isArray(syncedMatrix.diretor.messaging) && syncedMatrix.diretor.messaging.includes('VIEW'), "syncPermissionsMatrix garante módulos recentes como Mensagens em matrizes existentes");
+  assert(PERMISSION_CATALOG.some(p => p.module === 'messaging' && p.action === 'CREATE'), "Catálogo RBAC inclui permissões de Mensagens para gestão granular");
+
+  // 22. TESTE DE VISIBILIDADE DE CONTAS DE ADMINISTRADORES EM "CONTAS DE ACESSO"
+  console.log("\n22. Teste de Visibilidade de Contas de Administradores em Contas de Acesso:");
+  const sampleAccounts = [
+    { id: 'USR-ADMIN-1', role: 'admin_tecnico' as const, name: 'Admin Principal' },
+    { id: 'USR-DIR-1', role: 'diretor' as const, name: 'Diretor' },
+    { id: 'USR-ASSOC-1', role: 'diretor_associado' as const, name: 'Diretor Associado' },
+    { id: 'USR-SEC-1', role: 'secretario' as const, name: 'Secretário' },
+    { id: 'USR-TES-1', role: 'tesoureiro' as const, name: 'Tesoureiro' },
+    { id: 'USR-INST-1', role: 'instrutor' as const, name: 'Instrutor' },
+    { id: 'USR-CAP-1', role: 'capelao' as const, name: 'Capelão' },
+    { id: 'USR-MEM-1', role: 'membro' as const, name: 'Membro' },
+  ];
+
+  const visibleToAdmin = filterVisibleAccessAccounts(sampleAccounts, 'admin_tecnico');
+  assert(visibleToAdmin.length === sampleAccounts.length && visibleToAdmin.some(a => a.role === 'admin_tecnico'), "Administrador pode visualizar todas as contas, incluindo contas de administradores");
+
+  const nonAdminRoles = ['diretor', 'diretor_associado', 'secretario', 'tesoureiro', 'instrutor', 'capelao', 'membro'] as const;
+  for (const r of nonAdminRoles) {
+    const visibleToRole = filterVisibleAccessAccounts(sampleAccounts, r);
+    assert(
+      !canViewAccountInAccessList(r, 'admin_tecnico') &&
+      !visibleToRole.some(a => a.role === 'admin_tecnico') &&
+      visibleToRole.length === sampleAccounts.length - 1,
+      `Cargo ${ROLE_LABELS[r].label} NÃO visualiza contas de administradores em Contas de Acesso`
+    );
+  }
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");
   console.log(`Total de Testes: ${passed + failed}`);

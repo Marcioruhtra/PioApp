@@ -74,7 +74,7 @@ export const MessagingModule: React.FC = () => {
             </h1>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            Envie mensagens individuais ou em massa (por Unidade, Categoria ou para Todo o Clube) e acompanhe o histórico.
+            Envie mensagens individuais ou em massa (por Equipa, Categoria ou para Todo o Clube) e acompanhe o histórico.
           </p>
         </div>
       </div>
@@ -112,7 +112,7 @@ export const MessagingModule: React.FC = () => {
                   className="w-full p-2.5 border border-slate-300 rounded-lg bg-white font-medium focus:ring-1 focus:ring-blue-900"
                 >
                   <option value="member">Membro Específico</option>
-                  <option value="unit">Unidade / Patrulha Inteira</option>
+                  <option value="unit">Equipa Inteira</option>
                   <option value="category">Categoria (Embaixador, Líder, Aspirante)</option>
                   <option value="all">Todo o Clube (Broadcast Geral)</option>
                 </select>
@@ -139,14 +139,14 @@ export const MessagingModule: React.FC = () => {
 
               {recipientType === 'unit' && (
                 <div>
-                  <label className="block text-slate-700 font-semibold mb-1">Selecionar Unidade *</label>
+                  <label className="block text-slate-700 font-semibold mb-1">Selecionar Equipa *</label>
                   <select
                     value={recipientId}
                     onChange={(e) => setRecipientId(e.target.value)}
                     className="w-full p-2.5 border border-slate-300 rounded-lg bg-white font-medium focus:ring-1 focus:ring-blue-900"
                     required={recipientType === 'unit'}
                   >
-                    <option value="">-- Selecione a unidade --</option>
+                    <option value="">-- Selecione a equipa --</option>
                     {units.map((u) => (
                       <option key={u.id} value={u.name}>
                         {u.name} ({u.category})
@@ -230,7 +230,7 @@ export const MessagingModule: React.FC = () => {
             {sentMessages.map((msg) => {
               let recipientDisplay = msg.recipientId;
               if (msg.recipientType === 'all') recipientDisplay = 'Todo o Clube (Broadcast)';
-              else if (msg.recipientType === 'unit') recipientDisplay = `Unidade: ${msg.recipientId}`;
+              else if (msg.recipientType === 'unit') recipientDisplay = `Equipa: ${msg.recipientId}`;
               else if (msg.recipientType === 'category') recipientDisplay = `Categoria: ${msg.recipientId.toUpperCase()}`;
               else if (msg.recipientType === 'member') {
                 const mem = state.members.find(m => m.id === msg.recipientId);

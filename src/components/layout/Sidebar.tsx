@@ -135,7 +135,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'settings',
       label: 'Configurações',
       icon: Settings,
-      description: 'Parâmetros, quotas e unidades',
+      description: 'Parâmetros, quotas e equipas',
     },
     {
       id: 'suggestions',

@@ -100,6 +100,7 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
     text = text.replace(/\{numero_documento\}/g, document.documentNumber);
     text = text.replace(/\{tipo_documento\}/g, document.documentType);
     text = text.replace(/\{cargo_diretor\}/g, 'Diretor do Clube');
+    text = text.replace(/\{diretor_associado\}/g, state.users.find(u => u.role === 'diretor_associado')?.name || 'Diretor-associado');
     text = text.replace(/\{secretario\}/g, 'Secretaria Geral');
     text = text.replace(/\{tesoureiro\}/g, 'Tesouraria Geral');
     text = text.replace(/\{capelao\}/g, 'Capelania');
@@ -591,9 +592,13 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
               document.documentType === 'recibo'
                 ? 'Tesoureiro Geral do Clube'
                 : document.documentType === 'declaracao_membro'
-                ? 'Diretor do Clube'
+                ? (state.users.find(u => u.name === document.issuedByName)?.role === 'diretor_associado'
+                    ? 'Diretor-associado do Clube'
+                    : 'Diretor do Clube')
                 : document.documentType === 'ata'
                 ? 'Secretário Geral da Sessão'
+                : state.users.find(u => u.name === document.issuedByName)?.role === 'diretor_associado'
+                ? 'Diretor-associado do Clube'
                 : 'Responsável Autorizado'
             }
             secondSignerName={

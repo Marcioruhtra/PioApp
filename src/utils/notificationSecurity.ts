@@ -64,12 +64,12 @@ export function isNotificationAuthorizedForUser(
 
   // Operações de Formação / Instrutoria
   if (notif.category === 'training' || notif.targetModule === 'training') {
-    return user.role === 'instrutor' || user.role === 'diretor' || user.role === 'admin_tecnico';
+    return user.role === 'instrutor' || user.role === 'diretor' || user.role === 'diretor_associado' || user.role === 'admin_tecnico';
   }
 
   // Operações de Auditoria e Sistema Técnico
   if (notif.targetModule === 'audit' || notif.targetModule === 'settings') {
-    return user.role === 'admin_tecnico' || user.role === 'diretor';
+    return user.role === 'admin_tecnico' || user.role === 'diretor' || user.role === 'diretor_associado';
   }
 
   // Anúncios públicos oficiais: visíveis para todos

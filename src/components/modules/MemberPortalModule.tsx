@@ -718,7 +718,9 @@ export const MemberPortalModule: React.FC = () => {
                 <span className="font-semibold text-slate-800">Última alteração: </span>
                 {currentUser.lastPasswordChangedAt
                   ? formatDateAO(currentUser.lastPasswordChangedAt)
-                  : 'Nunca alterada diretamente no portal'}
+                  : currentUser.lastAdminPasswordResetAt
+                    ? `Redefinida pelo Administrador em ${formatDateAO(currentUser.lastAdminPasswordResetAt)} (pronta para redefinição pessoal)`
+                    : 'Nunca alterada diretamente no portal'}
               </p>
               {isCooldownActive && nextAllowedDate && (
                 <p className="text-amber-800 font-medium">
@@ -727,11 +729,20 @@ export const MemberPortalModule: React.FC = () => {
               )}
             </div>
 
+            {currentUser.lastAdminPasswordResetAt && !currentUser.lastPasswordChangedAt && (
+              <div className="p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-lg text-[11px] flex items-start gap-2">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-700 shrink-0 mt-0.5" />
+                <p>
+                  <strong>Redefinição liberada pelo Administrador:</strong> A sua palavra-passe foi redefinida pelo Administrador. Já pode definir livremente a sua nova palavra-passe pessoal aqui no Portal do Membro.
+                </p>
+              </div>
+            )}
+
             {currentUser.passwordResetRequested && (
               <div className="p-2.5 bg-blue-50 border border-blue-200 text-blue-900 rounded-lg text-[11px] flex items-start gap-2">
                 <AlertTriangle className="w-3.5 h-3.5 text-blue-700 shrink-0 mt-0.5" />
                 <p>
-                  <strong>Solicitação pendente:</strong> O seu pedido de redefinição foi enviado ao Administrador. Assim que o Administrador definir a nova palavra-passe, o contador de 2 meses reiniciará automaticamente.
+                  <strong>Solicitação pendente:</strong> O seu pedido de redefinição foi enviado ao Administrador. Assim que o Administrador concluir a redefinição, poderá definir a sua nova palavra-passe pessoal aqui no Portal do Membro.
                 </p>
               </div>
             )}
@@ -1519,7 +1530,9 @@ export const MemberPortalModule: React.FC = () => {
                     <span>Redefinição Direta Permitida</span>
                   </p>
                   <p>
-                    Após gravar a nova palavra-passe, o sistema iniciará um novo ciclo de segurança de 2 meses durante o qual a senha não poderá ser alterada diretamente pelo portal.
+                    {currentUser.lastAdminPasswordResetAt && !currentUser.lastPasswordChangedAt
+                      ? 'A sua conta foi redefinida pelo Administrador. Defina abaixo a sua nova palavra-passe pessoal — após gravar, iniciará um ciclo de segurança de 2 meses (60 dias).'
+                      : 'Após gravar a nova palavra-passe, o sistema iniciará um novo ciclo de segurança de 2 meses durante o qual a senha não poderá ser alterada diretamente pelo portal.'}
                   </p>
                 </div>
 
