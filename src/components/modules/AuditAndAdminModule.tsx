@@ -1516,6 +1516,7 @@ export const AuditAndAdminModule: React.FC = () => {
                 <ul className="list-disc list-inside space-y-1 text-[11px] text-emerald-900/90 pl-1">
                   <li><strong>Saldo das Contas Bancárias</strong>: Valores em Caixa e Bancos inalterados.</li>
                   <li><strong>Membros Registados e Situação de Quotas</strong>: Contas zeradas recomeçam regularizadas a 0,00 Kz (sem exibir o valor zerado), adiantamentos mantêm o crédito e quotas em atraso mantêm a dívida.</li>
+                  <li><strong>Inscrições Pendentes e Em Análise</strong>: Todas as solicitações que ainda não foram concluídas pela Secretaria mantêm-se intactas, incluindo os seus ficheiros e comprovativos anexados (B.I. e fotografia).</li>
                   <li><strong>Contas de Login de Utilizadores</strong>: Todas as credenciais de acesso ao sistema.</li>
                   <li><strong>Configurações do Clube</strong>: Unidades, parâmetros e classes/especialidades.</li>
                 </ul>
@@ -1528,6 +1529,7 @@ export const AuditAndAdminModule: React.FC = () => {
                   <span>O que será ELIMINADO (Espaço):</span>
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-[11px] text-amber-900/90 pl-1">
+                  <li><strong>Solicitações de Inscrição Já Analisadas</strong>: Todas as inscrições validadas ou recusadas são limpas para libertar espaço na nuvem.</li>
                   <li><strong>Todos os Documentos Oficiais</strong> gerados e ficheiros de arquivo.</li>
                   <li><strong>Todos os Uploads de Membros</strong> e comprovativos reportados.</li>
                   <li><strong>Todas as Atividades e Reuniões</strong>, atas oficiais e tarefas.</li>
@@ -1579,7 +1581,7 @@ export const AuditAndAdminModule: React.FC = () => {
                   setIsCleaningStorage(false);
                   setIsCleanStorageModalOpen(false);
                   if (res.success) {
-                    showFeedback('success', 'Limpeza da nuvem concluída! Histórico, valores zerados anteriores, documentos e registos de auditoria foram apagados; contas zeradas ficaram regularizadas a 0,00 Kz e adiantamentos/atrasos foram preservados.');
+                    showFeedback('success', 'Limpeza da nuvem concluída! Solicitações já analisadas, histórico, valores zerados anteriores, documentos e registos de auditoria foram apagados; inscrições pendentes/em análise com anexos, contas regularizadas a 0,00 Kz e saldos foram preservados.');
                   } else {
                     showFeedback('error', res.error || 'Erro ao efetuar limpeza do sistema.');
                   }

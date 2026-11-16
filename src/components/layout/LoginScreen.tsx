@@ -279,32 +279,32 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   return (
     <div className="min-h-[100dvh] flex items-center justify-center bg-slate-900 p-4 safe-area-pt safe-area-pb">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-6 sm:p-8 my-auto">
+      <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 sm:p-8 my-auto">
         <div className="flex justify-center mb-3 sm:mb-4">
           <img src="/assets/aistudio/logo.png" alt="Logo" className="w-20 h-20 sm:w-24 sm:h-24 object-contain" />
         </div>
-        <h1 className="text-xl sm:text-2xl font-black text-slate-900 mb-1 text-center leading-tight">
+        <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white mb-1 text-center leading-tight">
           PioApp
         </h1>
-        <p className="text-xs text-slate-500 mb-5 sm:mb-6 text-center">Sistema de Gestão Oficial</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-5 sm:mb-6 text-center">Sistema de Gestão Oficial</p>
 
         {!showForgotPwd ? (
           <div className="space-y-4">
             <form onSubmit={handleLogin} className="space-y-4">
               {sessionExpiredMessage && !errorMessage && (
-                <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg text-xs flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
+                <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 rounded-lg text-xs flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
                   <span>{sessionExpiredMessage}</span>
                 </div>
               )}
               {errorMessage && (
-                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 rounded-lg text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
                   <span>{errorMessage}</span>
                 </div>
               )}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">E-mail ou Nº de Matrícula</label>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">E-mail ou Nº de Matrícula</label>
                 <input
                   type="text"
                   placeholder="ex: e-mail ou nº de matrícula"
@@ -313,12 +313,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     setIdentifier(e.target.value);
                     setErrorMessage(null);
                   }}
-                  className="w-full p-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-900 focus:outline-none"
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 rounded-lg text-sm focus:ring-2 focus:ring-blue-900 dark:focus:ring-blue-400 focus:outline-none"
                   required
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Palavra-passe</label>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">Palavra-passe</label>
                 <input
                   type="password"
                   value={password}
@@ -326,14 +326,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     setPassword(e.target.value);
                     setErrorMessage(null);
                   }}
-                  className="w-full p-2.5 border rounded-lg text-sm focus:ring-2 focus:ring-blue-900 focus:outline-none"
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-lg text-sm focus:ring-2 focus:ring-blue-900 dark:focus:ring-blue-400 focus:outline-none"
                   required
                 />
               </div>
 
               <div className="flex items-center gap-2 cursor-pointer" onClick={() => setRememberMe(!rememberMe)}>
-                {rememberMe ? <CheckSquare className="w-4 h-4 text-blue-900" /> : <Square className="w-4 h-4 text-slate-400" />}
-                <span className="text-xs text-slate-600 font-medium">Lembrar credenciais no dispositivo</span>
+                {rememberMe ? <CheckSquare className="w-4 h-4 text-blue-900 dark:text-blue-400" /> : <Square className="w-4 h-4 text-slate-400" />}
+                <span className="text-xs text-slate-600 dark:text-slate-300 font-medium">Lembrar credenciais no dispositivo</span>
               </div>
 
               <button
@@ -402,7 +402,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 <span>{resetFeedback.message}</span>
               </div>
             )}
-            <p className="text-xs text-slate-600">
+            <p className="text-xs text-slate-600 dark:text-slate-300">
               Introduza o seu E-mail ou Nº Membro para solicitar a redefinição de senha ao Administrador.
             </p>
             <input
@@ -412,7 +412,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 setIdentifier(e.target.value);
                 setResetFeedback(null);
               }}
-              className="w-full p-2.5 border rounded-lg text-sm focus:ring-2 focus:ring-blue-900 focus:outline-none"
+              className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 rounded-lg text-sm focus:ring-2 focus:ring-blue-900 dark:focus:ring-blue-400 focus:outline-none"
               required
             />
             <button
@@ -424,7 +424,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             <button
               type="button"
               onClick={() => setShowForgotPwd(false)}
-              className="w-full text-xs text-slate-500 hover:text-slate-800 transition-colors"
+              className="w-full text-xs text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors"
             >
               Voltar
             </button>
@@ -463,8 +463,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               onClick={() => setEnrollmentModalTab('status')}
               className={`pb-2.5 px-1 text-xs font-bold border-b-2 transition-colors flex items-center gap-1.5 ${
                 enrollmentModalTab === 'status'
-                  ? 'border-blue-900 text-blue-900'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
+                  ? 'border-blue-900 text-blue-900 dark:border-blue-400 dark:text-blue-400'
+                  : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
               }`}
             >
               <Search className="w-3.5 h-3.5" />
@@ -474,42 +474,42 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
           {enrollmentModalTab === 'form' ? (
             submittedRequest ? (
-              <div className="p-5 bg-emerald-50 border border-emerald-200 rounded-xl space-y-4 text-xs">
+              <div className="p-5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl space-y-4 text-xs">
                 <div className="flex items-start gap-3">
-                  <CheckCircle2 className="w-6 h-6 text-emerald-700 shrink-0 mt-0.5" />
+                  <CheckCircle2 className="w-6 h-6 text-emerald-700 dark:text-emerald-400 shrink-0 mt-0.5" />
                   <div>
-                    <h3 className="text-sm font-black text-emerald-950">
+                    <h3 className="text-sm font-black text-emerald-950 dark:text-emerald-200">
                       Solicitação de Inscrição Submetida com Sucesso!
                     </h3>
-                    <p className="text-emerald-900 mt-1 leading-relaxed">
+                    <p className="text-emerald-900 dark:text-emerald-300 mt-1 leading-relaxed">
                       A sua ficha foi enviada para a aba <strong>Solicitação de Inscrição</strong> e aguarda a autorização da Secretaria do Clube.
                     </p>
                   </div>
                 </div>
 
-                <div className="bg-white p-4 rounded-lg border border-emerald-200 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div className="bg-white dark:bg-slate-800 p-4 rounded-lg border border-emerald-200 dark:border-emerald-800/60 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                   <div>
-                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Protocolo da Solicitação</span>
-                    <span className="font-mono font-black text-blue-900 text-sm">{submittedRequest.protocolNumber}</span>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Protocolo da Solicitação</span>
+                    <span className="font-mono font-black text-blue-900 dark:text-blue-300 text-sm">{submittedRequest.protocolNumber}</span>
                   </div>
                   <div>
-                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Nº de Matrícula Gerado Automaticamente</span>
-                    <span className="font-mono font-black text-blue-900 text-sm">{submittedRequest.manualNumber}</span>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Nº de Matrícula Gerado Automaticamente</span>
+                    <span className="font-mono font-black text-blue-900 dark:text-blue-300 text-sm">{submittedRequest.manualNumber}</span>
                   </div>
                   <div>
-                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Nome Completo</span>
-                    <span className="font-semibold text-slate-900">{submittedRequest.fullName}</span>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Nome Completo</span>
+                    <span className="font-semibold text-slate-900 dark:text-white">{submittedRequest.fullName}</span>
                   </div>
                   <div>
-                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Estado Atual</span>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 font-bold text-[10px]">
+                    <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Estado Atual</span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 font-bold text-[10px]">
                       <Clock className="w-3 h-3" />
                       Pendente · Aguardando visualização da Secretaria
                     </span>
                   </div>
                   <div className="sm:col-span-2">
-                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Entrega de Documentos (B.I. e Fotografia)</span>
-                    <span className="font-semibold text-slate-800">
+                    <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Entrega de Documentos (B.I. e Fotografia)</span>
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">
                       {submittedRequest.documentDeliveryMethod === 'anexar_digital'
                         ? `Anexados digitalmente (${[submittedRequest.biDocumentFileName, submittedRequest.photoDocumentFileName]
                             .filter(Boolean)
@@ -523,7 +523,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   <button
                     type="button"
                     onClick={() => setSubmittedRequest(null)}
-                    className="px-4 py-2 text-xs font-semibold text-emerald-900 bg-white border border-emerald-300 hover:bg-emerald-100 rounded-lg transition-colors"
+                    className="px-4 py-2 text-xs font-semibold text-emerald-900 dark:text-emerald-300 bg-white dark:bg-slate-800 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
                   >
                     Fazer Outra Inscrição
                   </button>
@@ -558,16 +558,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             )
           ) : (
             <div className="space-y-4 text-xs">
-              <p className="text-slate-600">
+              <p className="text-slate-600 dark:text-slate-300">
                 Candidatos com inscrição submetida ou membros já registados na Secretaria: introduza o seu{' '}
-                <strong>Número do B.I. (ou Nº de Matrícula)</strong> e a sua{' '}
-                <strong>Data de Nascimento</strong> para consultar o estado da inscrição e verificar se está{' '}
-                <strong>Regularizado</strong> ou com <strong>Falta de Documento</strong>.
+                <strong className="text-slate-900 dark:text-white">Número do B.I. (ou Nº de Matrícula)</strong> e a sua{' '}
+                <strong className="text-slate-900 dark:text-white">Data de Nascimento</strong> para consultar o estado da inscrição e verificar se está{' '}
+                <strong className="text-emerald-700 dark:text-emerald-400">Regularizado</strong> ou com <strong className="text-amber-700 dark:text-amber-400">Falta de Documento</strong>.
               </p>
 
               <form onSubmit={handleLookupEnrollmentStatus} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Nº do B.I. ou Matrícula</label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">Nº do B.I. ou Matrícula</label>
                   <input
                     type="text"
                     placeholder="007849312LA041 ou EBX-..."
@@ -576,12 +576,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                       setStatusLookupBI(e.target.value);
                       setLookupResult(null);
                     }}
-                    className="w-full p-2 border border-slate-300 rounded font-mono uppercase"
+                    className="w-full p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 rounded font-mono uppercase focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
                     required
                   />
                 </div>
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Data de Nascimento</label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">Data de Nascimento</label>
                   <input
                     type="date"
                     value={statusLookupBirth}
@@ -589,7 +589,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                       setStatusLookupBirth(e.target.value);
                       setLookupResult(null);
                     }}
-                    className="w-full p-2 border border-slate-300 rounded"
+                    className="w-full p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
                     required
                   />
                 </div>
@@ -602,7 +602,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               </form>
 
               {lookupResult === 'not_found' && (
-                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700">
+                <div className="p-3.5 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300">
                   Nenhum registo de membro ou solicitação de inscrição encontrado com estes dados.
                 </div>
               )}

@@ -1650,9 +1650,9 @@ export const MembersModule: React.FC = () => {
             />
 
             {(viewingEnrollment.status === 'em_analise' || viewingEnrollment.status === 'pendente') && canApproveEnrollments && (
-              <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-xl space-y-2">
-                <label className="block font-bold text-blue-950 flex items-center gap-1.5">
-                  <MessageSquare className="w-3.5 h-3.5 text-blue-800" />
+              <div className="p-3.5 bg-blue-50/70 dark:bg-slate-800/80 border border-blue-200 dark:border-blue-900/60 rounded-xl space-y-2">
+                <label className="block font-bold text-blue-950 dark:text-blue-200 flex items-center gap-1.5">
+                  <MessageSquare className="w-3.5 h-3.5 text-blue-800 dark:text-blue-400" />
                   <span>Mensagem da Secretaria para o Candidato (Em Análise)</span>
                 </label>
                 <textarea
@@ -1660,7 +1660,7 @@ export const MembersModule: React.FC = () => {
                   placeholder="Ex: Estamos a analisar a sua documentação. Por favor confirme o seu contacto."
                   defaultValue={viewingEnrollment.reviewMessage || ''}
                   id="enrollmentReviewMessageInput"
-                  className="w-full p-2.5 border border-blue-300 rounded-lg bg-white text-xs"
+                  className="w-full p-2.5 border border-blue-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 text-xs"
                 />
                 <div className="flex justify-end">
                   <button
@@ -1831,7 +1831,7 @@ export const MembersModule: React.FC = () => {
               </div>
               {approveEnrollmentForm.documentationStatus === 'falta_documento' && (
                 <div>
-                  <label className="block font-semibold text-amber-900 mb-1">
+                  <label className="block font-semibold text-amber-900 dark:text-amber-200 mb-1">
                     Especifique o(s) documento(s) em falta <span className="text-rose-600">*</span>
                   </label>
                   <input
@@ -1844,7 +1844,7 @@ export const MembersModule: React.FC = () => {
                         missingDocumentsNote: e.target.value,
                       })
                     }
-                    className="w-full p-2 border border-amber-300 rounded bg-white"
+                    className="w-full p-2 border border-amber-300 dark:border-amber-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500"
                     required
                   />
                 </div>
@@ -2881,15 +2881,15 @@ export const MembersModule: React.FC = () => {
                 }
                 className={`p-3.5 rounded-xl border text-left transition-colors ${
                   docStatusForm.status === 'regularizado'
-                    ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-bold'
-                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-400 dark:border-emerald-700 text-emerald-950 dark:text-emerald-200 font-bold'
+                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/50'
                 }`}
               >
                 <div className="flex items-center gap-2 text-sm">
-                  <CheckCircle className="w-4 h-4 text-emerald-700 shrink-0" />
+                  <CheckCircle className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
                   <span>Regularizado</span>
                 </div>
-                <p className="text-[11px] font-normal text-slate-600 mt-1">
+                <p className="text-[11px] font-normal text-slate-600 dark:text-slate-400 mt-1">
                   Todos os documentos oficiais do membro foram entregues e conferidos pela Secretaria.
                 </p>
               </button>
@@ -2904,23 +2904,23 @@ export const MembersModule: React.FC = () => {
                 }
                 className={`p-3.5 rounded-xl border text-left transition-colors ${
                   docStatusForm.status === 'falta_documento'
-                    ? 'bg-amber-50 border-amber-400 text-amber-950 font-bold'
-                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-400 dark:border-amber-700 text-amber-950 dark:text-amber-200 font-bold'
+                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/50'
                 }`}
               >
                 <div className="flex items-center gap-2 text-sm">
-                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                  <AlertTriangle className="w-4 h-4 text-amber-700 dark:text-amber-400 shrink-0" />
                   <span>Falta de Documento</span>
                 </div>
-                <p className="text-[11px] font-normal text-slate-600 mt-1">
+                <p className="text-[11px] font-normal text-slate-600 dark:text-slate-400 mt-1">
                   Sinalizar que falta entregar um ou mais documentos na Secretaria.
                 </p>
               </button>
             </div>
 
             {docStatusForm.status === 'falta_documento' && (
-              <div className="space-y-2.5 p-3.5 bg-amber-50/70 border border-amber-200 rounded-xl">
-                <label className="block font-bold text-amber-950">
+              <div className="space-y-2.5 p-3.5 bg-amber-50/70 dark:bg-slate-800/80 border border-amber-200 dark:border-amber-800/60 rounded-xl">
+                <label className="block font-bold text-amber-950 dark:text-amber-200">
                   Indique o(s) documento(s) em falta <span className="text-rose-600">*</span>
                 </label>
 
@@ -2948,7 +2948,7 @@ export const MembersModule: React.FC = () => {
                           };
                         });
                       }}
-                      className="px-2 py-1 text-[10px] font-semibold bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 rounded cursor-pointer"
+                      className="px-2 py-1 text-[10px] font-semibold bg-white dark:bg-slate-700 hover:bg-amber-100 dark:hover:bg-amber-950/60 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded cursor-pointer"
                     >
                       + {docLabel}
                     </button>
@@ -2965,7 +2965,7 @@ export const MembersModule: React.FC = () => {
                       missingDocumentsNote: e.target.value,
                     }))
                   }
-                  className="w-full p-2.5 border border-amber-300 rounded-lg bg-white focus:ring-2 focus:ring-amber-500"
+                  className="w-full p-2.5 border border-amber-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-amber-500"
                   required
                 />
               </div>

@@ -1976,15 +1976,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (req.operationType === 'eliminacao') {
       // Remoção estrita do membro PRESERVANDO integralmente recibos, movimentos financeiros e documentos (Req 2.4)
       updatedMembers = state.members.filter(m => m.id !== req.targetId);
-      updatedUsers = state.users.map(u => {
-        if (u.linkedMemberId === req.targetId) {
-          const unlinked = { ...u };
-          delete unlinked.linkedMemberId;
-          delete unlinked.manualNumber;
-          return unlinked;
-        }
-        return u;
-      });
+      updatedUsers = removeLinkedUserAccountForMember(state.users, member);
     }
 
     const updatedRequests = (state.deletionRequests || []).map(r => {
@@ -3936,6 +3928,15 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
+  const removeLinkedUserAccountForMember = (users: UserAccount[], member: Member): UserAccount[] => {
+    return users.filter(u => {
+      const isLinkedById = u.linkedMemberId && u.linkedMemberId === member.id;
+      const isLinkedByManual = u.manualNumber && u.manualNumber === member.manualNumber;
+      const isLinkedByEmail = u.email && member.email && u.email.trim().toLowerCase() === member.email.trim().toLowerCase();
+      return !(isLinkedById || isLinkedByManual || isLinkedByEmail);
+    });
+  };
+
   const deleteMember = (id: string, directionAuthorized?: boolean) => {
     // 1. Verificação obrigatória na grelha de autorizações (members: DELETE)
     if (!can('members', 'DELETE')) {
@@ -3971,9 +3972,11 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     // REGRA 2.4: Preserva integralmente recibos, movimentos financeiros, comprovativos e documentos oficiais
+    const updatedUsers = removeLinkedUserAccountForMember(state.users, target);
     const newState = {
       ...state,
       members: state.members.filter(m => m.id !== id),
+      users: updatedUsers,
       deletionRequests: updatedRequests,
     };
 

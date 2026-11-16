@@ -1,4 +1,12 @@
-import { loadInitialState, createCleanCloudShellState, generateNextDocumentNumber, isMemberNumberUnique, findPotentialDuplicateMember, cleanSystemStorageSpace } from '../src/services/storageService';
+import {
+  loadInitialState,
+  createCleanCloudShellState,
+  generateNextDocumentNumber,
+  isMemberNumberUnique,
+  findPotentialDuplicateMember,
+  cleanSystemStorageSpace,
+  ClubDatabaseState,
+} from '../src/services/storageService';
 import {
   MemberEnrollmentRequest,
 } from '../src/types';
@@ -2125,6 +2133,77 @@ function runTests() {
     testAnalystReq.status === 'em_analise' &&
       Boolean(testAnalystReq.reviewMessage && testAnalystReq.reviewMessage.includes('fotografia mais recente')),
     "Secretário pode deixar mensagem de análise na inscrição e o candidato visualiza essa mensagem ao consultar o estado"
+  );
+
+  // 37. LIMPEZA DA NUVEM: ELIMINAR SOLICITAÇÕES JÁ ANALISADAS E PRESERVAR PENDENTES E EM ANÁLISE COM ANEXOS
+  console.log("\n37. Teste de Limpeza da Nuvem para Solicitações de Inscrição:");
+  const testEnrollmentState: ClubDatabaseState = {
+    ...state,
+    enrollmentRequests: [
+      {
+        ...phase1Req,
+        id: 'INS-TEST-PENDENTE',
+        protocolNumber: 'INS-2026-9001',
+        status: 'pendente',
+        biDocumentFileName: 'bi_pendente.pdf',
+        biDocumentBase64: 'data:application/pdf;base64,JVBERi0xLjQK_PENDENTE',
+        photoDocumentFileName: 'foto_pendente.jpg',
+        photoDocumentBase64: 'data:image/jpeg;base64,FOTO_PENDENTE',
+      },
+      {
+        ...phase1Req,
+        id: 'INS-TEST-ANALISE',
+        protocolNumber: 'INS-2026-9002',
+        status: 'em_analise',
+        biDocumentFileName: 'bi_analise.pdf',
+        biDocumentBase64: 'data:application/pdf;base64,JVBERi0xLjQK_ANALISE',
+        photoDocumentFileName: 'foto_analise.jpg',
+        photoDocumentBase64: 'data:image/jpeg;base64,FOTO_ANALISE',
+        reviewMessage: 'Em análise pela Secretaria - Aguarda conferência física',
+      },
+      {
+        ...phase1Req,
+        id: 'INS-TEST-APROVADO',
+        protocolNumber: 'INS-2026-9003',
+        status: 'aprovado',
+        reviewedByName: 'Secretaria Oficial',
+      },
+      {
+        ...phase1Req,
+        id: 'INS-TEST-REJEITADO',
+        protocolNumber: 'INS-2026-9004',
+        status: 'rejeitado',
+        decisionReason: 'Documentação ilegível',
+        reviewedByName: 'Secretaria Oficial',
+      },
+    ],
+  };
+
+  const testActor = state.users.find((u) => u.role === 'admin_tecnico') || state.users[0];
+  const cleanedEnrollmentState = cleanSystemStorageSpace(testEnrollmentState, testActor);
+
+  const remainingReqs = cleanedEnrollmentState.enrollmentRequests || [];
+  const hasPendente = remainingReqs.find((r) => r.id === 'INS-TEST-PENDENTE');
+  const hasAnalise = remainingReqs.find((r) => r.id === 'INS-TEST-ANALISE');
+  const hasAprovado = remainingReqs.find((r) => r.id === 'INS-TEST-APROVADO');
+  const hasRejeitado = remainingReqs.find((r) => r.id === 'INS-TEST-REJEITADO');
+
+  assert(
+    remainingReqs.length === 2 &&
+      Boolean(hasPendente) &&
+      Boolean(hasAnalise) &&
+      !hasAprovado &&
+      !hasRejeitado,
+    "Limpar dados na nuvem elimina todas as inscrições já analisadas (aprovadas e rejeitadas) e mantém as pendentes e em análise"
+  );
+
+  assert(
+    hasPendente?.biDocumentBase64 === 'data:application/pdf;base64,JVBERi0xLjQK_PENDENTE' &&
+      hasPendente?.photoDocumentBase64 === 'data:image/jpeg;base64,FOTO_PENDENTE' &&
+      hasAnalise?.biDocumentBase64 === 'data:application/pdf;base64,JVBERi0xLjQK_ANALISE' &&
+      hasAnalise?.photoDocumentBase64 === 'data:image/jpeg;base64,FOTO_ANALISE' &&
+      hasAnalise?.reviewMessage === 'Em análise pela Secretaria - Aguarda conferência física',
+    "Inscrições pendentes ou em análise mantêm todos os documentos anexados (B.I., Fotografia) e mensagens intactos"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");

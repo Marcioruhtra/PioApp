@@ -428,7 +428,12 @@ export function cleanSystemStorageSpace(
     teamEvaluations: [],
     quotaWaivers: [],
     musicItems: [],
-    enrollmentRequests: [],
+    // Limpeza de solicitações de inscrição:
+    // Elimina todas as solicitações já analisadas ('aprovado' e 'rejeitado') para liberar espaço.
+    // Aquelas que estão pendentes ou em estado de análise permanecem intactas com todos os documentos anexados.
+    enrollmentRequests: (currentState.enrollmentRequests || []).filter(
+      (req) => req.status === 'pendente' || req.status === 'em_analise'
+    ),
     currentUser: currentState.currentUser,
     updatedAt: now,
   };

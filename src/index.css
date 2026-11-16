@@ -1,5 +1,87 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* =========================================================================
+   DARK MODE DATA ENTRY & FORM CONTROLS CONTRAST (LETRAS BRANCAS NO MODO ESCURO)
+   Garante categoricamente que durante o preenchimento de dados no modo escuro,
+   todas as letras digitadas sejam 100% brancas (#ffffff), com fundo escuro elegante,
+   bordas visíveis, placeholders nítidos e opções de dropdown perfeitamente legíveis.
+   ========================================================================= */
+
+html.dark {
+  color-scheme: dark;
+}
+
+/* Campos de texto, inputs numéricos, e-mails, datas, senhas, textareas e selects */
+html.dark input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="file"]),
+html.dark textarea,
+html.dark select {
+  color: #ffffff !important;
+  background-color: #1e293b !important; /* slate-800 */
+  border-color: #475569 !important;     /* slate-600 */
+  caret-color: #ffffff !important;
+}
+
+/* Foco nos campos de entrada */
+html.dark input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="file"]):focus,
+html.dark textarea:focus,
+html.dark select:focus {
+  color: #ffffff !important;
+  background-color: #1e293b !important;
+  border-color: #3b82f6 !important;     /* blue-500 */
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.4) !important;
+  outline: none !important;
+}
+
+/* Placeholders em modo escuro */
+html.dark input::placeholder,
+html.dark textarea::placeholder {
+  color: #94a3b8 !important;             /* slate-400 */
+  opacity: 1 !important;
+}
+
+/* Opções de menus dropdown (<select>) no modo escuro */
+html.dark select option,
+html.dark select optgroup {
+  background-color: #0f172a !important; /* slate-900 */
+  color: #ffffff !important;
+}
+
+/* Rótulos e textos descritivos de formulário legíveis no modo escuro */
+html.dark label {
+  color: #f1f5f9;
+}
+
+/* Inputs desabilitados ou apenas leitura */
+html.dark input:disabled,
+html.dark textarea:disabled,
+html.dark select:disabled {
+  background-color: #0f172a !important;
+  color: #94a3b8 !important;
+  border-color: #334155 !important;
+  cursor: not-allowed;
+}
+
+/* Corrigir preenchimento automático de navegadores (Autofill Webkit / Chrome / Edge) */
+html.dark input:-webkit-autofill,
+html.dark input:-webkit-autofill:hover, 
+html.dark input:-webkit-autofill:focus,
+html.dark textarea:-webkit-autofill,
+html.dark select:-webkit-autofill {
+  -webkit-text-fill-color: #ffffff !important;
+  -webkit-box-shadow: 0 0 0px 1000px #1e293b inset !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+/* Inputs de data e hora com ícone invertido para contraste */
+html.dark input[type="date"]::-webkit-calendar-picker-indicator,
+html.dark input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+html.dark input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(1.2);
+  cursor: pointer;
+}
+
 :root {
   --sat: env(safe-area-inset-top, 0px);
   --sab: env(safe-area-inset-bottom, 0px);

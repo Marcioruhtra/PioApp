@@ -188,25 +188,25 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
   return (
     <form onSubmit={handleFormSubmit} className="space-y-6">
       {formError && (
-        <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+        <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 rounded-lg text-xs flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
           <span>{formError}</span>
         </div>
       )}
 
       {/* Secção 1: Identificação */}
       <div className="space-y-3">
-        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 border-b border-slate-100 pb-1">
+        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800 pb-1">
           1. Identificação Pessoal
         </h4>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
           {mode === 'secretary' && (
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="block text-slate-700 font-semibold">
+                <label className="block text-slate-700 dark:text-slate-200 font-semibold">
                   Nº de Matrícula <span className="text-rose-500">*</span>
                 </label>
-                <span className="text-[10px] text-blue-900 font-mono font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                <span className="text-[10px] text-blue-900 dark:text-blue-300 font-mono font-bold bg-blue-50 dark:bg-blue-950/60 px-1.5 py-0.5 rounded border border-blue-200 dark:border-blue-800">
                   Automático: EBX-XXXMMAA
                 </span>
               </div>
@@ -215,14 +215,14 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
                 placeholder="Gerado automático (EBX-XXXMMAA)"
                 value={formData.manualNumber}
                 onChange={(e) => setFormData({ ...formData, manualNumber: e.target.value })}
-                className="w-full p-2 border border-slate-200 rounded font-mono font-bold bg-slate-50 text-blue-900 focus:ring-1 focus:ring-blue-900"
+                className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded font-mono font-bold bg-slate-50 dark:bg-slate-800 text-blue-900 dark:text-white focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
                 required
               />
             </div>
           )}
 
           <div className={mode === 'secretary' ? 'sm:col-span-2' : 'sm:col-span-3'}>
-            <label className="block text-slate-700 font-semibold mb-1">
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
               Nome Completo <span className="text-rose-500">*</span>
             </label>
             <input
@@ -230,32 +230,32 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
               placeholder="Nome completo de registo civil"
               value={formData.fullName}
               onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
               required
             />
           </div>
 
           <div>
-            <label className="block text-slate-700 font-semibold mb-1">
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
               Data de Nascimento <span className="text-rose-500">*</span>
             </label>
             <input
               type="date"
               value={formData.birthDate}
               onChange={(e) => handleRegBirthDateChange(e.target.value)}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
               required
             />
           </div>
 
           <div>
-            <label className="block text-slate-700 font-semibold mb-1">
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
               Sexo <span className="text-rose-500">*</span>
             </label>
             <select
               value={formData.gender}
               onChange={(e) => setFormData({ ...formData, gender: e.target.value as 'M' | 'F' })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
               required
             >
               <option value="M">Masculino</option>
@@ -264,7 +264,7 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
           </div>
 
           <div>
-            <label className="block text-slate-700 font-semibold mb-1">
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
               B.I. (Angola) <span className="text-rose-500">*</span>
             </label>
             <input
@@ -272,7 +272,7 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
               placeholder="007849312LA041"
               value={formData.identityCardNumber}
               onChange={(e) => handleRegBIChange(e.target.value)}
-              className="w-full p-2 border border-slate-200 rounded font-mono uppercase focus:ring-1 focus:ring-blue-900"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded font-mono uppercase bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
               required
             />
           </div>
@@ -281,12 +281,12 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
 
       {/* Secção 2: Contactos e Localização */}
       <div className="space-y-3">
-        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 border-b border-slate-100 pb-1">
+        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800 pb-1">
           2. Contactos e Residência
         </h4>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
           <div>
-            <label className="block text-slate-700 font-semibold mb-1">
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
               Telefone Principal <span className="text-rose-500">*</span>
             </label>
             <input
@@ -294,13 +294,13 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
               placeholder="+244 9XX XXX XXX"
               value={formData.phone}
               onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
               required
             />
           </div>
 
           <div>
-            <label className="block text-slate-700 font-semibold mb-1">
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
               E-mail <span className="text-rose-500">*</span>
             </label>
             <input
@@ -308,13 +308,13 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
               placeholder="exemplo@dominio.ao"
               value={formData.email}
               onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
               required
             />
           </div>
 
           <div>
-            <label className="block text-slate-700 font-semibold mb-1">
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
               Município / Bairro <span className="text-rose-500">*</span>
             </label>
             <input
@@ -322,7 +322,7 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
               placeholder="Ex: Talatona, Benfica"
               value={formData.address}
               onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
               required
             />
           </div>
@@ -331,18 +331,18 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
 
       {/* Secção 3: Informação do Clube */}
       <div className="space-y-3">
-        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 border-b border-slate-100 pb-1">
+        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800 pb-1">
           3. Enquadramento Institucional
         </h4>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
           <div>
-            <label className="block text-slate-700 font-semibold mb-1">
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
               Categoria <span className="text-rose-500">*</span>
             </label>
             <select
               value={formData.category}
               onChange={(e) => handleCategoryChange(e.target.value as MemberCategory)}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900 bg-white"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
               required
             >
               <option value="embaixador">Embaixador</option>
@@ -353,14 +353,14 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
 
           {mode === 'secretary' && (
             <div>
-              <label className="block text-slate-700 font-semibold mb-1">
+              <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
                 Equipa <span className="text-rose-500">*</span>
               </label>
               {units.length > 0 ? (
                 <select
                   value={formData.unitOrTeam}
                   onChange={(e) => setFormData({ ...formData, unitOrTeam: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900 bg-white"
+                  className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                   required
                 >
                   <option value="">Selecione a equipa...</option>
@@ -376,7 +376,7 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
                   placeholder="Nome da Equipa / Unidade (ex: Águias)"
                   value={formData.unitOrTeam}
                   onChange={(e) => setFormData({ ...formData, unitOrTeam: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900 bg-white"
+                  className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                   required
                 />
               )}
@@ -385,51 +385,51 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
 
           {showJoinedDateField && (
             <div>
-              <label className="block text-slate-700 font-semibold mb-1">
+              <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
                 Data de Admissão <span className="text-rose-500">*</span>
               </label>
               <input
                 type="date"
                 value={formData.joinedDate}
                 onChange={(e) => setFormData({ ...formData, joinedDate: e.target.value })}
-                className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+                className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
                 required
               />
             </div>
           )}
 
           {(formData.category === 'embaixador' || formData.category === 'lider') && (
-            <div className="sm:col-span-3 bg-amber-50/70 p-3 rounded-lg border border-amber-200">
+            <div className="sm:col-span-3 bg-amber-50/70 dark:bg-amber-950/30 p-3 rounded-lg border border-amber-200 dark:border-amber-800/60">
               <div className="flex items-center justify-between mb-1">
-                <label className="block text-amber-900 font-bold">
+                <label className="block text-amber-900 dark:text-amber-200 font-bold">
                   Data Oficial de Investidura ({formData.category === 'lider' ? 'Líder' : 'Embaixador'}){' '}
                   <span className="text-rose-500">*</span>
                 </label>
-                <span className="text-[10px] text-amber-800 font-medium">Exibida no Cartão Digital</span>
+                <span className="text-[10px] text-amber-800 dark:text-amber-300 font-medium">Exibida no Cartão Digital</span>
               </div>
               <input
                 type="date"
                 value={formData.investitureDate}
                 onChange={(e) => setFormData({ ...formData, investitureDate: e.target.value })}
-                className="w-full p-2 border border-amber-300 rounded focus:ring-1 focus:ring-amber-500 bg-white text-xs font-semibold"
+                className="w-full p-2 border border-amber-300 dark:border-amber-700 rounded focus:ring-1 focus:ring-amber-500 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs font-semibold"
                 required
               />
-              <p className="text-[10px] text-amber-700 mt-1">
+              <p className="text-[10px] text-amber-700 dark:text-amber-400 mt-1">
                 Indique a data da cerimónia oficial em que o membro/líder foi investido com o lenço/insígnia oficial.
               </p>
             </div>
           )}
 
           <div className="sm:col-span-3">
-            <label className="block text-slate-700 font-semibold mb-1">
-              Curso Profissional / Área Académica <span className="text-slate-400 font-normal">(Opcional)</span>
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
+              Curso Profissional / Área Académica <span className="text-slate-400 dark:text-slate-500 font-normal">(Opcional)</span>
             </label>
             <input
               type="text"
               placeholder="Ex: Informática de Gestão, Enfermagem, Mecânica..."
               value={formData.professionalCourse}
               onChange={(e) => setFormData({ ...formData, professionalCourse: e.target.value })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
             />
           </div>
         </div>
@@ -437,12 +437,12 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
 
       {/* Secção 4: Encarregado de Educação e Emergência */}
       <div className="space-y-3">
-        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 border-b border-slate-100 pb-1">
+        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800 pb-1">
           4. Encarregado de Educação e Emergência (Acesso Restrito)
         </h4>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
           <div>
-            <label className="block text-slate-700 font-semibold mb-1">
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
               Nome do Encarregado <span className="text-rose-500">*</span>
             </label>
             <input
@@ -450,13 +450,13 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
               placeholder="Nome do Pai/Mãe/Tutor"
               value={formData.guardianName}
               onChange={(e) => setFormData({ ...formData, guardianName: e.target.value })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
               required
             />
           </div>
 
           <div>
-            <label className="block text-slate-700 font-semibold mb-1">
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
               Telefone do Encarregado <span className="text-rose-500">*</span>
             </label>
             <input
@@ -464,19 +464,19 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
               placeholder="+244 9XX XXX XXX"
               value={formData.guardianPhone}
               onChange={(e) => setFormData({ ...formData, guardianPhone: e.target.value })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
               required
             />
           </div>
 
           <div>
-            <label className="block text-slate-700 font-semibold mb-1">
-              Grupo Sanguíneo <span className="text-slate-400 font-normal">(Opcional)</span>
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
+              Grupo Sanguíneo <span className="text-slate-400 dark:text-slate-500 font-normal">(Opcional)</span>
             </label>
             <select
               value={formData.bloodType}
               onChange={(e) => setFormData({ ...formData, bloodType: e.target.value })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900 bg-white"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
             >
               <option value="">Não informado (Opcional)</option>
               <option value="O+">O+</option>
@@ -491,7 +491,7 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
           </div>
 
           <div className="sm:col-span-3">
-            <label className="block text-slate-700 font-semibold mb-1">
+            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
               Alergias ou Cuidados Médicos <span className="text-rose-500">*</span>
             </label>
             <input
@@ -499,7 +499,7 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
               placeholder="Ex: Nenhuma alergia conhecida, ou indicar alergias/cuidados médicos"
               value={formData.allergiesOrMedicalNotes}
               onChange={(e) => setFormData({ ...formData, allergiesOrMedicalNotes: e.target.value })}
-              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
               required
             />
           </div>
@@ -509,13 +509,13 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
       {/* Secção 5: Entrega de Documentos (B.I. e Fotografia) - Formulário de Inscrição */}
       {mode === 'self_enrollment' && (
         <div className="space-y-3">
-          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 border-b border-slate-100 pb-1">
+          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800 pb-1">
             5. Documentação Obrigatória (B.I. e Fotografia)
           </h4>
 
           <div className="space-y-3 text-xs">
             <div>
-              <label className="block text-slate-700 font-semibold mb-1">
+              <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
                 Como pretende entregar o B.I. e a Fotografia? <span className="text-rose-500">*</span>
               </label>
               <select
@@ -536,7 +536,7 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
                       : {}),
                   }));
                 }}
-                className="w-full p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-blue-900 bg-white font-medium text-slate-800"
+                className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400 bg-white dark:bg-slate-800 font-medium text-slate-800 dark:text-white"
                 required
               >
                 <option value="">Selecione uma opção de entrega...</option>
@@ -546,9 +546,9 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
             </div>
 
             {formData.documentDeliveryMethod === 'anexar_digital' && (
-              <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/50 space-y-3">
-                <div className="flex items-start gap-2 text-blue-950">
-                  <Paperclip className="w-4 h-4 shrink-0 mt-0.5 text-blue-800" />
+              <div className="p-4 rounded-xl border border-blue-200 dark:border-blue-900/60 bg-blue-50/50 dark:bg-slate-800/80 space-y-3">
+                <div className="flex items-start gap-2 text-blue-950 dark:text-blue-200">
+                  <Paperclip className="w-4 h-4 shrink-0 mt-0.5 text-blue-800 dark:text-blue-400" />
                   <p className="text-[11px] leading-relaxed">
                     <strong>Anexar Documentos (B.I. e Fotografia):</strong> Pode enviar um{' '}
                     <strong>PDF ou outro documento</strong> único com o B.I. e a Fotografia juntos, ou anexar o B.I. e a
@@ -557,22 +557,22 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
                 </div>
 
                 {attachmentError && (
-                  <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-[11px] flex items-center gap-2">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-rose-600" />
+                  <div className="p-2.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 rounded-lg text-[11px] flex items-center gap-2">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-rose-600 dark:text-rose-400" />
                     <span>{attachmentError}</span>
                   </div>
                 )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {/* Anexo 1: B.I. ou Documento Único (PDF/Imagem/Doc) */}
-                  <div className="p-3 bg-white rounded-lg border border-slate-200 space-y-2">
-                    <label className="block font-semibold text-slate-800 text-[11px]">
+                  <div className="p-3 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 space-y-2">
+                    <label className="block font-semibold text-slate-800 dark:text-slate-200 text-[11px]">
                       Anexo do B.I. ou PDF Único (B.I. + Fotografia) <span className="text-rose-500">*</span>
                     </label>
                     {formData.biDocumentBase64 ? (
-                      <div className="flex items-center justify-between gap-2 p-2 bg-emerald-50 border border-emerald-200 rounded text-[11px] text-emerald-900">
+                      <div className="flex items-center justify-between gap-2 p-2 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded text-[11px] text-emerald-900 dark:text-emerald-200">
                         <span className="flex items-center gap-1.5 truncate font-medium">
-                          <FileText className="w-3.5 h-3.5 shrink-0 text-emerald-700" />
+                          <FileText className="w-3.5 h-3.5 shrink-0 text-emerald-700 dark:text-emerald-400" />
                           <span className="truncate">{formData.biDocumentFileName}</span>
                         </span>
                         <button
@@ -584,25 +584,25 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
                               biDocumentBase64: '',
                             }))
                           }
-                          className="p-1 text-rose-600 hover:text-rose-800 shrink-0"
+                          className="p-1 text-rose-600 hover:text-rose-800 dark:text-rose-400 dark:hover:text-rose-300 shrink-0"
                           title="Remover ficheiro"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     ) : (
-                      <label className="flex flex-col items-center justify-center p-3 border border-dashed border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer text-center gap-1">
+                      <label className="flex flex-col items-center justify-center p-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer text-center gap-1">
                         {isProcessingAttachment === 'bi' ? (
-                          <Loader2 className="w-4 h-4 animate-spin text-blue-800" />
+                          <Loader2 className="w-4 h-4 animate-spin text-blue-800 dark:text-blue-400" />
                         ) : (
-                          <Upload className="w-4 h-4 text-blue-800" />
+                          <Upload className="w-4 h-4 text-blue-800 dark:text-blue-400" />
                         )}
-                        <span className="text-[11px] font-semibold text-blue-900">
+                        <span className="text-[11px] font-semibold text-blue-900 dark:text-blue-300">
                           {isProcessingAttachment === 'bi'
                             ? 'A processar ficheiro...'
                             : 'Selecionar PDF, Documento ou Imagem'}
                         </span>
-                        <span className="text-[10px] text-slate-500">PDF, JPG, PNG, DOC/DOCX</span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">PDF, JPG, PNG, DOC/DOCX</span>
                         <input
                           type="file"
                           accept=".pdf,image/*,.doc,.docx,.odt,.rtf,.txt"
@@ -614,22 +614,22 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
                   </div>
 
                   {/* Anexo 2: Fotografia (caso separada do PDF/documento do BI) */}
-                  <div className="p-3 bg-white rounded-lg border border-slate-200 space-y-2">
-                    <label className="block font-semibold text-slate-800 text-[11px]">
+                  <div className="p-3 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 space-y-2">
+                    <label className="block font-semibold text-slate-800 dark:text-slate-200 text-[11px]">
                       Anexo da Fotografia{' '}
-                      <span className="text-slate-400 font-normal">(separada ou adicional)</span>
+                      <span className="text-slate-400 dark:text-slate-500 font-normal">(separada ou adicional)</span>
                     </label>
                     {formData.photoDocumentBase64 ? (
-                      <div className="flex items-center justify-between gap-2 p-2 bg-emerald-50 border border-emerald-200 rounded text-[11px] text-emerald-900">
+                      <div className="flex items-center justify-between gap-2 p-2 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded text-[11px] text-emerald-900 dark:text-emerald-200">
                         <span className="flex items-center gap-1.5 truncate font-medium">
                           {formData.photoDocumentBase64.startsWith('data:image/') ? (
                             <img
                               src={formData.photoDocumentBase64}
                               alt="Fotografia"
-                              className="w-6 h-6 rounded object-cover border border-emerald-300 shrink-0"
+                              className="w-6 h-6 rounded object-cover border border-emerald-300 dark:border-emerald-700 shrink-0"
                             />
                           ) : (
-                            <ImageIcon className="w-3.5 h-3.5 shrink-0 text-emerald-700" />
+                            <ImageIcon className="w-3.5 h-3.5 shrink-0 text-emerald-700 dark:text-emerald-400" />
                           )}
                           <span className="truncate">{formData.photoDocumentFileName}</span>
                         </span>
@@ -642,25 +642,25 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
                               photoDocumentBase64: '',
                             }))
                           }
-                          className="p-1 text-rose-600 hover:text-rose-800 shrink-0"
+                          className="p-1 text-rose-600 hover:text-rose-800 dark:text-rose-400 dark:hover:text-rose-300 shrink-0"
                           title="Remover fotografia"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     ) : (
-                      <label className="flex flex-col items-center justify-center p-3 border border-dashed border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer text-center gap-1">
+                      <label className="flex flex-col items-center justify-center p-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer text-center gap-1">
                         {isProcessingAttachment === 'photo' ? (
-                          <Loader2 className="w-4 h-4 animate-spin text-blue-800" />
+                          <Loader2 className="w-4 h-4 animate-spin text-blue-800 dark:text-blue-400" />
                         ) : (
-                          <ImageIcon className="w-4 h-4 text-blue-800" />
+                          <ImageIcon className="w-4 h-4 text-blue-800 dark:text-blue-400" />
                         )}
-                        <span className="text-[11px] font-semibold text-blue-900">
+                        <span className="text-[11px] font-semibold text-blue-900 dark:text-blue-300">
                           {isProcessingAttachment === 'photo'
                             ? 'A processar fotografia...'
                             : 'Anexar Fotografia (Imagem ou PDF)'}
                         </span>
-                        <span className="text-[10px] text-slate-500">Opcional se já incluída no documento ao lado</span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">Opcional se já incluída no documento ao lado</span>
                         <input
                           type="file"
                           accept="image/*,.pdf,.doc,.docx,.odt,.rtf,.txt"
@@ -677,11 +677,11 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
         </div>
       )}
 
-      <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+      <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-3">
         <button
           type="button"
           onClick={onCancel}
-          className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900"
+          className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
         >
           Cancelar
         </button>
