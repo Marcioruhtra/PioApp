@@ -33,6 +33,8 @@ import {
   AssociateDirective,
   TeamEvaluation,
   QuotaDebtWaiver,
+  MusicItem,
+  MemberEnrollmentRequest,
 } from '../types';
 import {
   INITIAL_ACCOUNTS,
@@ -45,6 +47,7 @@ import {
   INITIAL_FEES,
   INITIAL_MEMBERS,
   INITIAL_MONTHLY_CLOSINGS,
+  INITIAL_MUSIC_ITEMS,
   INITIAL_PAYMENT_PROOFS,
   INITIAL_RECEIPTS,
   INITIAL_REQUESTS,
@@ -58,8 +61,13 @@ import {
   INITIAL_SUGGESTIONS,
 } from './initialData';
 import { createAuditLog } from './auditService';
-import { getNowISOString } from '../utils/date';
+import { getNowISOString, getTodayISODate } from '../utils/date';
 import { verifyAndRepairMembersIntegrity } from './memberIntegrityService';
+import {
+  advanceCycleStartDateAfterCleanup,
+  calculateMemberQuotaSummary,
+  resolveQuotaConfig,
+} from './quotaService';
 
 const STORAGE_KEY = 'pioapp_club_data_v1';
 
@@ -87,6 +95,8 @@ export interface ClubDatabaseState {
   associateDirectives?: AssociateDirective[];
   teamEvaluations?: TeamEvaluation[];
   quotaWaivers?: QuotaDebtWaiver[];
+  musicItems?: MusicItem[];
+  enrollmentRequests?: MemberEnrollmentRequest[];
   settings: ClubSettings;
   currentUser: UserAccount;
   updatedAt?: string;
@@ -135,6 +145,8 @@ export function createCleanCloudShellState(): ClubDatabaseState {
     associateDirectives: [],
     teamEvaluations: [],
     quotaWaivers: [],
+    musicItems: [],
+    enrollmentRequests: [],
     settings: {
       ...INITIAL_SETTINGS,
       departments: [],
@@ -191,6 +203,7 @@ export function loadInitialState(): ClubDatabaseState {
     associateDirectives: [],
     teamEvaluations: [],
     quotaWaivers: [],
+    enrollmentRequests: [],
   };
 }
 
@@ -227,6 +240,8 @@ export function resetToDemoData(): ClubDatabaseState {
     associateDirectives: [],
     teamEvaluations: [],
     quotaWaivers: [],
+    musicItems: INITIAL_MUSIC_ITEMS,
+    enrollmentRequests: [],
     updatedAt: getNowISOString(),
   };
 }
@@ -312,6 +327,7 @@ export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): 
     associateDirectives: [],
     teamEvaluations: [],
     quotaWaivers: [],
+    enrollmentRequests: [],
     updatedAt: now,
   };
 
@@ -338,14 +354,52 @@ export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): 
  */
 export function cleanSystemStorageSpace(
   currentState: ClubDatabaseState,
-  actorUser?: UserAccount
+  actorUser?: UserAccount,
+  referenceDateStr?: string
 ): ClubDatabaseState {
   const now = getNowISOString();
   const _actor = actorUser || currentState.currentUser;
+  const cleanupDateStr = referenceDateStr || getTodayISODate();
+
+  // Consolida a situação exata de quotas de cada membro ativo antes de apagar recibos e logs
+  const preQuotaConfig = resolveQuotaConfig(currentState.settings, currentState.fees || []);
+  const activeMembersWithCarryOver = currentState.members
+    .filter((m) => m.status !== 'arquivado' && m.status !== 'inativo')
+    .map((m) => {
+      const summary = calculateMemberQuotaSummary(
+        m,
+        preQuotaConfig,
+        currentState.fees || [],
+        currentState.receipts || [],
+        cleanupDateStr,
+        currentState.quotaWaivers || []
+      );
+      return {
+        ...m,
+        quotaCarryOver: {
+          snapshotDate: cleanupDateStr,
+          debtInCents: summary.balanceDueInCents,
+          creditInCents: summary.creditInCents,
+          waivedInCents: 0,
+        },
+      };
+    });
+
+  const nextCycleStartDate = advanceCycleStartDateAfterCleanup(preQuotaConfig, cleanupDateStr);
+  const nextSettings: ClubSettings = {
+    ...currentState.settings,
+    quotaConfig: {
+      ...preQuotaConfig,
+      cycleStartDate: nextCycleStartDate,
+      updatedAt: now,
+      updatedByUserId: _actor?.id,
+      updatedByName: _actor?.name,
+    },
+  };
 
   const cleanedState: ClubDatabaseState = {
     ...currentState,
-    // Elimina ficheiros pesados, documentos gerados, transações temporárias e todos os registos de auditoria
+    // Elimina ficheiros pesados, documentos gerados, histórico de pagamentos/isenções e todos os registos de auditoria
     circulars: [],
     paymentProofs: [],
     activities: [],
@@ -356,14 +410,14 @@ export function cleanSystemStorageSpace(
     deletionRequests: [],
     messages: [],
     documents: [],
-    // Preserva saldos bancários, membros ativos (elimina membros arquivados e inativos), utilizadores e configurações
+    // Preserva saldos bancários, membros ativos (com situação de quotas consolidada), utilizadores e configurações
     accounts: currentState.accounts.map((acc) => ({
       ...acc,
       currentBalanceInCents: acc.currentBalanceInCents,
     })),
-    members: currentState.members.filter((m) => m.status !== 'arquivado' && m.status !== 'inativo'),
+    members: activeMembersWithCarryOver,
     users: currentState.users,
-    settings: currentState.settings,
+    settings: nextSettings,
     classes: currentState.classes,
     specialties: currentState.specialties,
     trainingProgress: currentState.trainingProgress,
@@ -373,6 +427,8 @@ export function cleanSystemStorageSpace(
     associateDirectives: [],
     teamEvaluations: [],
     quotaWaivers: [],
+    musicItems: [],
+    enrollmentRequests: [],
     currentUser: currentState.currentUser,
     updatedAt: now,
   };
@@ -451,7 +507,7 @@ export function findPotentialDuplicateMember(
   phone?: string,
   ignoreMemberId?: string
 ): Member | undefined {
-  const cleanBI = String(identityCardNumber || '').trim().toUpperCase();
+  const cleanBI = String(identityCardNumber || '').replace(/[\s.-]+/g, '').trim().toUpperCase();
   const cleanName = String(fullName || '').trim().toLowerCase();
   const cleanBirth = String(birthDate || '').trim();
   const cleanEmail = String(email || '').trim().toLowerCase();
@@ -459,8 +515,9 @@ export function findPotentialDuplicateMember(
 
   return members.find((m) => {
     if (m.id === ignoreMemberId) return false;
-    // B.I. idêntico
-    if (cleanBI && m.identityCardNumber && String(m.identityCardNumber).trim().toUpperCase() === cleanBI) {
+    // B.I. idêntico (normalizado sem espaços, pontos ou hífens)
+    const memberBI = String(m.identityCardNumber || '').replace(/[\s.-]+/g, '').trim().toUpperCase();
+    if (cleanBI && memberBI && memberBI === cleanBI) {
       return true;
     }
     // Nome idêntico e mesma data de nascimento

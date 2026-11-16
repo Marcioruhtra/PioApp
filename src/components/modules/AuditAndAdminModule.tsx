@@ -857,7 +857,10 @@ export const AuditAndAdminModule: React.FC = () => {
                         const activeMatrix = state.settings.permissionsMatrix || ROLE_PERMISSIONS_MATRIX;
                         const roleModules = activeMatrix[selectedRoleForRBAC] || ROLE_PERMISSIONS_MATRIX[selectedRoleForRBAC];
                         const hasThisPerm = (roleModules?.[p.module as ModuleName] || ROLE_PERMISSIONS_MATRIX[selectedRoleForRBAC]?.[p.module as ModuleName] || []).includes(p.action);
-                        const isAdminOnlyPerm = isAssociateExclusive || p.action === 'WAIVE_QUOTA_DEBT';
+                        const isAdminOnlyPerm =
+                          isAssociateExclusive ||
+                          p.action === 'WAIVE_QUOTA_DEBT' ||
+                          p.action === 'APPROVE_ENROLLMENT';
                         const canToggleThisPerm = isAdminOnlyPerm
                           ? currentUser.role === 'admin_tecnico'
                           : canToggleModulePerm;
@@ -875,7 +878,7 @@ export const AuditAndAdminModule: React.FC = () => {
                               className="w-3.5 h-3.5 text-blue-900 rounded focus:ring-blue-900 cursor-pointer disabled:cursor-not-allowed"
                             />
                             <span>{p.description}</span>
-                            {p.action === 'WAIVE_QUOTA_DEBT' && currentUser.role !== 'admin_tecnico' && (
+                            {(p.action === 'WAIVE_QUOTA_DEBT' || p.action === 'APPROVE_ENROLLMENT') && currentUser.role !== 'admin_tecnico' && (
                               <span className="text-[10px] text-slate-400">(Apenas Admin)</span>
                             )}
                           </label>
@@ -1512,7 +1515,7 @@ export const AuditAndAdminModule: React.FC = () => {
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-[11px] text-emerald-900/90 pl-1">
                   <li><strong>Saldo das Contas Bancárias</strong>: Valores em Caixa e Bancos inalterados.</li>
-                  <li><strong>Membros Registados</strong>: Todos os membros e matrículas da secretaria.</li>
+                  <li><strong>Membros Registados e Situação de Quotas</strong>: Contas zeradas recomeçam regularizadas a 0,00 Kz (sem exibir o valor zerado), adiantamentos mantêm o crédito e quotas em atraso mantêm a dívida.</li>
                   <li><strong>Contas de Login de Utilizadores</strong>: Todas as credenciais de acesso ao sistema.</li>
                   <li><strong>Configurações do Clube</strong>: Unidades, parâmetros e classes/especialidades.</li>
                 </ul>
@@ -1531,7 +1534,7 @@ export const AuditAndAdminModule: React.FC = () => {
                   <li><strong>Todas as Sugestões Confidenciais</strong> de membros para a Direção.</li>
                   <li><strong>Todos os Avisos, Editais</strong> e publicações institucionais.</li>
                   <li><strong>Todas as Solicitações</strong> efetuadas pelos membros e pedidos de capelania.</li>
-                  <li><strong>Todos os Recibos Oficiais</strong> emitidos e relatórios.</li>
+                  <li><strong>Histórico de Recibos, Pagamentos e Dívidas Zeradas</strong> anteriores (sem exibir valores zerados antigos).</li>
                   <li><strong>Todas as Despesas</strong> e respetivas aprovações.</li>
                   <li><strong>Todos os Registos de Auditoria</strong> (trilha de auditoria e logs do sistema).</li>
                 </ul>
@@ -1540,7 +1543,7 @@ export const AuditAndAdminModule: React.FC = () => {
 
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 text-xs">
               <p>
-                Ao efetuar esta operação, todos os anexos em base64, sugestões enviadas e documentos que ocupam armazenamento na nuvem serão limpos imediatamente, permitindo que o sistema funcione com rapidez e sem limites de cota excedidos.
+                Ao efetuar esta operação, todo o histórico de pagamentos, isenções/valores zerados, documentos e registos de auditoria serão limpos na nuvem, mantendo membros regularizados a 0,00 Kz, créditos adiantados e dívidas em atraso.
               </p>
             </div>
 
@@ -1576,7 +1579,7 @@ export const AuditAndAdminModule: React.FC = () => {
                   setIsCleaningStorage(false);
                   setIsCleanStorageModalOpen(false);
                   if (res.success) {
-                    showFeedback('success', 'Limpeza da nuvem concluída com sucesso! Os ficheiros pesados, uploads, documentos, sugestões de membros para o Diretor, publicações e todos os registos de auditoria foram eliminados. Membros, contas de login e saldos bancários foram 100% preservados.');
+                    showFeedback('success', 'Limpeza da nuvem concluída! Histórico, valores zerados anteriores, documentos e registos de auditoria foram apagados; contas zeradas ficaram regularizadas a 0,00 Kz e adiantamentos/atrasos foram preservados.');
                   } else {
                     showFeedback('error', res.error || 'Erro ao efetuar limpeza do sistema.');
                   }

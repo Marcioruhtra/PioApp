@@ -37,6 +37,9 @@ import {
   AssociateDirectivePriority,
   AssociateDirectiveStatus,
   TeamEvaluation,
+  MusicItem,
+  MemberEnrollmentRequest,
+  MemberDocumentationStatus,
 } from '../types';
 import {
   ClubDatabaseState,
@@ -58,7 +61,19 @@ import {
   ROLE_LABELS,
   canGrantAssociateDirectorModule,
   canGrantWaiveQuotaDebt,
+  canGrantApproveEnrollment,
+  hasApproveEnrollmentPermission,
 } from '../services/permissionService';
+import {
+  MemberRegistrationFormData,
+  validateEnrollmentSubmission,
+  buildEnrollmentRequest,
+  buildApprovedMemberFromEnrollment,
+  markEnrollmentReviewed,
+  startEnrollmentReview,
+  generateNextMemberId,
+  reconcileApprovedEnrollmentsWithMembers,
+} from '../services/enrollmentService';
 import { createAuditLog } from '../services/auditService';
 import { getNowISOString, formatDateAO, generateManualNumber } from '../utils/date';
 import { formatKz } from '../utils/currency';
@@ -102,6 +117,36 @@ interface ClubContextValue {
   executeApprovedMemberOperation: (requestId: string) => { success: boolean; error?: string };
   uploadMemberPhoto: (memberId: string, photoBase64: string) => { success: boolean; error?: string };
   deleteMemberPhoto: (memberId: string) => { success: boolean; error?: string };
+  submitEnrollmentRequest: (
+    data: MemberRegistrationFormData
+  ) => Promise<{ success: boolean; request?: MemberEnrollmentRequest; error?: string }>;
+  markEnrollmentUnderReview: (
+    requestId: string
+  ) => { success: boolean; request?: MemberEnrollmentRequest; error?: string };
+  updateEnrollmentReviewMessage: (
+    requestId: string,
+    reviewMessage: string
+  ) => { success: boolean; request?: MemberEnrollmentRequest; error?: string };
+  approveEnrollmentRequest: (
+    requestId: string,
+    options?: {
+      manualNumber?: string;
+      category?: MemberCategory;
+      unitOrTeam?: string;
+      reason?: string;
+      documentationStatus?: MemberDocumentationStatus;
+      missingDocumentsNote?: string;
+    }
+  ) => { success: boolean; member?: Member; error?: string };
+  rejectEnrollmentRequest: (
+    requestId: string,
+    reason: string
+  ) => { success: boolean; error?: string };
+  updateMemberDocumentationStatus: (
+    memberId: string,
+    documentationStatus: MemberDocumentationStatus,
+    missingDocumentsNote?: string
+  ) => { success: boolean; error?: string };
 
   // Tesouraria
   createReceipt: (data: {
@@ -312,6 +357,11 @@ interface ClubContextValue {
   }) => { success: boolean; evaluation?: TeamEvaluation; error?: string };
   deleteTeamEvaluation: (id: string) => { success: boolean; error?: string };
 
+  // Módulo de Música e Louvor
+  createMusicItem: (data: Omit<MusicItem, 'id' | 'createdAt'>) => { success: boolean; error?: string };
+  updateMusicItem: (id: string, data: Partial<MusicItem>) => { success: boolean; error?: string };
+  deleteMusicItem: (id: string) => { success: boolean; error?: string };
+
   isQuotaExceeded?: boolean;
   isCloudLoading: boolean;
 }
@@ -428,7 +478,15 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     const sanitizedMembers = verifyAndRepairMembersIntegrity(migratedMembers).sanitizedMembers;
-    const reconciled = reconcileUsersAndMembers(remoteUsers, sanitizedMembers);
+    const rawEnrollments = Array.isArray(remoteData.enrollmentRequests) ? remoteData.enrollmentRequests : [];
+    const remoteDeletions = Array.isArray(remoteData.deletionRequests) ? remoteData.deletionRequests : [];
+    const reconciledEnrollments = reconcileApprovedEnrollmentsWithMembers(
+      sanitizedMembers,
+      rawEnrollments,
+      remoteSettings.currentYear || new Date().getFullYear(),
+      remoteDeletions
+    );
+    const reconciled = reconcileUsersAndMembers(remoteUsers, reconciledEnrollments.members);
 
     // Atualiza em tempo real os dados do utilizador atualmente autenticado neste dispositivo (ex: nome, email, Nº de Membro, senha, cargo, estado ativo)
     let nextCurrentUser = prev.currentUser;
@@ -464,13 +522,15 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       paymentProofs: Array.isArray(remoteData.paymentProofs) ? remoteData.paymentProofs : [],
       auditLogs: Array.isArray(remoteData.auditLogs) ? remoteData.auditLogs : [],
       notifications: Array.isArray(remoteData.notifications) ? remoteData.notifications : [],
-      deletionRequests: Array.isArray(remoteData.deletionRequests) ? remoteData.deletionRequests : [],
+      deletionRequests: remoteDeletions,
       chaplaincyRequests: Array.isArray(remoteData.chaplaincyRequests) ? remoteData.chaplaincyRequests : [],
       suggestions: Array.isArray(remoteData.suggestions) ? remoteData.suggestions : [],
       messages: Array.isArray(remoteData.messages) ? remoteData.messages : [],
       associateDirectives: Array.isArray(remoteData.associateDirectives) ? remoteData.associateDirectives : [],
       teamEvaluations: Array.isArray(remoteData.teamEvaluations) ? remoteData.teamEvaluations : [],
       quotaWaivers: Array.isArray(remoteData.quotaWaivers) ? remoteData.quotaWaivers : [],
+      musicItems: Array.isArray(remoteData.musicItems) ? remoteData.musicItems : (prev.musicItems || []),
+      enrollmentRequests: reconciledEnrollments.enrollmentRequests,
       settings: remoteSettings,
       currentUser: nextCurrentUser,
     };
@@ -817,6 +877,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
+    if (module === 'members' && action === 'APPROVE_ENROLLMENT' && !canGrantApproveEnrollment(currentUser.role)) {
+      return {
+        success: false,
+        error: 'Apenas o Administrador Técnico pode conceder ou revogar a permissão de autorizar inscrições de membros na grelha de permissões.',
+      };
+    }
+
     if (!can('audit', 'ADMIN') && !can('settings', 'EDIT') && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'diretor') {
       return { success: false, error: 'Apenas a Direção ou Administrador pode alterar a matriz de permissões.' };
     }
@@ -984,9 +1051,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
-    // Auto-ID interno sequencial: CDA-MEM-00X
-    const nextSeq = (state.members.length + 1).toString().padStart(3, '0');
-    const newId = `CDA-MEM-${nextSeq}`;
+    // Auto-ID interno sequencial seguro: CDA-MEM-00X
+    const newId = generateNextMemberId(state.members);
     const now = getNowISOString();
 
     const rawNewMember: Member = {
@@ -1011,6 +1077,413 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     pushToFirestore(newState);
 
     logAction('members', 'REGISTO_MEMBRO', `Registo do membro ${newMember.fullName} (${newMember.manualNumber})`, newId, newMember.fullName);
+    return { success: true };
+  };
+
+  const submitEnrollmentRequest = async (
+    data: MemberRegistrationFormData
+  ): Promise<{ success: boolean; request?: MemberEnrollmentRequest; error?: string }> => {
+    let baseState = state;
+
+    // Sincroniza primeiro com o estado vivo da nuvem antes de validar duplicados de B.I.
+    if (db && (db as any).app) {
+      try {
+        let snap: any = null;
+        try {
+          snap = await getDocFromServer(doc(db, 'club_data', 'main_state'));
+        } catch {
+          snap = await getDoc(doc(db, 'club_data', 'main_state')).catch(() => null);
+        }
+        if (snap && snap.exists()) {
+          const cloudData = snap.data() as ClubDatabaseState;
+          if (cloudData) {
+            baseState = normalizeCloudState(cloudData, state);
+          }
+        }
+      } catch {
+        // Continua com baseState atual caso esteja offline
+      }
+    }
+
+    const existingRequests = baseState.enrollmentRequests || [];
+    const validation = validateEnrollmentSubmission(data, baseState.members, existingRequests);
+    if (!validation.valid || !validation.resolvedManualNumber) {
+      return { success: false, error: validation.error || 'Dados de inscrição inválidos.' };
+    }
+
+    const newRequest = buildEnrollmentRequest(
+      data,
+      validation.resolvedManualNumber,
+      baseState.settings.currentYear || new Date().getFullYear(),
+      existingRequests,
+      currentUser?.id && currentUser.id !== 'USR-GUEST' ? currentUser.id : undefined
+    );
+
+    const activeMatrix = baseState.settings.permissionsMatrix || ROLE_PERMISSIONS_MATRIX;
+    const targetRoles = (Object.keys(ROLE_LABELS) as RoleType[]).filter((r) =>
+      hasApproveEnrollmentPermission(r, activeMatrix)
+    );
+
+    const newNotification: ClubNotification = {
+      id: `NOTIF-ENR-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: 'Nova Solicitação de Inscrição',
+      message: `${newRequest.fullName} (${newRequest.category.toUpperCase()}) preencheu a ficha de inscrição (${newRequest.protocolNumber}) e aguarda autorização.`,
+      timestamp: newRequest.submittedAt,
+      read: false,
+      category: 'member',
+      targetModule: 'members',
+      targetId: newRequest.id,
+      recipientRoles: targetRoles.length > 0 ? targetRoles : ['secretario', 'admin_tecnico'],
+      priority: 'alta',
+    };
+
+    const auditEntry = createAuditLog(
+      currentUser?.id || 'AUTO-INSCRICAO',
+      currentUser?.id && currentUser.id !== 'USR-GUEST' ? currentUser.name : newRequest.fullName,
+      currentUser?.id && currentUser.id !== 'USR-GUEST' ? currentUser.role : 'membro',
+      'members',
+      'SOLICITACAO_INSCRICAO',
+      `Submissão direta da ficha de inscrição de ${newRequest.fullName} (Protocolo: ${newRequest.protocolNumber}, Matrícula prevista: ${newRequest.manualNumber})`,
+      newRequest.id,
+      newRequest.fullName
+    );
+
+    const now = getNowISOString();
+    const newState: ClubDatabaseState = {
+      ...baseState,
+      enrollmentRequests: [newRequest, ...existingRequests],
+      notifications: [newNotification, ...(baseState.notifications || [])],
+      auditLogs: [auditEntry, ...(baseState.auditLogs || [])],
+      updatedAt: now,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    await pushToFirestore(newState);
+
+    return { success: true, request: newRequest };
+  };
+
+  const markEnrollmentUnderReview = (
+    requestId: string
+  ): { success: boolean; request?: MemberEnrollmentRequest; error?: string } => {
+    if (!hasApproveEnrollmentPermission(currentUser.role, state.settings.permissionsMatrix)) {
+      return {
+        success: false,
+        error: 'Sem permissão na Grelha de Permissões para colocar inscrições em análise.',
+      };
+    }
+
+    const existingRequests = state.enrollmentRequests || [];
+    const targetReq = existingRequests.find((r) => r.id === requestId);
+    if (!targetReq) {
+      return { success: false, error: 'Solicitação de inscrição não encontrada.' };
+    }
+    if (targetReq.status === 'em_analise') {
+      return { success: true, request: targetReq };
+    }
+    if (targetReq.status !== 'pendente') {
+      return { success: false, error: 'Esta solicitação de inscrição já foi concluída.' };
+    }
+
+    const updatedRequest = startEnrollmentReview(targetReq, currentUser);
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'members',
+      'ANALISE_INSCRICAO_MEMBRO',
+      `Inscrição ${targetReq.protocolNumber} de ${targetReq.fullName} colocada em análise pela Secretaria.`,
+      targetReq.id,
+      targetReq.fullName
+    );
+
+    const now = getNowISOString();
+    const newState: ClubDatabaseState = {
+      ...state,
+      enrollmentRequests: existingRequests.map((r) => (r.id === requestId ? updatedRequest : r)),
+      auditLogs: [auditEntry, ...state.auditLogs],
+      updatedAt: now,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    pushToFirestore(newState);
+
+    return { success: true, request: updatedRequest };
+  };
+
+  const updateEnrollmentReviewMessage = (
+    requestId: string,
+    reviewMessage: string
+  ): { success: boolean; request?: MemberEnrollmentRequest; error?: string } => {
+    if (!hasApproveEnrollmentPermission(currentUser.role, state.settings.permissionsMatrix)) {
+      return {
+        success: false,
+        error: 'Sem permissão na Grelha de Permissões para atualizar mensagens de análise.',
+      };
+    }
+
+    const existingRequests = state.enrollmentRequests || [];
+    const targetReq = existingRequests.find((r) => r.id === requestId);
+    if (!targetReq) {
+      return { success: false, error: 'Solicitação de inscrição não encontrada.' };
+    }
+    if (targetReq.status !== 'em_analise' && targetReq.status !== 'pendente') {
+      return { success: false, error: 'Apenas inscrições em análise ou pendentes podem receber mensagens da Secretaria.' };
+    }
+
+    const cleanMsg = (reviewMessage || '').trim();
+    const updatedRequest: MemberEnrollmentRequest = {
+      ...targetReq,
+      status: targetReq.status === 'pendente' ? 'em_analise' : targetReq.status,
+      reviewMessage: cleanMsg,
+      underReviewStartedByUserId: targetReq.underReviewStartedByUserId || currentUser.id,
+      underReviewStartedByName: targetReq.underReviewStartedByName || currentUser.name,
+      underReviewStartedByRole: targetReq.underReviewStartedByRole || currentUser.role,
+      underReviewStartedAt: targetReq.underReviewStartedAt || getNowISOString(),
+    };
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'members',
+      'MENSAGEM_ANALISE_INSCRICAO',
+      `Mensagem de análise atualizada para a inscrição ${targetReq.protocolNumber} (${targetReq.fullName}): "${cleanMsg}"`,
+      targetReq.id,
+      targetReq.fullName,
+      cleanMsg
+    );
+
+    const now = getNowISOString();
+    const newState: ClubDatabaseState = {
+      ...state,
+      enrollmentRequests: existingRequests.map((r) => (r.id === requestId ? updatedRequest : r)),
+      auditLogs: [auditEntry, ...state.auditLogs],
+      updatedAt: now,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    pushToFirestore(newState);
+
+    return { success: true, request: updatedRequest };
+  };
+
+  const approveEnrollmentRequest = (
+    requestId: string,
+    options?: {
+      manualNumber?: string;
+      category?: MemberCategory;
+      unitOrTeam?: string;
+      reason?: string;
+      documentationStatus?: MemberDocumentationStatus;
+      missingDocumentsNote?: string;
+    }
+  ): { success: boolean; member?: Member; error?: string } => {
+    if (!hasApproveEnrollmentPermission(currentUser.role, state.settings.permissionsMatrix)) {
+      return {
+        success: false,
+        error: 'Sem permissão na Grelha de Permissões (APPROVE_ENROLLMENT) para validar inscrições de membros.',
+      };
+    }
+
+    const existingRequests = state.enrollmentRequests || [];
+    const targetReq = existingRequests.find((r) => r.id === requestId);
+    if (!targetReq) {
+      return { success: false, error: 'Solicitação de inscrição não encontrada.' };
+    }
+    if (targetReq.status !== 'pendente' && targetReq.status !== 'em_analise') {
+      return { success: false, error: 'Esta solicitação de inscrição já foi analisada anteriormente.' };
+    }
+
+    const built = buildApprovedMemberFromEnrollment(
+      targetReq,
+      state.members,
+      state.settings.currentYear || new Date().getFullYear(),
+      {
+        ...options,
+        updatedByName: currentUser.name,
+        updatedByRole: currentUser.role,
+      }
+    );
+    if (!built.success || !built.member) {
+      return { success: false, error: built.error || 'Não foi possível criar a ficha do membro.' };
+    }
+
+    const createdMember = built.member;
+    const updatedRequest = markEnrollmentReviewed(targetReq, 'aprovado', currentUser, {
+      reason: options?.reason,
+      createdMemberId: createdMember.id,
+      manualNumber: createdMember.manualNumber,
+      category: createdMember.category,
+      unitOrTeam: createdMember.unitOrTeam,
+    });
+
+    const syncedUsers = syncMemberChangesToUsers(createdMember, state.users);
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'members',
+      'AUTORIZACAO_INSCRICAO_MEMBRO',
+      `Inscrição ${targetReq.protocolNumber} validada para ${createdMember.fullName} (Matrícula: ${createdMember.manualNumber} · ID: ${createdMember.id})`,
+      createdMember.id,
+      createdMember.fullName,
+      options?.reason
+    );
+
+    const now = getNowISOString();
+    const newState: ClubDatabaseState = {
+      ...state,
+      members: [createdMember, ...state.members],
+      users: syncedUsers,
+      enrollmentRequests: existingRequests.map((r) => (r.id === requestId ? updatedRequest : r)),
+      auditLogs: [auditEntry, ...state.auditLogs],
+      updatedAt: now,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    pushToFirestore(newState);
+
+    return { success: true, member: createdMember };
+  };
+
+  const rejectEnrollmentRequest = (
+    requestId: string,
+    reason: string
+  ): { success: boolean; error?: string } => {
+    if (!hasApproveEnrollmentPermission(currentUser.role, state.settings.permissionsMatrix)) {
+      return {
+        success: false,
+        error: 'Sem permissão na Grelha de Permissões (APPROVE_ENROLLMENT) para recusar inscrições de membros.',
+      };
+    }
+
+    const cleanReason = (reason || '').trim();
+    if (cleanReason.length < 3) {
+      return {
+        success: false,
+        error: 'É obrigatório indicar uma justificação (mínimo 3 caracteres) para recusar a inscrição.',
+      };
+    }
+
+    const existingRequests = state.enrollmentRequests || [];
+    const targetReq = existingRequests.find((r) => r.id === requestId);
+    if (!targetReq) {
+      return { success: false, error: 'Solicitação de inscrição não encontrada.' };
+    }
+    if (targetReq.status !== 'pendente' && targetReq.status !== 'em_analise') {
+      return { success: false, error: 'Esta solicitação de inscrição já foi analisada anteriormente.' };
+    }
+
+    const updatedRequest = markEnrollmentReviewed(targetReq, 'rejeitado', currentUser, {
+      reason: cleanReason,
+    });
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'members',
+      'REJEICAO_INSCRICAO_MEMBRO',
+      `Inscrição ${targetReq.protocolNumber} de ${targetReq.fullName} recusada.`,
+      targetReq.id,
+      targetReq.fullName,
+      cleanReason
+    );
+
+    const now = getNowISOString();
+    const newState: ClubDatabaseState = {
+      ...state,
+      enrollmentRequests: existingRequests.map((r) => (r.id === requestId ? updatedRequest : r)),
+      auditLogs: [auditEntry, ...state.auditLogs],
+      updatedAt: now,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    pushToFirestore(newState);
+
+    return { success: true };
+  };
+
+  const updateMemberDocumentationStatus = (
+    memberId: string,
+    documentationStatus: MemberDocumentationStatus,
+    missingDocumentsNote?: string
+  ): { success: boolean; error?: string } => {
+    const isAllowed =
+      currentUser.role === 'secretario' ||
+      currentUser.role === 'admin_tecnico' ||
+      can('members', 'EDIT') ||
+      currentUser.role === 'diretor' ||
+      currentUser.role === 'diretor_associado';
+
+    if (!isAllowed) {
+      return {
+        success: false,
+        error: 'Sem autorização para definir a situação documental dos membros.',
+      };
+    }
+
+    const targetMember = state.members.find((m) => m.id === memberId);
+    if (!targetMember) {
+      return { success: false, error: 'Membro não encontrado na Secretaria.' };
+    }
+
+    const cleanNote = (missingDocumentsNote || '').trim();
+    if (documentationStatus === 'falta_documento' && cleanNote.length < 3) {
+      return {
+        success: false,
+        error: 'Indique qual ou quais documentos estão em falta (mínimo 3 caracteres).',
+      };
+    }
+
+    const now = getNowISOString();
+    const updatedMembers = state.members.map((m) =>
+      m.id === memberId
+        ? {
+            ...m,
+            documentationStatus,
+            missingDocumentsNote: documentationStatus === 'falta_documento' ? cleanNote : undefined,
+            documentationUpdatedAt: now,
+            documentationUpdatedByName: currentUser.name,
+            documentationUpdatedByRole: currentUser.role,
+            updatedAt: now,
+          }
+        : m
+    );
+
+    const statusDesc =
+      documentationStatus === 'regularizado'
+        ? 'Regularizado (documentação completa)'
+        : `Falta de Documento (${cleanNote})`;
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'members',
+      'SITUACAO_DOCUMENTAL_MEMBRO',
+      `Situação documental de ${targetMember.fullName} (${targetMember.manualNumber}) definida como: ${statusDesc}.`,
+      targetMember.id,
+      targetMember.fullName
+    );
+
+    const newState: ClubDatabaseState = {
+      ...state,
+      members: updatedMembers,
+      auditLogs: [auditEntry, ...state.auditLogs],
+      updatedAt: now,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    pushToFirestore(newState);
+
     return { success: true };
   };
 
@@ -4884,6 +5357,71 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
+  // Módulo de Música e Louvor
+  const createMusicItem = (data: Omit<MusicItem, 'id' | 'createdAt'>) => {
+    if (!can('music', 'CREATE')) {
+      return { success: false, error: 'Sem permissão na grelha para adicionar hinos ao repertório.' };
+    }
+    const now = getNowISOString();
+    const newItem: MusicItem = {
+      ...data,
+      id: `MUS-${Date.now()}`,
+      createdAt: now,
+    };
+    const nextList = [newItem, ...(state.musicItems || [])];
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      musicItems: nextList,
+    };
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+    logAction('music', 'CRIAR_HINO', `Registo de hino: ${newItem.title}`, newItem.id, newItem.title);
+    return { success: true };
+  };
+
+  const updateMusicItem = (id: string, data: Partial<MusicItem>) => {
+    if (!can('music', 'EDIT')) {
+      return { success: false, error: 'Sem permissão na grelha para editar este hino.' };
+    }
+    const now = getNowISOString();
+    const list = state.musicItems || [];
+    const existing = list.find((m) => m.id === id);
+    if (!existing) return { success: false, error: 'Hino não encontrado no repertório.' };
+
+    const nextList = list.map((m) => (m.id === id ? { ...m, ...data } : m));
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      musicItems: nextList,
+    };
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+    logAction('music', 'EDITAR_HINO', `Atualização de hino: ${existing.title}`, id, existing.title);
+    return { success: true };
+  };
+
+  const deleteMusicItem = (id: string) => {
+    if (!can('music', 'EDIT') && !can('music', 'CREATE')) {
+      return { success: false, error: 'Sem permissão na grelha para remover hinos.' };
+    }
+    const now = getNowISOString();
+    const list = state.musicItems || [];
+    const nextList = list.filter((m) => m.id !== id);
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      musicItems: nextList,
+    };
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+    logAction('music', 'REMOVER_HINO', `Remoção de hino do repertório`, id);
+    return { success: true };
+  };
+
   const deleteAssociateDirective = (id: string) => {
     if (!can('associate_director', 'EDIT')) {
       return { success: false, error: 'Sem permissão na grelha para eliminar diretivas.' };
@@ -5034,6 +5572,12 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         executeApprovedMemberOperation,
         uploadMemberPhoto,
         deleteMemberPhoto,
+        submitEnrollmentRequest,
+        markEnrollmentUnderReview,
+        updateEnrollmentReviewMessage,
+        approveEnrollmentRequest,
+        rejectEnrollmentRequest,
+        updateMemberDocumentationStatus,
         createReceipt,
         cancelReceipt,
         updateQuotaConfig,
@@ -5130,6 +5674,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         deleteAssociateDirective,
         saveTeamEvaluation,
         deleteTeamEvaluation,
+        createMusicItem,
+        updateMusicItem,
+        deleteMusicItem,
         isQuotaExceeded,
         isCloudLoading,
         theme,

@@ -84,3 +84,26 @@ export function generateManualNumber(identityCardNumber: string, birthDate: stri
   return `EBX-${last3BI}${mm}${aa}`;
 }
 
+/**
+ * Calcula a idade exata em anos a partir de uma data ISO (AAAA-MM-DD).
+ */
+export function calculateAgeYears(birthDateStr?: string, referenceDate: Date = new Date()): number | null {
+  if (!birthDateStr) return null;
+  const parts = birthDateStr.split('-').map(Number);
+  if (parts.length !== 3 || parts.some((n) => isNaN(n))) return null;
+
+  const [birthYear, birthMonth, birthDay] = parts;
+  if (birthYear < 1900 || birthMonth < 1 || birthMonth > 12 || birthDay < 1 || birthDay > 31) {
+    return null;
+  }
+
+  let age = referenceDate.getFullYear() - birthYear;
+  const currentMonth = referenceDate.getMonth() + 1;
+  const currentDay = referenceDate.getDate();
+
+  if (currentMonth < birthMonth || (currentMonth === birthMonth && currentDay < birthDay)) {
+    age -= 1;
+  }
+
+  return age >= 0 ? age : null;
+}

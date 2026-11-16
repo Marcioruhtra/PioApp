@@ -88,6 +88,40 @@ export function getTodayISODate(): string {
   return `${y}-${m}-${d}`;
 }
 
+export function addCalendarDaysISO(dateStr: string, days: number): string {
+  const parsed = parseISOCalendarDateUTC(dateStr);
+  if (!parsed) return dateStr;
+  return formatCalendarDateISO(new Date(parsed.getTime() + days * MS_PER_DAY));
+}
+
+export function getFirstDayOfNextMonthISO(dateStr: string): string {
+  const parsed = parseISOCalendarDateUTC(dateStr);
+  if (!parsed) return dateStr;
+  const nextMonth = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth() + 1, 1));
+  return formatCalendarDateISO(nextMonth);
+}
+
+/**
+ * Calcula a nova data de início de contagem de quotas após uma limpeza da nuvem,
+ * garantindo que os períodos já liquidados/transportados até à data da limpeza não voltem a ser cobrados.
+ */
+export function advanceCycleStartDateAfterCleanup(
+  config: QuotaConfig,
+  cleanupDateStr: string = getTodayISODate()
+): string {
+  const nextStart =
+    config.frequency === 'mensal'
+      ? getFirstDayOfNextMonthISO(cleanupDateStr)
+      : addCalendarDaysISO(cleanupDateStr, 1);
+
+  const currentStartParsed = parseISOCalendarDateUTC(config.cycleStartDate);
+  const nextStartParsed = parseISOCalendarDateUTC(nextStart);
+  if (currentStartParsed && nextStartParsed && currentStartParsed.getTime() > nextStartParsed.getTime()) {
+    return formatCalendarDateISO(currentStartParsed);
+  }
+  return nextStart;
+}
+
 /**
  * Conta exatamente quantos domingos existem entre startDateStr e endDateStr (ambos inclusivos).
  * Cada domingo representa um dia regular de atividade onde a Quota do clube é cobrada.
@@ -322,7 +356,12 @@ export function calculateMemberQuotaSummary(
       ? countChargeableMonths(effectiveStartDate, refDateISO)
       : countChargeableSundays(effectiveStartDate, refDateISO);
 
-  const grossDueInCents = Math.max(0, periodsCharged * unitQuotaInCents);
+  const carryDebt = Math.max(0, Math.round(member.quotaCarryOver?.debtInCents || 0));
+  const carryCredit = Math.max(0, Math.round(member.quotaCarryOver?.creditInCents || 0));
+  const carryWaived = Math.max(0, Math.round(member.quotaCarryOver?.waivedInCents || 0));
+
+  const newPeriodsGrossDueInCents = Math.max(0, periodsCharged * unitQuotaInCents);
+  const grossDueInCents = newPeriodsGrossDueInCents + carryDebt + carryWaived;
 
   const cycleYear = Number((config.cycleStartDate || '').slice(0, 4)) || new Date().getUTCFullYear();
   const memberWaivers = (quotaWaivers || [])
@@ -335,10 +374,11 @@ export function calculateMemberQuotaSummary(
     )
     .sort((a, b) => (b.waivedAt || '').localeCompare(a.waivedAt || ''));
 
-  const totalWaivedInCents = memberWaivers.reduce(
+  const activeWaivedInCents = memberWaivers.reduce(
     (sum, w) => sum + Math.max(0, Math.round(w.amountWaivedInCents || 0)),
     0
   );
+  const totalWaivedInCents = carryWaived + activeWaivedInCents;
 
   const totalDueInCents = Math.max(0, grossDueInCents - totalWaivedInCents);
 
@@ -346,10 +386,11 @@ export function calculateMemberQuotaSummary(
     .filter((r) => isQuotaReceiptForCycle(r, config, fees) && doesReceiptBelongToMember(r, member))
     .sort((a, b) => (b.paidAt || '').localeCompare(a.paidAt || ''));
 
-  const totalPaidInCents = quotaReceipts.reduce(
+  const receiptsPaidInCents = quotaReceipts.reduce(
     (sum, r) => sum + Math.max(0, Math.round(r.amountPaidInCents || 0)),
     0
   );
+  const totalPaidInCents = receiptsPaidInCents + carryCredit;
 
   const balanceDueInCents = Math.max(0, totalDueInCents - totalPaidInCents);
   const creditInCents = Math.max(0, totalPaidInCents - totalDueInCents);

@@ -2965,6 +2965,28 @@ export const TreasuryModule: React.FC = () => {
               </div>
             </div>
 
+            {liveStatementTarget.member.quotaCarryOver &&
+              (liveStatementTarget.member.quotaCarryOver.debtInCents > 0 ||
+                liveStatementTarget.member.quotaCarryOver.creditInCents > 0) && (
+                <div className="p-2.5 bg-blue-50/70 border border-blue-200 rounded-lg text-[11px] text-blue-950 space-y-1">
+                  <div className="font-bold">
+                    Saldo Consolidado após Limpeza na Nuvem ({formatDateAO(liveStatementTarget.member.quotaCarryOver.snapshotDate)})
+                  </div>
+                  <div className="flex flex-wrap gap-x-4 gap-y-0.5 tabular-nums">
+                    {liveStatementTarget.member.quotaCarryOver.creditInCents > 0 && (
+                      <span>
+                        Crédito adiantado: <strong>+{formatKz(liveStatementTarget.member.quotaCarryOver.creditInCents)}</strong>
+                      </span>
+                    )}
+                    {liveStatementTarget.member.quotaCarryOver.debtInCents > 0 && (
+                      <span>
+                        Dívida em atraso transportada: <strong>{formatKz(liveStatementTarget.member.quotaCarryOver.debtInCents)}</strong>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
             {liveStatementTarget.quotaWaivers.length > 0 && (
               <div>
                 <h4 className="font-bold text-slate-800 mb-2">

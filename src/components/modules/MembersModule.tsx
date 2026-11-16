@@ -29,14 +29,37 @@ import {
   CreditCard,
   User,
   Camera,
+  ClipboardList,
+  FileSearch,
+  FileCheck,
+  MessageSquare,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
-import { Member, MemberCategory, MemberStatus, DeletionRequest } from '../../types';
-import { formatDateAO, generateManualNumber } from '../../utils/date';
+import {
+  Member,
+  MemberCategory,
+  MemberStatus,
+  MemberDocumentationStatus,
+  DeletionRequest,
+  OfficialDocument,
+  MemberEnrollmentRequest,
+} from '../../types';
+import { formatDateAO, formatDateTimeAO, generateManualNumber, getTodayISODate } from '../../utils/date';
 import { Modal } from '../common/Modal';
 import { EmptyState } from '../common/EmptyState';
 import { isMemberNumberUnique, findPotentialDuplicateMember } from '../../services/storageService';
 import { MemberDigitalCardModal } from '../common/MemberDigitalCardModal';
+import { PrintDocumentModal } from '../common/PrintDocumentModal';
+import { MemberDossierModal } from '../members/MemberDossierModal';
+import { MemberRegistrationForm } from '../members/MemberRegistrationForm';
+import { EnrollmentStatusCard } from '../members/EnrollmentStatusCard';
+import {
+  MemberRegistrationFormData,
+  findDuplicateEnrollmentByBI,
+  normalizeIdentityCardNumber,
+  resolveMemberDocumentationStatus,
+  validateRegistrationFields,
+} from '../../services/enrollmentService';
 import { processProfilePhoto } from '../../utils/fileUpload';
 import { ROLE_LABELS } from '../../services/permissionService';
 
@@ -61,6 +84,11 @@ export const MembersModule: React.FC = () => {
     requestMemberOperation,
     decideMemberOperationRequest,
     executeApprovedMemberOperation,
+    markEnrollmentUnderReview,
+    approveEnrollmentRequest,
+    rejectEnrollmentRequest,
+    updateMemberDocumentationStatus,
+    updateEnrollmentReviewMessage,
   } = useClub();
 
   const isAdmin = currentUser.role === 'admin_tecnico' || can('audit', 'ADMIN');
@@ -71,15 +99,18 @@ export const MembersModule: React.FC = () => {
   const canManageTeams = isDirector || isAssociateDirector || isSecretary || isAdmin;
   const canEdit = can('members', 'EDIT') || isSecretary || isAdmin || isDirector || isAssociateDirector;
   const canEditCategory = isAdmin || isSecretary || isDirector || isAssociateDirector;
+  const canApproveEnrollments = can('members', 'APPROVE_ENROLLMENT');
 
   // Visualização e Navegação
-  const [activeView, setActiveView] = useState<'members' | 'authorizations'>('members');
+  const [activeView, setActiveView] = useState<'members' | 'enrollments' | 'authorizations'>('members');
+  const [enrollmentFilter, setEnrollmentFilter] = useState<'todos' | 'pendente' | 'em_analise' | 'aprovado' | 'rejeitado'>('todos');
   const [authFilter, setAuthFilter] = useState<'todos' | 'pendente' | 'aprovado' | 'rejeitado' | 'executado'>('todos');
 
   // Filtros e Pesquisa
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('todas');
   const [statusFilter, setStatusFilter] = useState<string>('ativo');
+  const [documentationFilter, setDocumentationFilter] = useState<'todas' | MemberDocumentationStatus>('todas');
 
   // Modais de Operação
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
@@ -95,6 +126,7 @@ export const MembersModule: React.FC = () => {
   });
   const [selectedMember, setSelectedMember] = useState<Member | null>(null);
   const [cardMember, setCardMember] = useState<Member | null>(null);
+  const [printedDossierDoc, setPrintedDossierDoc] = useState<OfficialDocument | null>(null);
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isArchiveOpen, setIsArchiveOpen] = useState(false);
   const [archiveReason, setArchiveReason] = useState('');
@@ -103,6 +135,26 @@ export const MembersModule: React.FC = () => {
   const [rejectingReq, setRejectingReq] = useState<DeletionRequest | null>(null);
   const [rejectJustification, setRejectJustification] = useState('');
   const [isBatchRenewalOpen, setIsBatchRenewalOpen] = useState(false);
+  const [documentationMember, setDocumentationMember] = useState<Member | null>(null);
+  const [docStatusForm, setDocStatusForm] = useState<{
+    status: MemberDocumentationStatus;
+    missingDocumentsNote: string;
+  }>({
+    status: 'regularizado',
+    missingDocumentsNote: '',
+  });
+  const [viewingEnrollment, setViewingEnrollment] = useState<MemberEnrollmentRequest | null>(null);
+  const [approvingEnrollment, setApprovingEnrollment] = useState<MemberEnrollmentRequest | null>(null);
+  const [approveEnrollmentForm, setApproveEnrollmentForm] = useState({
+    manualNumber: '',
+    category: 'aspirante' as MemberCategory,
+    unitOrTeam: '',
+    reason: '',
+    documentationStatus: 'regularizado' as MemberDocumentationStatus,
+    missingDocumentsNote: '',
+  });
+  const [rejectingEnrollment, setRejectingEnrollment] = useState<MemberEnrollmentRequest | null>(null);
+  const [rejectEnrollmentReason, setRejectEnrollmentReason] = useState('');
   const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const showFeedback = (type: 'success' | 'error', message: string) => {
@@ -131,6 +183,7 @@ export const MembersModule: React.FC = () => {
     bloodType: 'O+',
     allergiesOrMedicalNotes: '',
     investitureDate: '',
+    professionalCourse: '',
   });
   const [editError, setEditError] = useState<string | null>(null);
 
@@ -152,9 +205,10 @@ export const MembersModule: React.FC = () => {
       emergencyName: m.emergencyContact?.name || '',
       emergencyRelationship: m.emergencyContact?.relationship || '',
       emergencyPhone: m.emergencyContact?.phone || '',
-      bloodType: m.bloodType || 'O+',
+      bloodType: m.bloodType || '',
       allergiesOrMedicalNotes: m.allergiesOrMedicalNotes || '',
       investitureDate: m.investitureDate || '',
+      professionalCourse: m.professionalCourse || '',
     });
     setEditError(null);
   };
@@ -188,6 +242,7 @@ export const MembersModule: React.FC = () => {
       guardianPhone: editFormData.guardianPhone.trim() || undefined,
       bloodType: editFormData.bloodType || undefined,
       allergiesOrMedicalNotes: editFormData.allergiesOrMedicalNotes.trim() || undefined,
+      professionalCourse: editFormData.professionalCourse.trim() || undefined,
       investitureDate: (editFormData.category === 'embaixador' || editFormData.category === 'lider')
         ? (editFormData.investitureDate.trim() || undefined)
         : undefined,
@@ -206,50 +261,6 @@ export const MembersModule: React.FC = () => {
     }
   };
 
-  // Estados do Formulário de Registo
-  const [formData, setFormData] = useState({
-    manualNumber: '',
-    fullName: '',
-    birthDate: '',
-    gender: 'M' as 'M' | 'F',
-    identityCardNumber: '',
-    phone: '',
-    email: '',
-    address: '',
-    category: 'embaixador' as MemberCategory,
-    unitOrTeam: '',
-    guardianName: '',
-    guardianPhone: '',
-    emergencyName: '',
-    emergencyRelationship: '',
-    emergencyPhone: '',
-    bloodType: 'O+',
-    allergiesOrMedicalNotes: '',
-    investitureDate: '',
-    joinedDate: new Date().toISOString().split('T')[0],
-  });
-
-  const handleRegBirthDateChange = (dateVal: string) => {
-    const autoNumber = generateManualNumber(formData.identityCardNumber, dateVal);
-    setFormData((prev) => ({
-      ...prev,
-      birthDate: dateVal,
-      manualNumber: autoNumber,
-    }));
-  };
-
-  const handleRegBIChange = (biVal: string) => {
-    const autoNumber = generateManualNumber(biVal, formData.birthDate);
-    setFormData((prev) => ({
-      ...prev,
-      identityCardNumber: biVal,
-      manualNumber: autoNumber,
-    }));
-  };
-
-  const [formError, setFormError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
   // Filtro de Membros
   const filteredMembers = useMemo(() => {
     return state.members.filter((m) => {
@@ -265,9 +276,13 @@ export const MembersModule: React.FC = () => {
       const matchStatus =
         statusFilter === 'todas' || m.status === statusFilter;
 
-      return matchSearch && matchCategory && matchStatus;
+      const docStatus = resolveMemberDocumentationStatus(m);
+      const matchDoc =
+        documentationFilter === 'todas' || docStatus === documentationFilter;
+
+      return matchSearch && matchCategory && matchStatus && matchDoc;
     });
-  }, [state.members, searchQuery, categoryFilter, statusFilter]);
+  }, [state.members, searchQuery, categoryFilter, statusFilter, documentationFilter]);
 
   const pendingAuthCount = useMemo(() => {
     return (state.deletionRequests || []).filter((r) => r.status === 'pendente').length;
@@ -279,37 +294,45 @@ export const MembersModule: React.FC = () => {
     return list.filter((r) => r.status === authFilter);
   }, [state.deletionRequests, authFilter]);
 
-  // Submissão do Registo com Validação Dupla
-  const handleRegisterSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormError(null);
+  const pendingEnrollmentsCount = useMemo(() => {
+    return (state.enrollmentRequests || []).filter(
+      (r) => r.status === 'pendente' || r.status === 'em_analise'
+    ).length;
+  }, [state.enrollmentRequests]);
 
-    // Validação de Campos Obrigatórios
-    if (!formData.manualNumber.trim()) {
-      setFormError('O Número de Membro manual é obrigatório (ex: 2026/015).');
-      return;
-    }
-    if (!formData.fullName.trim() || formData.fullName.trim().length < 3) {
-      setFormError('O Nome Completo institucional é obrigatório.');
-      return;
-    }
-    if (!formData.birthDate) {
-      setFormError('A Data de Nascimento é obrigatória.');
-      return;
-    }
-    if (!formData.identityCardNumber.trim()) {
-      setFormError('O Número do Bilhete de Identidade (B.I.) angolano é obrigatório.');
-      return;
-    }
-    if (!formData.phone.trim()) {
-      setFormError('O Contacto telefónico principal é obrigatório.');
-      return;
+  const filteredEnrollments = useMemo(() => {
+    const list = state.enrollmentRequests || [];
+    if (enrollmentFilter === 'todos') return list;
+    return list.filter((r) => r.status === enrollmentFilter);
+  }, [state.enrollmentRequests, enrollmentFilter]);
+
+  // Submissão do Registo pela Secretaria (Mesmo formulário oficial da inscrição)
+  const handleSecretaryRegisterSubmit = (formData: MemberRegistrationFormData) => {
+    const fieldCheck = validateRegistrationFields(formData, 'secretary');
+    if (!fieldCheck.valid) {
+      return {
+        success: false,
+        error: fieldCheck.error || 'Preencha todos os campos obrigatórios.',
+      };
     }
 
-    // Validação Prévia de Unicidade
     if (!isMemberNumberUnique(formData.manualNumber, state.members)) {
-      setFormError(`O número de membro "${formData.manualNumber}" já existe no cadastro.`);
-      return;
+      return {
+        success: false,
+        error: `O número de membro "${formData.manualNumber}" já existe no cadastro.`,
+      };
+    }
+
+    const biDup = findDuplicateEnrollmentByBI(
+      formData.identityCardNumber,
+      state.members,
+      state.enrollmentRequests || []
+    );
+    if (biDup.duplicate) {
+      return {
+        success: false,
+        error: biDup.error,
+      };
     }
 
     const duplicate = findPotentialDuplicateMember(
@@ -319,72 +342,154 @@ export const MembersModule: React.FC = () => {
       state.members
     );
     if (duplicate) {
-      setFormError(
-        `Detetado potencial duplicado: Já existe o membro "${duplicate.fullName}" com o mesmo B.I. ou data de nascimento.`
-      );
-      return;
+      return {
+        success: false,
+        error: `Detetado potencial duplicado: Já existe o membro "${duplicate.fullName}" com o mesmo B.I. ou data de nascimento.`,
+      };
     }
-
-    setIsSubmitting(true);
 
     const result = addMember({
       manualNumber: formData.manualNumber.trim(),
       fullName: formData.fullName.trim(),
       birthDate: formData.birthDate,
       gender: formData.gender,
-      identityCardNumber: formData.identityCardNumber.trim().toUpperCase(),
+      identityCardNumber: normalizeIdentityCardNumber(formData.identityCardNumber),
       phone: formData.phone.trim(),
-      email: formData.email.trim() || undefined,
-      address: formData.address.trim() || 'Luanda, Angola',
+      email: formData.email.trim(),
+      address: formData.address.trim(),
       category: formData.category,
-      unitOrTeam: formData.unitOrTeam.trim() || undefined,
-      guardianName: formData.guardianName.trim() || undefined,
-      guardianPhone: formData.guardianPhone.trim() || undefined,
+      unitOrTeam: formData.unitOrTeam.trim(),
+      guardianName: formData.guardianName.trim(),
+      guardianPhone: formData.guardianPhone.trim(),
       guardianValidated: Boolean(formData.guardianName.trim()),
       emergencyContact: {
-        name: formData.emergencyName.trim() || formData.guardianName.trim() || formData.fullName.trim(),
-        relationship: formData.emergencyRelationship.trim() || (formData.guardianName.trim() ? 'Encarregado de Educação' : 'Familiar'),
-        phone: formData.emergencyPhone.trim() || formData.guardianPhone.trim() || formData.phone.trim(),
+        name: formData.emergencyName?.trim() || formData.guardianName.trim() || formData.fullName.trim(),
+        relationship: formData.emergencyRelationship?.trim() || (formData.guardianName.trim() ? 'Encarregado de Educação' : 'Familiar'),
+        phone: formData.emergencyPhone?.trim() || formData.guardianPhone.trim() || formData.phone.trim(),
         phoneVerified: false,
       },
-      bloodType: formData.bloodType,
-      allergiesOrMedicalNotes: formData.allergiesOrMedicalNotes.trim() || undefined,
+      bloodType: formData.bloodType.trim() || undefined,
+      allergiesOrMedicalNotes: formData.allergiesOrMedicalNotes.trim(),
+      professionalCourse: formData.professionalCourse.trim() || undefined,
       investitureDate: (formData.category === 'embaixador' || formData.category === 'lider')
-        ? (formData.investitureDate.trim() || undefined)
+        ? formData.investitureDate.trim()
         : undefined,
-      joinedDate: formData.joinedDate,
+      joinedDate: formData.category === 'aspirante' ? getTodayISODate() : formData.joinedDate,
       annualRenewalYear: state.settings.currentYear,
       status: 'ativo',
     });
 
-    setIsSubmitting(false);
-
     if (result.success) {
       setIsRegisterOpen(false);
-      // Reset formulário
-      setFormData({
-        manualNumber: '',
-        fullName: '',
-        birthDate: '',
-        gender: 'M',
-        identityCardNumber: '',
-        phone: '',
-        email: '',
-        address: '',
-        category: 'aspirante',
-        unitOrTeam: '',
-        guardianName: '',
-        guardianPhone: '',
-        emergencyName: '',
-        emergencyRelationship: '',
-        emergencyPhone: '',
-        bloodType: 'O+',
-        allergiesOrMedicalNotes: '',
-        investitureDate: '',
-        joinedDate: new Date().toISOString().split('T')[0],
-      });
+      showFeedback('success', `Membro "${formData.fullName.trim()}" registado oficialmente no cadastro.`);
+    }
+
+    return result;
+  };
+
+  const handleInspectEnrollment = (req: MemberEnrollmentRequest) => {
+    if (req.status === 'pendente' && canApproveEnrollments) {
+      const res = markEnrollmentUnderReview(req.id);
+      if (res.success && res.request) {
+        setViewingEnrollment(res.request);
+        showFeedback('success', `Inscrição ${req.protocolNumber} colocada na fase "Em análise".`);
+        return;
+      }
+    }
+    setViewingEnrollment(req);
+  };
+
+  const handleOpenDocumentationModal = (m: Member) => {
+    const currentStatus = resolveMemberDocumentationStatus(m);
+    setDocumentationMember(m);
+    setDocStatusForm({
+      status: currentStatus,
+      missingDocumentsNote: m.missingDocumentsNote || '',
+    });
+  };
+
+  const handleConfirmDocumentationUpdate = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!documentationMember) return;
+    const res = updateMemberDocumentationStatus(
+      documentationMember.id,
+      docStatusForm.status,
+      docStatusForm.missingDocumentsNote
+    );
+    if (res.success) {
+      showFeedback(
+        'success',
+        docStatusForm.status === 'regularizado'
+          ? `Situação documental de "${documentationMember.fullName}" marcada como Regularizada.`
+          : `Situação documental de "${documentationMember.fullName}" marcada como Falta de Documento.`
+      );
+      setDocumentationMember(null);
     } else {
-      setFormError(result.error || 'Erro ao registar membro.');
+      showFeedback('error', res.error || 'Erro ao atualizar situação documental.');
+    }
+  };
+
+  const handleOpenApproveEnrollment = (req: MemberEnrollmentRequest) => {
+    const isPresencial = req.documentDeliveryMethod === 'presencial';
+    setApprovingEnrollment(req);
+    setApproveEnrollmentForm({
+      manualNumber: req.manualNumber,
+      category: req.category,
+      unitOrTeam: req.unitOrTeam || '',
+      reason: '',
+      documentationStatus: isPresencial ? 'falta_documento' : 'regularizado',
+      missingDocumentsNote: isPresencial
+        ? 'Entrega presencial de documentos (B.I. e Fotografia) pendente na Secretaria'
+        : '',
+    });
+  };
+
+  const handleConfirmApproveEnrollment = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!approvingEnrollment) return;
+
+    if (
+      approveEnrollmentForm.documentationStatus === 'falta_documento' &&
+      approveEnrollmentForm.missingDocumentsNote.trim().length < 3
+    ) {
+      showFeedback(
+        'error',
+        'Indique qual documento está em falta antes de confirmar a validação.'
+      );
+      return;
+    }
+
+    const res = approveEnrollmentRequest(approvingEnrollment.id, {
+      manualNumber: approveEnrollmentForm.manualNumber,
+      category: approveEnrollmentForm.category,
+      unitOrTeam: approveEnrollmentForm.unitOrTeam,
+      reason: approveEnrollmentForm.reason || 'Inscrição validada após análise',
+      documentationStatus: approveEnrollmentForm.documentationStatus,
+      missingDocumentsNote: approveEnrollmentForm.missingDocumentsNote,
+    });
+
+    if (res.success && res.member) {
+      setApprovingEnrollment(null);
+      setViewingEnrollment(null);
+      showFeedback(
+        'success',
+        `Inscrição validada para "${res.member.fullName}"! Ficha adicionada automaticamente em Fichas de Membros (${res.member.manualNumber}).`
+      );
+    } else {
+      showFeedback('error', res.error || 'Erro ao validar solicitação de inscrição.');
+    }
+  };
+
+  const handleConfirmRejectEnrollment = () => {
+    if (!rejectingEnrollment) return;
+    const res = rejectEnrollmentRequest(rejectingEnrollment.id, rejectEnrollmentReason);
+    if (res.success) {
+      showFeedback('success', `Solicitação de inscrição de "${rejectingEnrollment.fullName}" marcada como "Inscrição Recusada" com registo do motivo.`);
+      setRejectingEnrollment(null);
+      setRejectEnrollmentReason('');
+      setViewingEnrollment(null);
+    } else {
+      showFeedback('error', res.error || 'Erro ao recusar solicitação de inscrição.');
     }
   };
 
@@ -527,7 +632,6 @@ export const MembersModule: React.FC = () => {
           {can('members', 'CREATE') && (
             <button
               onClick={() => {
-                setFormError(null);
                 setIsRegisterOpen(true);
               }}
               className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg shadow-xs transition-colors"
@@ -555,7 +659,7 @@ export const MembersModule: React.FC = () => {
         </div>
       </div>
 
-      {/* Navegação entre Fichas de Membros e Autorizações da Direção */}
+      {/* Navegação entre Fichas de Membros, Solicitações de Inscrição e Autorizações da Direção */}
       <div className="flex border-b border-slate-200 gap-2 bg-white px-3 sm:px-5 pt-3 rounded-xl shadow-xs overflow-x-auto whitespace-nowrap w-full max-w-full min-w-0">
         <button
           type="button"
@@ -568,6 +672,23 @@ export const MembersModule: React.FC = () => {
         >
           <Users className="w-4 h-4" />
           <span>Fichas de Membros ({state.members.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveView('enrollments')}
+          className={`pb-3 px-3 text-xs font-bold border-b-2 transition-all flex items-center gap-2 relative ${
+            activeView === 'enrollments'
+              ? 'border-blue-900 text-blue-900'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <ClipboardList className="w-4 h-4" />
+          <span>Solicitação de Inscrição</span>
+          {pendingEnrollmentsCount > 0 && (
+            <span className="px-1.5 py-0.5 text-[10px] font-black rounded-full bg-emerald-600 text-white animate-pulse">
+              {pendingEnrollmentsCount}
+            </span>
+          )}
         </button>
         <button
           type="button"
@@ -626,6 +747,19 @@ export const MembersModule: React.FC = () => {
                 <option value="ativo">Apenas Ativos</option>
                 <option value="arquivado">Arquivados (Histórico)</option>
               </select>
+
+              {/* Situação Documental */}
+              <select
+                value={documentationFilter}
+                onChange={(e) =>
+                  setDocumentationFilter(e.target.value as 'todas' | MemberDocumentationStatus)
+                }
+                className="px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-900"
+              >
+                <option value="todas">Documentação (Todas)</option>
+                <option value="regularizado">Regularizado</option>
+                <option value="falta_documento">Falta de Documento</option>
+              </select>
             </div>
           </div>
 
@@ -641,20 +775,23 @@ export const MembersModule: React.FC = () => {
               />
             ) : (
               <div className="overflow-x-auto w-full max-w-full min-w-0">
-                <table className="w-full min-w-[750px] text-left text-xs border-collapse">
+                <table className="w-full min-w-[900px] text-left text-xs border-collapse">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
                       <th className="py-3 px-4">Identificador</th>
                       <th className="py-3 px-4">Nome Completo</th>
                       <th className="py-3 px-4">Categoria / Equipa</th>
                       <th className="py-3 px-4">B.I. (Angola)</th>
+                      <th className="py-3 px-4">Documentação</th>
                       <th className="py-3 px-4">Renovação</th>
                       <th className="py-3 px-4">Estado</th>
                       <th className="py-3 px-4 text-right">Ações</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
-                    {filteredMembers.map((member) => (
+                    {filteredMembers.map((member) => {
+                      const docStatus = resolveMemberDocumentationStatus(member);
+                      return (
                       <tr key={member.id} className="hover:bg-slate-50/80 transition-colors">
                         <td className="py-3 px-4">
                           <div className="font-mono font-bold text-slate-900">{member.id}</div>
@@ -702,6 +839,29 @@ export const MembersModule: React.FC = () => {
                           {member.identityCardNumber}
                         </td>
                         <td className="py-3 px-4">
+                          {docStatus === 'falta_documento' ? (
+                            <div className="space-y-0.5">
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-800">
+                                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                <span>Falta de Documento</span>
+                              </span>
+                              {member.missingDocumentsNote && (
+                                <div
+                                  className="text-[10px] text-amber-900/80 max-w-[190px] truncate"
+                                  title={member.missingDocumentsNote}
+                                >
+                                  {member.missingDocumentsNote}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700">
+                              <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                              <span>Regularizado</span>
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
                           <span className={`text-[11px] font-medium ${
                             member.annualRenewalYear === state.settings.currentYear
                               ? 'text-emerald-700 font-semibold'
@@ -724,7 +884,11 @@ export const MembersModule: React.FC = () => {
                             <button
                               onClick={() => setSelectedMember(member)}
                               className="p-1.5 text-slate-500 hover:text-blue-900 hover:bg-slate-100 rounded transition-colors"
-                              title="Consultar Perfil Completo"
+                              title={
+                                can('members', 'VIEW_DOSSIER_360')
+                                  ? 'Abrir Dossiê 360º do Membro'
+                                  : 'Consultar Ficha Cadastral do Membro'
+                              }
                             >
                               <Eye className="w-4 h-4" />
                             </button>
@@ -735,6 +899,19 @@ export const MembersModule: React.FC = () => {
                             >
                               <CreditCard className="w-4 h-4" />
                             </button>
+                            {(isSecretary || canEdit) && (
+                              <button
+                                onClick={() => handleOpenDocumentationModal(member)}
+                                className={`p-1.5 rounded transition-colors ${
+                                  docStatus === 'falta_documento'
+                                    ? 'text-amber-700 hover:text-amber-900 hover:bg-amber-50'
+                                    : 'text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50'
+                                }`}
+                                title="Definir Situação Documental (Regularizado / Falta de Documento)"
+                              >
+                                <FileCheck className="w-4 h-4" />
+                              </button>
+                            )}
                             {canEdit && (
                               <button
                                 onClick={() => handleOpenEdit(member)}
@@ -783,6 +960,260 @@ export const MembersModule: React.FC = () => {
                                 title="Solicitar Eliminação à Direção"
                               >
                                 <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeView === 'enrollments' && (
+        <div className="space-y-4 w-full max-w-full min-w-0">
+          {/* Header e Filtros de Solicitações de Inscrição */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4 w-full max-w-full min-w-0">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <ClipboardList className="w-4 h-4 text-blue-900 shrink-0" />
+                <span>Solicitação de Inscrição de Novos Membros</span>
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Fluxo em 3 fases: <strong>1. Pendente</strong> (aguarda visualização) → <strong>2. Em análise</strong> → <strong>3. Inscrição validada</strong> ou <strong>Inscrição Recusada</strong> conforme a Grelha de Permissões definida pelo Administrador.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 text-xs w-full md:w-auto">
+              {(
+                [
+                  { key: 'todos', label: 'Todas', count: (state.enrollmentRequests || []).length },
+                  { key: 'pendente', label: 'Pendentes', count: (state.enrollmentRequests || []).filter((r) => r.status === 'pendente').length },
+                  { key: 'em_analise', label: 'Em análise', count: (state.enrollmentRequests || []).filter((r) => r.status === 'em_analise').length },
+                  { key: 'aprovado', label: 'Inscrição validada', count: (state.enrollmentRequests || []).filter((r) => r.status === 'aprovado').length },
+                  { key: 'rejeitado', label: 'Inscrição Recusada', count: (state.enrollmentRequests || []).filter((r) => r.status === 'rejeitado').length },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setEnrollmentFilter(tab.key)}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition-all border ${
+                    enrollmentFilter === tab.key
+                      ? 'bg-blue-900 text-white border-blue-900 shadow-xs'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {tab.label} ({tab.count})
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {!canApproveEnrollments && (
+            <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-xl text-xs text-amber-950 flex items-start gap-2.5 w-full max-w-full">
+              <Lock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">Modo apenas de consulta</p>
+                <p className="text-[11px] text-amber-900 mt-0.5">
+                  O seu cargo atual não tem a permissão <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">Validar / Recusar Inscrições</code> ativa na Grelha de Permissões gerida pelo Administrador Técnico.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Tabela de Solicitações de Inscrição */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden w-full max-w-full min-w-0">
+            {filteredEnrollments.length === 0 ? (
+              <EmptyState
+                icon={ClipboardList}
+                title="Nenhuma solicitação de inscrição encontrada"
+                description={
+                  enrollmentFilter === 'todos'
+                    ? 'Quando um candidato preencher o formulário de inscrição no clube, a solicitação aparecerá aqui na fase Pendente para análise da Secretaria.'
+                    : 'Não existem solicitações de inscrição nesta fase.'
+                }
+              />
+            ) : (
+              <div className="overflow-x-auto w-full max-w-full min-w-0">
+                <table className="w-full min-w-[850px] text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
+                      <th className="py-3 px-4">Protocolo / Submissão</th>
+                      <th className="py-3 px-4">Candidato</th>
+                      <th className="py-3 px-4">Categoria / Equipa</th>
+                      <th className="py-3 px-4">B.I. & Nascimento</th>
+                      <th className="py-3 px-4">Fase / Decisão</th>
+                      <th className="py-3 px-4 text-right">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-slate-700">
+                    {filteredEnrollments.map((req) => (
+                      <tr key={req.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-3 px-4">
+                          <div className="font-mono font-bold text-blue-900">{req.protocolNumber}</div>
+                          <div className="text-[10px] text-slate-500">Matrícula: {req.manualNumber}</div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">{formatDateTimeAO(req.submittedAt)}</div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-semibold text-slate-900">{req.fullName}</div>
+                          <div className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
+                            <Phone className="w-3 h-3 text-slate-400" />
+                            <span>{req.phone}</span>
+                          </div>
+                          {req.email && (
+                            <div className="text-[10px] text-slate-400 truncate max-w-[200px]">{req.email}</div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                              req.category === 'embaixador'
+                                ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                                : req.category === 'lider'
+                                ? 'bg-purple-50 text-purple-700 border border-purple-200'
+                                : 'bg-amber-50 text-amber-700 border border-amber-200'
+                            }`}
+                          >
+                            {req.category}
+                          </span>
+                          <div className="text-[11px] text-slate-500 mt-1">{req.unitOrTeam || 'Definida na validação'}</div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-mono text-[11px] text-slate-700">{req.identityCardNumber}</div>
+                          <div className="text-[10px] text-slate-500 mt-0.5">Nasc.: {formatDateAO(req.birthDate)}</div>
+                        </td>
+                        <td className="py-3 px-4">
+                          {req.status === 'pendente' && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                              <Clock className="w-3 h-3" />
+                              <span>1. Pendente</span>
+                            </span>
+                          )}
+                          {req.status === 'em_analise' && (
+                            <div>
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-800 border border-blue-200">
+                                <FileSearch className="w-3 h-3" />
+                                <span>2. Em análise</span>
+                              </span>
+                              {req.underReviewStartedByName && (
+                                <div className="text-[10px] text-slate-500 mt-1">
+                                  Analista: <strong>{req.underReviewStartedByName}</strong>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {req.status === 'aprovado' && (
+                            <div>
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                <CheckCircle className="w-3 h-3" />
+                                <span>3. Inscrição validada</span>
+                              </span>
+                              <div className="text-[10px] text-slate-500 mt-1">
+                                Por: <strong>{req.reviewedByName}</strong> ({formatDateAO(req.reviewedAt || '')})
+                              </div>
+                              {req.createdMemberId && (
+                                <div className="text-[10px] text-emerald-800 font-mono">
+                                  Membro: {req.createdMemberId}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {req.status === 'rejeitado' && (
+                            <div>
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-50 text-rose-800 border border-rose-200">
+                                <XCircle className="w-3 h-3" />
+                                <span>3. Inscrição Recusada</span>
+                              </span>
+                              <div className="text-[10px] text-slate-500 mt-1">
+                                Por: <strong>{req.reviewedByName}</strong>
+                              </div>
+                              {req.decisionReason && (
+                                <div className="text-[10px] text-rose-700 italic mt-0.5 bg-rose-50/50 p-1 rounded">
+                                  "{req.decisionReason}"
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleInspectEnrollment(req)}
+                              className="p-1.5 text-slate-600 hover:text-blue-900 hover:bg-slate-100 rounded transition-colors"
+                              title={
+                                req.status === 'pendente' && canApproveEnrollments
+                                  ? 'Visualizar Ficha e Colocar Em Análise'
+                                  : 'Consultar Ficha Completa Submetida'
+                              }
+                            >
+                              <Eye className="w-4 h-4" />
+                            </button>
+
+                            {(req.status === 'pendente' || req.status === 'em_analise') && canApproveEnrollments && (
+                              <>
+                                {req.status === 'pendente' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleInspectEnrollment(req)}
+                                    className="px-2.5 py-1.5 text-[11px] font-bold bg-blue-50 hover:bg-blue-100 text-blue-900 border border-blue-200 rounded flex items-center gap-1 transition-colors"
+                                    title="Visualizar ficha e passar para a fase Em análise"
+                                  >
+                                    <FileSearch className="w-3 h-3" />
+                                    <span>Analisar</span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenApproveEnrollment(req)}
+                                  className="px-2.5 py-1.5 text-[11px] font-bold bg-emerald-700 hover:bg-emerald-800 text-white rounded shadow-xs flex items-center gap-1 transition-colors"
+                                  title="Validar Inscrição e Criar Membro Oficial"
+                                >
+                                  <UserCheck className="w-3 h-3" />
+                                  <span>Validar</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRejectingEnrollment(req);
+                                    setRejectEnrollmentReason('');
+                                  }}
+                                  className="px-2 py-1.5 text-[11px] font-semibold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded transition-colors"
+                                  title="Recusar Solicitação de Inscrição"
+                                >
+                                  <XCircle className="w-3 h-3" />
+                                  <span>Recusar</span>
+                                </button>
+                              </>
+                            )}
+
+                            {req.status === 'pendente' && !canApproveEnrollments && (
+                              <span className="text-[10px] text-slate-400 italic">
+                                Sem permissão na grelha
+                              </span>
+                            )}
+
+                            {req.status === 'aprovado' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveView('members');
+                                  setStatusFilter('todas');
+                                  setCategoryFilter('todas');
+                                  setDocumentationFilter('todas');
+                                  setSearchQuery(req.manualNumber || req.fullName);
+                                }}
+                                className="px-2.5 py-1.5 text-[11px] font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded flex items-center gap-1 transition-colors"
+                                title="Localizar este membro em Fichas de Membros"
+                              >
+                                <Users className="w-3 h-3" />
+                                <span>Ver em Fichas</span>
                               </button>
                             )}
                           </div>
@@ -1039,7 +1470,7 @@ export const MembersModule: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 1: Formulário Completo de Registo (Secretaria) */}
+      {/* MODAL 1: Formulário Completo de Registo (Secretaria - mesmo formulário da auto-inscrição) */}
       <Modal
         isOpen={isRegisterOpen}
         onClose={() => setIsRegisterOpen(false)}
@@ -1047,502 +1478,477 @@ export const MembersModule: React.FC = () => {
         description="Preencha os dados institucionais oficiais. O registo de membro é independente da conta de acesso."
         maxWidth="3xl"
       >
-        <form onSubmit={handleRegisterSubmit} className="space-y-6">
-          {formError && (
-            <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
-              <span>{formError}</span>
-            </div>
-          )}
+        <MemberRegistrationForm
+          mode="secretary"
+          units={state.settings.units}
+          onSubmit={handleSecretaryRegisterSubmit}
+          onCancel={() => setIsRegisterOpen(false)}
+        />
+      </Modal>
 
-          {/* Secção 1: Identificação */}
-          <div className="space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 border-b border-slate-100 pb-1">
-              1. Identificação Pessoal
-            </h4>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+      {/* MODAL: Visualizar Ficha Completa da Solicitação de Inscrição */}
+      {viewingEnrollment && (
+        <Modal
+          isOpen={Boolean(viewingEnrollment)}
+          onClose={() => setViewingEnrollment(null)}
+          title={`Solicitação de Inscrição: ${viewingEnrollment.protocolNumber}`}
+          description={`Submetida em ${formatDateTimeAO(viewingEnrollment.submittedAt)}`}
+          maxWidth="2xl"
+        >
+          <div className="space-y-4 text-xs">
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-slate-700 font-semibold">
-                    Nº de Matrícula <span className="text-rose-500">*</span>
-                  </label>
-                  <span className="text-[10px] text-blue-900 font-mono font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
-                    Automático: EBX-XXXMMAA
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Nº de Matrícula</span>
+                <span className="font-mono font-bold text-blue-900">{viewingEnrollment.manualNumber}</span>
+              </div>
+              <div className="sm:col-span-2">
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Nome Completo</span>
+                <span className="font-bold text-slate-900 text-sm">{viewingEnrollment.fullName}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">B.I. (Angola)</span>
+                <span className="font-mono text-slate-800">{viewingEnrollment.identityCardNumber}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Data de Nascimento</span>
+                <span className="text-slate-800">{formatDateAO(viewingEnrollment.birthDate)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Sexo</span>
+                <span className="text-slate-800">{viewingEnrollment.gender === 'M' ? 'Masculino' : 'Feminino'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Telefone</span>
+                <span className="text-slate-800">{viewingEnrollment.phone}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">E-mail</span>
+                <span className="text-slate-800">{viewingEnrollment.email || 'Não informado'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Município / Bairro</span>
+                <span className="text-slate-800">{viewingEnrollment.address || '-'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Categoria</span>
+                <span className="font-bold uppercase text-indigo-800">{viewingEnrollment.category}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Equipa</span>
+                <span className="text-slate-800">{viewingEnrollment.unitOrTeam || 'Definida na autorização'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Data de Admissão</span>
+                <span className="text-slate-800">
+                  {viewingEnrollment.joinedDate ? formatDateAO(viewingEnrollment.joinedDate) : 'Definida na validação pela Secretaria'}
+                </span>
+              </div>
+              {viewingEnrollment.investitureDate && (
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Investidura</span>
+                  <span className="text-slate-800">{formatDateAO(viewingEnrollment.investitureDate)}</span>
+                </div>
+              )}
+              {viewingEnrollment.professionalCourse && (
+                <div className="sm:col-span-2">
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Curso Profissional</span>
+                  <span className="text-slate-800">{viewingEnrollment.professionalCourse}</span>
+                </div>
+              )}
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Encarregado de Educação</span>
+                <span className="text-slate-800">{viewingEnrollment.guardianName || 'Não informado'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Tel. Encarregado</span>
+                <span className="text-slate-800">{viewingEnrollment.guardianPhone || 'Não informado'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Grupo Sanguíneo</span>
+                <span className="font-bold text-rose-700">{viewingEnrollment.bloodType || 'Não informado'}</span>
+              </div>
+              {viewingEnrollment.allergiesOrMedicalNotes && (
+                <div className="sm:col-span-3">
+                  <span className="text-[10px] uppercase font-bold text-slate-500 block">Alergias / Cuidados Médicos</span>
+                  <span className="text-slate-800">{viewingEnrollment.allergiesOrMedicalNotes}</span>
+                </div>
+              )}
+              <div className="sm:col-span-3 pt-2 border-t border-slate-200 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[10px] uppercase font-bold text-slate-500">
+                    Entrega de Documentos (B.I. e Fotografia)
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded font-bold text-[10px] border ${
+                      viewingEnrollment.documentDeliveryMethod === 'anexar_digital'
+                        ? 'bg-blue-50 text-blue-900 border-blue-200'
+                        : 'bg-amber-50 text-amber-900 border-amber-200'
+                    }`}
+                  >
+                    {viewingEnrollment.documentDeliveryMethod === 'anexar_digital'
+                      ? 'Anexados Digitalmente'
+                      : 'Entrega Presencial na Secretaria'}
                   </span>
                 </div>
-                <input
-                  type="text"
-                  placeholder="Gerado automático (EBX-XXXMMAA)"
-                  value={formData.manualNumber}
-                  onChange={(e) => setFormData({ ...formData, manualNumber: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded font-mono font-bold bg-slate-50 text-blue-900 focus:ring-1 focus:ring-blue-900"
-                  required
-                />
-              </div>
 
-              <div className="sm:col-span-2">
-                <label className="block text-slate-700 font-semibold mb-1">
-                  Nome Completo <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="Nome completo de registo civil"
-                  value={formData.fullName}
-                  onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">
-                  Data de Nascimento <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="date"
-                  value={formData.birthDate}
-                  onChange={(e) => handleRegBirthDateChange(e.target.value)}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">
-                  Sexo <span className="text-rose-500">*</span>
-                </label>
-                <select
-                  value={formData.gender}
-                  onChange={(e) => setFormData({ ...formData, gender: e.target.value as 'M' | 'F' })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-                >
-                  <option value="M">Masculino</option>
-                  <option value="F">Feminino</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">
-                  B.I. (Angola) <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="007849312LA041"
-                  value={formData.identityCardNumber}
-                  onChange={(e) => handleRegBIChange(e.target.value)}
-                  className="w-full p-2 border border-slate-200 rounded font-mono uppercase focus:ring-1 focus:ring-blue-900"
-                  required
-                />
+                {viewingEnrollment.documentDeliveryMethod === 'anexar_digital' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {viewingEnrollment.biDocumentBase64 && (
+                      <div className="p-2.5 bg-white border border-slate-200 rounded-lg flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="text-[10px] font-bold text-slate-500 block">B.I. / Documento Anexado</span>
+                          <span className="text-xs font-semibold text-slate-900 truncate block">
+                            {viewingEnrollment.biDocumentFileName || 'Documento B.I.'}
+                          </span>
+                        </div>
+                        <a
+                          href={viewingEnrollment.biDocumentBase64}
+                          download={viewingEnrollment.biDocumentFileName || `BI-${viewingEnrollment.protocolNumber}`}
+                          className="px-2.5 py-1.5 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded shrink-0"
+                        >
+                          Descarregar
+                        </a>
+                      </div>
+                    )}
+                    {viewingEnrollment.photoDocumentBase64 && (
+                      <div className="p-2.5 bg-white border border-slate-200 rounded-lg flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {viewingEnrollment.photoDocumentBase64.startsWith('data:image/') && (
+                            <img
+                              src={viewingEnrollment.photoDocumentBase64}
+                              alt="Fotografia"
+                              className="w-8 h-8 rounded object-cover border border-slate-200 shrink-0"
+                            />
+                          )}
+                          <div className="min-w-0">
+                            <span className="text-[10px] font-bold text-slate-500 block">Fotografia Anexada</span>
+                            <span className="text-xs font-semibold text-slate-900 truncate block">
+                              {viewingEnrollment.photoDocumentFileName || 'Fotografia'}
+                            </span>
+                          </div>
+                        </div>
+                        <a
+                          href={viewingEnrollment.photoDocumentBase64}
+                          download={viewingEnrollment.photoDocumentFileName || `Foto-${viewingEnrollment.protocolNumber}`}
+                          className="px-2.5 py-1.5 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded shrink-0"
+                        >
+                          Descarregar
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
-          </div>
 
-          {/* Secção 2: Contactos e Localização */}
-          <div className="space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 border-b border-slate-100 pb-1">
-              2. Contactos e Residência
-            </h4>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">
-                  Telefone Principal <span className="text-rose-500">*</span>
+            <EnrollmentStatusCard
+              request={
+                state.enrollmentRequests?.find((r) => r.id === viewingEnrollment.id) ||
+                viewingEnrollment
+              }
+              compact
+            />
+
+            {(viewingEnrollment.status === 'em_analise' || viewingEnrollment.status === 'pendente') && canApproveEnrollments && (
+              <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-xl space-y-2">
+                <label className="block font-bold text-blue-950 flex items-center gap-1.5">
+                  <MessageSquare className="w-3.5 h-3.5 text-blue-800" />
+                  <span>Mensagem da Secretaria para o Candidato (Em Análise)</span>
                 </label>
+                <textarea
+                  rows={2}
+                  placeholder="Ex: Estamos a analisar a sua documentação. Por favor confirme o seu contacto."
+                  defaultValue={viewingEnrollment.reviewMessage || ''}
+                  id="enrollmentReviewMessageInput"
+                  className="w-full p-2.5 border border-blue-300 rounded-lg bg-white text-xs"
+                />
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const inputEl = document.getElementById('enrollmentReviewMessageInput') as HTMLTextAreaElement;
+                      if (inputEl) {
+                        const msg = inputEl.value;
+                        const res = updateEnrollmentReviewMessage(viewingEnrollment.id, msg);
+                        if (res.success) {
+                          showFeedback('success', 'Mensagem de análise atualizada com sucesso para o candidato.');
+                          const latestReq = state.enrollmentRequests?.find((r) => r.id === viewingEnrollment.id);
+                          if (latestReq) setViewingEnrollment(latestReq);
+                        } else {
+                          showFeedback('error', res.error || 'Erro ao atualizar mensagem.');
+                        }
+                      }
+                    }}
+                    className="px-3 py-1.5 text-xs font-bold text-white bg-blue-900 hover:bg-blue-800 rounded shadow-xs"
+                  >
+                    Guardar Mensagem para o Candidato
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setViewingEnrollment(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900"
+              >
+                Fechar
+              </button>
+              {(viewingEnrollment.status === 'pendente' || viewingEnrollment.status === 'em_analise') && canApproveEnrollments && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRejectingEnrollment(viewingEnrollment);
+                      setRejectEnrollmentReason('');
+                    }}
+                    className="px-4 py-2 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg"
+                  >
+                    Recusar Inscrição
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenApproveEnrollment(viewingEnrollment)}
+                    className="px-4 py-2 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg shadow-xs flex items-center gap-1.5"
+                  >
+                    <UserCheck className="w-3.5 h-3.5" />
+                    <span>Validar Inscrição</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* MODAL: Validar Solicitação de Inscrição */}
+      {approvingEnrollment && (
+        <Modal
+          isOpen={Boolean(approvingEnrollment)}
+          onClose={() => setApprovingEnrollment(null)}
+          title={`Validar Inscrição: ${approvingEnrollment.fullName}`}
+          description={`Protocolo ${approvingEnrollment.protocolNumber} — Defina a equipa e confirme os dados para marcar como Inscrição Validada.`}
+          maxWidth="lg"
+        >
+          <form onSubmit={handleConfirmApproveEnrollment} className="space-y-4 text-xs">
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-950">
+              Ao confirmar, o estado passa para <strong>Inscrição validada</strong> e o candidato torna-se membro ativo no cadastro oficial do clube.
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Nº de Matrícula Oficial</label>
                 <input
-                  type="tel"
-                  placeholder="+244 9XX XXX XXX"
-                  value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+                  type="text"
+                  value={approveEnrollmentForm.manualNumber}
+                  onChange={(e) => setApproveEnrollmentForm({ ...approveEnrollmentForm, manualNumber: e.target.value })}
+                  className="w-full p-2 border border-slate-200 rounded font-mono font-bold text-blue-900"
                   required
                 />
               </div>
-
               <div>
-                <label className="block text-slate-700 font-semibold mb-1">E-mail (Opcional)</label>
-                <input
-                  type="email"
-                  placeholder="exemplo@dominio.ao"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">Município / Bairro</label>
-                <input
-                  type="text"
-                  placeholder="Ex: Talatona, Benfica"
-                  value={formData.address}
-                  onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Secção 3: Informação do Clube */}
-          <div className="space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 border-b border-slate-100 pb-1">
-              3. Enquadramento Institucional
-            </h4>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">Categoria</label>
+                <label className="block font-semibold text-slate-700 mb-1">Categoria</label>
                 <select
-                  value={formData.category}
-                  onChange={(e) => setFormData({ ...formData, category: e.target.value as MemberCategory })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900 bg-white"
+                  value={approveEnrollmentForm.category}
+                  onChange={(e) =>
+                    setApproveEnrollmentForm({ ...approveEnrollmentForm, category: e.target.value as MemberCategory })
+                  }
+                  className="w-full p-2 border border-slate-200 rounded bg-white"
                 >
                   <option value="embaixador">Embaixador</option>
                   <option value="lider">Líder</option>
                   <option value="aspirante">Aspirante</option>
                 </select>
               </div>
-
               <div>
-                <label className="block text-slate-700 font-semibold mb-1">Equipa</label>
+                <label className="block font-semibold text-slate-700 mb-1">Equipa</label>
                 <select
-                  value={formData.unitOrTeam}
-                  onChange={(e) => setFormData({ ...formData, unitOrTeam: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900 bg-white"
+                  value={approveEnrollmentForm.unitOrTeam}
+                  onChange={(e) => setApproveEnrollmentForm({ ...approveEnrollmentForm, unitOrTeam: e.target.value })}
+                  className="w-full p-2 border border-slate-200 rounded bg-white"
                 >
                   <option value="">Sem Equipa</option>
                   {state.settings.units.map((u) => (
                     <option key={u.id} value={u.name}>
-                      {u.name} ({u.category})
+                      {u.name}
                     </option>
                   ))}
                 </select>
               </div>
-
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">Data de Admissão</label>
-                <input
-                  type="date"
-                  value={formData.joinedDate}
-                  onChange={(e) => setFormData({ ...formData, joinedDate: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-                />
-              </div>
-
-              {(formData.category === 'embaixador' || formData.category === 'lider') && (
-                <div className="sm:col-span-3 bg-amber-50/70 p-3 rounded-lg border border-amber-200">
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="block text-amber-900 font-bold">
-                      Data Oficial de Investidura ({formData.category === 'lider' ? 'Líder' : 'Embaixador'})
-                    </label>
-                    <span className="text-[10px] text-amber-800 font-medium">Exibida no Cartão Digital</span>
-                  </div>
-                  <input
-                    type="date"
-                    value={formData.investitureDate}
-                    onChange={(e) => setFormData({ ...formData, investitureDate: e.target.value })}
-                    className="w-full p-2 border border-amber-300 rounded focus:ring-1 focus:ring-amber-500 bg-white text-xs font-semibold"
-                  />
-                  <p className="text-[10px] text-amber-700 mt-1">
-                    Indique a data da cerimónia oficial em que o membro/líder foi investido com o lenço/insígnia oficial.
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Secção 4: Encarregado de Educação e Emergência */}
-          <div className="space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 border-b border-slate-100 pb-1">
-              4. Encarregado de Educação e Emergência (Acesso Restrito)
-            </h4>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">Nome do Encarregado</label>
-                <input
-                  type="text"
-                  placeholder="Nome do Pai/Mãe/Tutor"
-                  value={formData.guardianName}
-                  onChange={(e) => setFormData({ ...formData, guardianName: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">Telefone do Encarregado</label>
-                <input
-                  type="tel"
-                  placeholder="+244 9XX XXX XXX"
-                  value={formData.guardianPhone}
-                  onChange={(e) => setFormData({ ...formData, guardianPhone: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">Grupo Sanguíneo</label>
-                <select
-                  value={formData.bloodType}
-                  onChange={(e) => setFormData({ ...formData, bloodType: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-                >
-                  <option value="O+">O+</option>
-                  <option value="O-">O-</option>
-                  <option value="A+">A+</option>
-                  <option value="A-">A-</option>
-                  <option value="B+">B+</option>
-                  <option value="B-">B-</option>
-                  <option value="AB+">AB+</option>
-                  <option value="AB-">AB-</option>
-                </select>
-              </div>
-
-              <div className="sm:col-span-3">
-                <label className="block text-slate-700 font-semibold mb-1">Alergias ou Cuidados Médicos</label>
-                <input
-                  type="text"
-                  placeholder="Ex: Alergia a picadas de insetos ou asma ligeira"
-                  value={formData.allergiesOrMedicalNotes}
-                  onChange={(e) => setFormData({ ...formData, allergiesOrMedicalNotes: e.target.value })}
-                  className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
-            <button
-              type="button"
-              onClick={() => setIsRegisterOpen(false)}
-              className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="px-5 py-2 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg shadow-sm disabled:opacity-50"
-            >
-              {isSubmitting ? 'A registar...' : 'Concluir Registo Oficial'}
-            </button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* MODAL 2: Perfil Completo do Membro (Com Restrições por Papel) */}
-      {selectedMember && (
-        <Modal
-          isOpen={Boolean(selectedMember) && !isArchiveOpen}
-          onClose={() => setSelectedMember(null)}
-          title={`Ficha Institucional: ${selectedMember.fullName}`}
-          description={`Identificador Interno: ${selectedMember.id} · Matrícula: ${selectedMember.manualNumber}`}
-          maxWidth="2xl"
-        >
-          <div className="space-y-6 text-xs text-slate-800">
-            {/* Banner do Cartão Digital com Foto */}
-            <div className="flex items-center justify-between bg-blue-50 dark:bg-slate-900 border border-blue-200 dark:border-slate-800 p-3 rounded-xl text-blue-900 dark:text-blue-200 flex-wrap gap-2">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-slate-800 border-2 border-amber-400/80 overflow-hidden shrink-0 flex items-center justify-center shadow-xs">
-                  {selectedMember.photoUrl ? (
-                    <img src={selectedMember.photoUrl} alt="" className="w-full h-full object-cover" />
-                  ) : (
-                    <User className="w-5 h-5 text-slate-400" />
-                  )}
-                </div>
-                <div>
-                  <div className="font-bold text-xs flex items-center gap-1.5">
-                    <CreditCard className="w-4 h-4 text-blue-900 dark:text-amber-400 shrink-0" />
-                    <span>Credencial & Cartão Digital de Membro</span>
-                  </div>
-                  <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
-                    Matrícula: {selectedMember.manualNumber} · Validação por QR Code
-                  </span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCardMember(selectedMember)}
-                className="px-3.5 py-1.5 bg-blue-900 hover:bg-blue-800 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 shadow-xs cursor-pointer shrink-0"
-              >
-                <CreditCard className="w-4 h-4 text-amber-400" />
-                <span>Ver / Gerir Cartão & Foto</span>
-              </button>
             </div>
 
-            {/* Bloco Geral */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 bg-slate-50 p-4 rounded-lg border border-slate-200">
-              <div>
-                <span className="text-slate-500">Categoria:</span>
-                <p className="font-bold text-slate-900 capitalize">{selectedMember.category}</p>
-              </div>
-              <div>
-                <span className="text-slate-500">Equipa:</span>
-                <p className="font-semibold text-slate-900">{selectedMember.unitOrTeam?.trim() || 'Sem Equipa'}</p>
-              </div>
-              <div>
-                <span className="text-slate-500">Data de Nascimento:</span>
-                <p className="font-semibold text-slate-900">{formatDateAO(selectedMember.birthDate)}</p>
-              </div>
-              <div>
-                <span className="text-slate-500">B.I. (Angola):</span>
-                <p className="font-mono font-bold text-slate-900">{selectedMember.identityCardNumber}</p>
-              </div>
-              <div>
-                <span className="text-slate-500">Telefone:</span>
-                <p className="font-semibold text-slate-900">{selectedMember.phone}</p>
-              </div>
-              <div>
-                <span className="text-slate-500">Ano de Renovação:</span>
-                <p className="font-bold text-blue-900">{selectedMember.annualRenewalYear}</p>
-              </div>
-              {(selectedMember.category === 'embaixador' || selectedMember.category === 'lider') && (
-                <div>
-                  <span className="text-slate-500">Data de Investidura:</span>
-                  <p className="font-bold text-amber-700">
-                    {selectedMember.investitureDate ? formatDateAO(selectedMember.investitureDate) : 'Homologada / Sem data'}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Informações Protegidas (Menores e Encarregados) */}
-            <div className="border border-slate-200 rounded-lg p-4 space-y-3">
-              <div className="flex items-center gap-2 text-slate-700 font-bold">
-                <Lock className="w-3.5 h-3.5 text-blue-900" />
-                <span>Dados do Encarregado e Controlo de Menor</span>
-              </div>
-
-              {can('members', 'VIEW') ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <span className="text-slate-500">Encarregado de Educação:</span>
-                    <p className="font-semibold">{selectedMember.guardianName || 'Não especificado'}</p>
-                  </div>
-                  <div>
-                    <span className="text-slate-500">Telefone do Encarregado:</span>
-                    <p className="font-semibold">{selectedMember.guardianPhone || 'Não especificado'}</p>
-                  </div>
-                  <div>
-                    <span className="text-slate-500">Grupo Sanguíneo:</span>
-                    <p className="font-semibold">{selectedMember.bloodType || 'Não testado'}</p>
-                  </div>
-                  <div>
-                    <span className="text-slate-500">Observações Médicas:</span>
-                    <p className="font-semibold">{selectedMember.allergiesOrMedicalNotes || 'Nenhuma restrição'}</p>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-slate-500 italic">
-                  O acesso aos dados de encarregados e saúde está reservado à Secretaria e Direção.
-                </p>
-              )}
-            </div>
-
-            {/* Edição Rápida de Categoria e Equipa (Secretário e Administrador) */}
-            {canEditCategory && (
-              <div className="border border-blue-200 bg-blue-50/70 rounded-lg p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-bold text-blue-950 flex items-center gap-1.5">
-                      <UserCheck className="w-4 h-4 text-blue-800" />
-                      <span>Edição de Categoria e Equipa (Secretaria & Administração)</span>
-                    </p>
-                    <p className="text-[11px] text-blue-800 mt-0.5">
-                      Altere a categoria institucional do membro ou transfira-o para qualquer equipa do clube:
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <span className="font-semibold text-slate-700">Categoria:</span>
-                  {(['embaixador', 'lider', 'aspirante'] as MemberCategory[]).map((cat) => (
-                    <button
-                      key={cat}
-                      type="button"
-                      onClick={() => {
-                        const res = updateMemberCategory(selectedMember.id, cat);
-                        if (res.success) {
-                          setSelectedMember({ ...selectedMember, category: cat });
-                        }
-                      }}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
-                        selectedMember.category === cat
-                          ? 'bg-blue-900 text-white border-blue-900 shadow-xs'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                      }`}
-                    >
-                      {cat === 'embaixador' ? 'Embaixador' : cat === 'lider' ? 'Líder' : 'Aspirante'}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-blue-100">
-                  <span className="font-semibold text-slate-700">Equipa:</span>
-                  <select
-                    value={selectedMember.unitOrTeam || ''}
-                    onChange={(e) => {
-                      const newTeam = e.target.value || undefined;
-                      const res = assignMemberToUnit(selectedMember.id, newTeam);
-                      if (res.success) {
-                        setSelectedMember({ ...selectedMember, unitOrTeam: newTeam });
-                      }
-                    }}
-                    className="p-1.5 border border-slate-300 rounded-lg bg-white text-xs font-medium focus:ring-1 focus:ring-blue-900"
-                  >
-                    <option value="">Sem Equipa</option>
-                    {state.settings.units.map((u) => (
-                      <option key={u.id} value={u.name}>
-                        {u.name} ({u.category})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            )}
-
-            {/* Conta de Acesso Associada */}
-            <div className="border border-slate-200 rounded-lg p-4 bg-slate-50 flex items-center justify-between">
-              <div>
-                <p className="font-bold text-slate-900">Conta de Acesso ao Sistema</p>
-                <p className="text-slate-500 mt-0.5">
-                  A conta de login é separada do perfil e só pode ser criada pelo Administrador Técnico.
-                </p>
-              </div>
-              <span className="px-2.5 py-1 text-[11px] font-semibold bg-white border border-slate-300 rounded text-slate-700">
-                {state.users.some((u) => u.linkedMemberId === selectedMember.id)
-                  ? 'Conta Criada'
-                  : 'Sem Conta de Login'}
-              </span>
-            </div>
-
-            {/* Ações Disponíveis */}
-            <div className="flex items-center justify-end gap-3 pt-2">
-              {can('members', 'ARCHIVE') && selectedMember.status === 'arquivado' && (
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5">
+              <label className="block font-semibold text-slate-800">
+                Situação Documental na Secretaria
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    const res = unarchiveMember(selectedMember.id);
-                    if (res.success) {
-                      setSelectedMember((prev) => prev ? { ...prev, status: 'ativo' } : null);
-                      showFeedback('success', 'Membro desarquivado com sucesso.');
-                    } else {
-                      showFeedback('error', res.error || 'Erro ao desarquivar');
-                    }
-                  }}
-                  className="px-4 py-2 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded flex items-center gap-1.5 transition-colors"
+                  onClick={() =>
+                    setApproveEnrollmentForm({
+                      ...approveEnrollmentForm,
+                      documentationStatus: 'regularizado',
+                      missingDocumentsNote: '',
+                    })
+                  }
+                  className={`p-2.5 rounded-lg border text-left transition-colors ${
+                    approveEnrollmentForm.documentationStatus === 'regularizado'
+                      ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-bold'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                  }`}
                 >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Desarquivar Membro</span>
+                  <div className="flex items-center gap-1.5">
+                    <CheckCircle className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                    <span>Regularizado</span>
+                  </div>
+                  <p className="text-[10px] font-normal opacity-80 mt-0.5">
+                    Documentação completa e conforme
+                  </p>
                 </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setApproveEnrollmentForm({
+                      ...approveEnrollmentForm,
+                      documentationStatus: 'falta_documento',
+                    })
+                  }
+                  className={`p-2.5 rounded-lg border text-left transition-colors ${
+                    approveEnrollmentForm.documentationStatus === 'falta_documento'
+                      ? 'bg-amber-50 border-amber-400 text-amber-950 font-bold'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                    <span>Falta de Documento</span>
+                  </div>
+                  <p className="text-[10px] font-normal opacity-80 mt-0.5">
+                    Registar documento pendente na Secretaria
+                  </p>
+                </button>
+              </div>
+              {approveEnrollmentForm.documentationStatus === 'falta_documento' && (
+                <div>
+                  <label className="block font-semibold text-amber-900 mb-1">
+                    Especifique o(s) documento(s) em falta <span className="text-rose-600">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Falta cópia do B.I. e 2 fotografias tipo passe"
+                    value={approveEnrollmentForm.missingDocumentsNote}
+                    onChange={(e) =>
+                      setApproveEnrollmentForm({
+                        ...approveEnrollmentForm,
+                        missingDocumentsNote: e.target.value,
+                      })
+                    }
+                    className="w-full p-2 border border-amber-300 rounded bg-white"
+                    required
+                  />
+                </div>
               )}
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Observação da Secretaria (Opcional)</label>
+              <input
+                type="text"
+                placeholder="Ex: Ficha conferida e validada pela Secretaria"
+                value={approveEnrollmentForm.reason}
+                onChange={(e) => setApproveEnrollmentForm({ ...approveEnrollmentForm, reason: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
               <button
                 type="button"
-                onClick={() => setSelectedMember(null)}
-                className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 rounded"
+                onClick={() => setApprovingEnrollment(null)}
+                className="px-3 py-1.5 text-slate-600 hover:text-slate-900"
               >
-                Fechar
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg shadow-xs flex items-center gap-1.5"
+              >
+                <UserCheck className="w-3.5 h-3.5" />
+                <span>Confirmar Validação</span>
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* MODAL: Recusar Solicitação de Inscrição */}
+      {rejectingEnrollment && (
+        <Modal
+          isOpen={Boolean(rejectingEnrollment)}
+          onClose={() => {
+            setRejectingEnrollment(null);
+            setRejectEnrollmentReason('');
+          }}
+          title={`Recusar Inscrição: ${rejectingEnrollment.fullName}`}
+          description={`Protocolo ${rejectingEnrollment.protocolNumber} — Indique o motivo da não autorização.`}
+          maxWidth="md"
+        >
+          <div className="space-y-4 text-xs">
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">
+                Motivo / Justificação <span className="text-rose-500">*</span>
+              </label>
+              <textarea
+                rows={3}
+                placeholder="Ex: Dados de B.I. incorretos / Candidato fora da faixa etária (mínimo 3 caracteres)"
+                value={rejectEnrollmentReason}
+                onChange={(e) => setRejectEnrollmentReason(e.target.value)}
+                className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-rose-500"
+                required
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setRejectingEnrollment(null);
+                  setRejectEnrollmentReason('');
+                }}
+                className="px-3 py-1.5 text-slate-600 hover:text-slate-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={rejectEnrollmentReason.trim().length < 3}
+                onClick={handleConfirmRejectEnrollment}
+                className="px-4 py-1.5 font-bold text-white bg-rose-700 hover:bg-rose-800 disabled:opacity-40 rounded shadow-xs flex items-center gap-1.5"
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                <span>Confirmar Recusa</span>
               </button>
             </div>
           </div>
         </Modal>
       )}
+
+      {/* MODAL 2: Dossiê 360º do Membro (Dados & Saúde, Formação, Assiduidade, Quotas & Histórico) */}
+      <MemberDossierModal
+        member={
+          selectedMember && !isArchiveOpen
+            ? state.members.find((m) => m.id === selectedMember.id) || selectedMember
+            : null
+        }
+        canEdit={canEdit}
+        canEditCategory={canEditCategory}
+        onClose={() => setSelectedMember(null)}
+        onOpenCard={(m) => setCardMember(m)}
+        onOpenEdit={(m) => handleOpenEdit(m)}
+        onPrintDocument={(doc) => setPrintedDossierDoc(doc)}
+        onFeedback={showFeedback}
+      />
 
       {/* MODAL 3: Solicitação Formal de Arquivamento à Direção (Req 2.1) */}
       {selectedMember && isArchiveOpen && (
@@ -2363,6 +2769,19 @@ export const MembersModule: React.FC = () => {
                     </p>
                   </div>
                 )}
+
+                <div className="sm:col-span-2">
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    Curso Profissional / Área Académica (Opcional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Informática de Gestão, Enfermagem, Mecânica..."
+                    value={editFormData.professionalCourse}
+                    onChange={(e) => setEditFormData({ ...editFormData, professionalCourse: e.target.value })}
+                    className="w-full p-2 border border-slate-200 rounded"
+                  />
+                </div>
               </div>
             </div>
 
@@ -2391,12 +2810,15 @@ export const MembersModule: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-700 font-semibold mb-1">Grupo Sanguíneo</label>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    Grupo Sanguíneo <span className="text-slate-400 font-normal">(Opcional)</span>
+                  </label>
                   <select
                     value={editFormData.bloodType}
                     onChange={(e) => setEditFormData({ ...editFormData, bloodType: e.target.value })}
-                    className="w-full p-2 border border-slate-200 rounded"
+                    className="w-full p-2 border border-slate-200 rounded bg-white"
                   >
+                    <option value="">Não informado (Opcional)</option>
                     <option value="O+">O+</option>
                     <option value="O-">O-</option>
                     <option value="A+">A+</option>
@@ -2438,10 +2860,151 @@ export const MembersModule: React.FC = () => {
         </Modal>
       )}
 
+      {/* MODAL: Definir Situação Documental na Secretaria (Regularizado vs Falta de Documento) */}
+      {documentationMember && (
+        <Modal
+          isOpen={Boolean(documentationMember)}
+          onClose={() => setDocumentationMember(null)}
+          title={`Situação Documental: ${documentationMember.fullName}`}
+          description={`Matrícula ${documentationMember.manualNumber} · Defina se o membro está regularizado ou com documentos em falta na Secretaria.`}
+          maxWidth="lg"
+        >
+          <form onSubmit={handleConfirmDocumentationUpdate} className="space-y-4 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() =>
+                  setDocStatusForm({
+                    status: 'regularizado',
+                    missingDocumentsNote: '',
+                  })
+                }
+                className={`p-3.5 rounded-xl border text-left transition-colors ${
+                  docStatusForm.status === 'regularizado'
+                    ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-bold'
+                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center gap-2 text-sm">
+                  <CheckCircle className="w-4 h-4 text-emerald-700 shrink-0" />
+                  <span>Regularizado</span>
+                </div>
+                <p className="text-[11px] font-normal text-slate-600 mt-1">
+                  Todos os documentos oficiais do membro foram entregues e conferidos pela Secretaria.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setDocStatusForm((prev) => ({
+                    ...prev,
+                    status: 'falta_documento',
+                  }))
+                }
+                className={`p-3.5 rounded-xl border text-left transition-colors ${
+                  docStatusForm.status === 'falta_documento'
+                    ? 'bg-amber-50 border-amber-400 text-amber-950 font-bold'
+                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center gap-2 text-sm">
+                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>Falta de Documento</span>
+                </div>
+                <p className="text-[11px] font-normal text-slate-600 mt-1">
+                  Sinalizar que falta entregar um ou mais documentos na Secretaria.
+                </p>
+              </button>
+            </div>
+
+            {docStatusForm.status === 'falta_documento' && (
+              <div className="space-y-2.5 p-3.5 bg-amber-50/70 border border-amber-200 rounded-xl">
+                <label className="block font-bold text-amber-950">
+                  Indique o(s) documento(s) em falta <span className="text-rose-600">*</span>
+                </label>
+
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    'Bilhete de Identidade (B.I.)',
+                    'Fotografia tipo passe',
+                    'Autorização do Encarregado',
+                    'Comprovativo de Residência',
+                  ].map((docLabel) => (
+                    <button
+                      key={docLabel}
+                      type="button"
+                      onClick={() => {
+                        setDocStatusForm((prev) => {
+                          const existing = prev.missingDocumentsNote.trim();
+                          if (existing.toLowerCase().includes(docLabel.toLowerCase())) {
+                            return prev;
+                          }
+                          return {
+                            ...prev,
+                            missingDocumentsNote: existing
+                              ? `${existing}; ${docLabel}`
+                              : docLabel,
+                          };
+                        });
+                      }}
+                      className="px-2 py-1 text-[10px] font-semibold bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 rounded cursor-pointer"
+                    >
+                      + {docLabel}
+                    </button>
+                  ))}
+                </div>
+
+                <textarea
+                  rows={3}
+                  placeholder="Ex: Falta cópia do Bilhete de Identidade (B.I.) e 2 fotografias tipo passe."
+                  value={docStatusForm.missingDocumentsNote}
+                  onChange={(e) =>
+                    setDocStatusForm((prev) => ({
+                      ...prev,
+                      missingDocumentsNote: e.target.value,
+                    }))
+                  }
+                  className="w-full p-2.5 border border-amber-300 rounded-lg bg-white focus:ring-2 focus:ring-amber-500"
+                  required
+                />
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setDocumentationMember(null)}
+                className="px-3 py-1.5 text-slate-600 hover:text-slate-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={
+                  docStatusForm.status === 'falta_documento' &&
+                  docStatusForm.missingDocumentsNote.trim().length < 3
+                }
+                className="px-4 py-2 font-bold text-white bg-blue-900 hover:bg-blue-800 disabled:opacity-40 rounded-lg shadow-xs flex items-center gap-1.5"
+              >
+                <FileCheck className="w-3.5 h-3.5" />
+                <span>Guardar Situação Documental</span>
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
       {/* MODAL: Cartão Digital Oficial com QR Code */}
       <MemberDigitalCardModal
         member={cardMember}
         onClose={() => setCardMember(null)}
+      />
+
+      {/* MODAL: Impressão de Recibos / Documentos a partir do Dossiê 360º */}
+      <PrintDocumentModal
+        document={printedDossierDoc}
+        onClose={() => setPrintedDossierDoc(null)}
       />
     </div>
   );

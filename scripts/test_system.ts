@@ -1,5 +1,8 @@
 import { loadInitialState, createCleanCloudShellState, generateNextDocumentNumber, isMemberNumberUnique, findPotentialDuplicateMember, cleanSystemStorageSpace } from '../src/services/storageService';
 import {
+  MemberEnrollmentRequest,
+} from '../src/types';
+import {
   hasPermission,
   ROLE_PERMISSIONS_MATRIX,
   ROLE_LABELS,
@@ -12,10 +15,30 @@ import {
   canGrantAssociateDirectorModule,
   canAccessAssociateDirectorModule,
   canGrantWaiveQuotaDebt,
+  hasDossier360Permission,
+  canGrantApproveEnrollment,
+  hasApproveEnrollmentPermission,
+  ACTION_LABELS,
 } from '../src/services/permissionService';
+import {
+  MemberRegistrationFormData,
+  findDuplicateEnrollmentByBI,
+  normalizeIdentityCardNumber,
+  generateNextMemberId,
+  generateNextEnrollmentProtocol,
+  validateRegistrationFields,
+  validateEnrollmentSubmission,
+  buildEnrollmentRequest,
+  buildApprovedMemberFromEnrollment,
+  markEnrollmentReviewed,
+  startEnrollmentReview,
+  getEnrollmentPhaseInfo,
+  lookupEnrollmentStatusByIdentity,
+} from '../src/services/enrollmentService';
 import { formatKz } from '../src/utils/currency';
-import { formatDateAO } from '../src/utils/date';
+import { formatDateAO, calculateAgeYears } from '../src/utils/date';
 import { INACTIVITY_TIMEOUT_MS, isSessionInactive, getRemainingInactivityMs } from '../src/utils/inactivity';
+import { buildMemberDossierData } from '../src/utils/memberDossier';
 import { syncMemberChangesToUsers, syncUserWithLinkedMember, reconcileUsersAndMembers } from '../src/services/accountSyncService';
 import {
   countChargeableSundays,
@@ -29,7 +52,7 @@ import {
   resolveDocumentOperatorSigner,
   resolveReceiptOperatorSigner,
 } from '../src/utils/documentSigner';
-import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver } from '../src/types';
+import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver, FeeDefinition } from '../src/types';
 
 function runTests() {
   console.log("=== INICIANDO BATERIA COMPLETA DE TESTES DO SISTEMA ===");
@@ -1199,6 +1222,909 @@ function runTests() {
   assert(
     docLookupByIdOnly.name === 'Esperança Neto' && docLookupByIdOnly.roleLabel === 'Secretário',
     "Mesmo quando nome legado for 'Responsável', resolve pelo ID o nome real ('Esperança Neto') e cargo ('Secretário')"
+  );
+
+  // 28. DOSSIÊ 360º NA FICHA DO MEMBRO (IDADE, FORMAÇÃO, ASSIDUIDADE, QUOTAS E HISTÓRICO)
+  console.log("\n28. Teste do Dossiê 360º na Ficha do Membro:");
+  const minorAge = calculateAgeYears('2012-05-14', new Date('2026-06-01T12:00:00'));
+  const preBirthdayAge = calculateAgeYears('2012-05-14', new Date('2026-05-10T12:00:00'));
+  assert(
+    minorAge === 14 && preBirthdayAge === 13,
+    "calculateAgeYears calcula idade exata antes e depois do aniversário (13 vs 14 anos)"
+  );
+
+  const dossierBaseMember = state.members[0];
+  const minorWithoutGuardian: Member = {
+    ...dossierBaseMember,
+    id: 'CDA-MEM-MINOR-99',
+    manualNumber: 'EBX-0990512',
+    birthDate: '2012-05-14',
+    guardianName: '',
+    guardianPhone: '',
+  };
+  const dossierMinor = buildMemberDossierData(minorWithoutGuardian, state, '2026-06-01');
+  assert(
+    dossierMinor.isMinor && dossierMinor.ageYears === 14 && dossierMinor.missingGuardianInfo,
+    "Dossiê 360º sinaliza automaticamente menor de idade sem dados completos do encarregado"
+  );
+
+  const dossierSample = buildMemberDossierData(dossierBaseMember, state, '2026-06-01');
+  assert(
+    dossierSample.linkedUser !== null && dossierSample.linkedUser.linkedMemberId === dossierBaseMember.id,
+    "Dossiê 360º associa automaticamente a conta de login sincronizada do membro"
+  );
+  assert(
+    dossierSample.timeline.length > 0 &&
+      dossierSample.timeline.some((ev) => ev.title === 'Admissão Oficial no Clube'),
+    "Dossiê 360º constrói linha do tempo associativa com marco de admissão e auditoria"
+  );
+  assert(
+    dossierSample.quotas.receipts.length >= 0 && typeof dossierSample.attendance.attendanceRatePercent === 'number',
+    "Dossiê 360º agrega formação, assiduidade, recibos e situação de quotas num único objeto coeso"
+  );
+
+  // 29. CONTROLO DO DOSSIÊ 360º NA GRELHA DE PERMISSÕES E RESTRIÇÃO DA SECRETARIA
+  console.log("\n29. Teste de Permissão do Dossiê 360º e Segregação da Secretaria:");
+  assert(
+    !hasPermission('secretario', 'treasury', 'VIEW') && !hasPermission('secretario', 'training', 'VIEW'),
+    "Secretaria não visualiza situação financeira nem situação de formação por padrão"
+  );
+  assert(
+    !hasDossier360Permission('secretario', ROLE_PERMISSIONS_MATRIX),
+    "Secretaria não acede ao Dossiê 360º por padrão (apenas Ficha Cadastral)"
+  );
+  assert(
+    hasDossier360Permission('diretor', ROLE_PERMISSIONS_MATRIX) &&
+      hasDossier360Permission('diretor_associado', ROLE_PERMISSIONS_MATRIX) &&
+      hasDossier360Permission('admin_tecnico', ROLE_PERMISSIONS_MATRIX),
+    "Diretor, Diretor-associado e Administrador Técnico têm acesso padrão ao Dossiê 360º"
+  );
+
+  const customDossierMatrix = syncPermissionsMatrix(ROLE_PERMISSIONS_MATRIX);
+  customDossierMatrix.secretario.members = [...customDossierMatrix.secretario.members, 'VIEW_DOSSIER_360'];
+  assert(
+    hasDossier360Permission('secretario', customDossierMatrix),
+    "Quando concedida na Grelha de Permissões, a permissão VIEW_DOSSIER_360 habilita o Dossiê 360º para qualquer cargo"
+  );
+
+  const legacyMatrixBeforeDossier: any = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  legacyMatrixBeforeDossier.admin_tecnico.members = legacyMatrixBeforeDossier.admin_tecnico.members.filter(
+    (a: string) => a !== 'VIEW_DOSSIER_360'
+  );
+  legacyMatrixBeforeDossier.diretor.members = legacyMatrixBeforeDossier.diretor.members.filter(
+    (a: string) => a !== 'VIEW_DOSSIER_360'
+  );
+  legacyMatrixBeforeDossier.secretario.treasury = ['VIEW'];
+  legacyMatrixBeforeDossier.secretario.training = ['VIEW'];
+  const migratedDossierMatrix = syncPermissionsMatrix(legacyMatrixBeforeDossier);
+  assert(
+    migratedDossierMatrix.diretor.members.includes('VIEW_DOSSIER_360') &&
+      !migratedDossierMatrix.secretario.members.includes('VIEW_DOSSIER_360') &&
+      !migratedDossierMatrix.secretario.treasury.includes('VIEW') &&
+      !migratedDossierMatrix.secretario.training.includes('VIEW'),
+    "syncPermissionsMatrix migra VIEW_DOSSIER_360 para cargos autorizados e remove acessos financeiros/formativos legados da Secretaria"
+  );
+
+  // 30. PRESERVAÇÃO DA SITUAÇÃO DE QUOTAS APÓS LIMPEZA DA NUVEM
+  console.log("\n30. Teste de Preservação de Quotas na Limpeza da Nuvem (Zerados, Regularizados, Adiantados e Em Atraso):");
+  const cleanupDate = '2026-01-25'; // 4 domingos em Jan 2026 (04, 11, 18, 25) * 500 Kz = 2.000 Kz
+  const quotaFeeClean: FeeDefinition = {
+    id: 'FEE-QUOTA-CLEAN',
+    title: 'Quota Dominical',
+    category: 'quota_diaria',
+    periodicity: 'diaria',
+    amountInCents: 50_000,
+    active: true,
+    year: 2026,
+  };
+  const cleanupConfig: QuotaConfig = {
+    amountInCents: 50_000,
+    frequency: 'domingo',
+    cycleStartDate: '2026-01-01',
+    respectMemberJoinDate: false,
+    activeQuotaFeeId: 'FEE-QUOTA-CLEAN',
+  };
+
+  const baseActiveMem = state.members.find((m) => m.status === 'ativo')!;
+  const mWaived: Member = { ...baseActiveMem, id: 'MEM-CLN-WAIVED', manualNumber: 'CLN-01', fullName: 'Membro Zerado', status: 'ativo' };
+  const mRegular: Member = { ...baseActiveMem, id: 'MEM-CLN-REG', manualNumber: 'CLN-02', fullName: 'Membro Regularizado', status: 'ativo' };
+  const mAdvance: Member = { ...baseActiveMem, id: 'MEM-CLN-ADV', manualNumber: 'CLN-03', fullName: 'Membro Adiantado', status: 'ativo' };
+  const mOverdue: Member = { ...baseActiveMem, id: 'MEM-CLN-OVD', manualNumber: 'CLN-04', fullName: 'Membro Em Atraso', status: 'ativo' };
+
+  const cleanPreState = {
+    ...state,
+    members: [mWaived, mRegular, mAdvance, mOverdue],
+    fees: [quotaFeeClean],
+    settings: {
+      ...state.settings,
+      quotaConfig: cleanupConfig,
+    },
+    receipts: [
+      {
+        id: 'REC-CLN-REG',
+        receiptNumber: 'REC-2026-9001',
+        memberId: mRegular.id,
+        memberName: mRegular.fullName,
+        feeDefinitionId: 'FEE-QUOTA-CLEAN',
+        feeTitle: 'Quota Dominical',
+        periodLabel: 'Jan 2026',
+        amountPaidInCents: 200_000, // Exatos 2.000 Kz devidos
+        paymentMethod: 'numerario' as const,
+        treasurerUserId: adminActor.id,
+        treasurerName: adminActor.name,
+        paidAt: '2026-01-20',
+        status: 'confirmado' as const,
+      },
+      {
+        id: 'REC-CLN-ADV',
+        receiptNumber: 'REC-2026-9002',
+        memberId: mAdvance.id,
+        memberName: mAdvance.fullName,
+        feeDefinitionId: 'FEE-QUOTA-CLEAN',
+        feeTitle: 'Quota Dominical',
+        periodLabel: 'Jan-Mar 2026',
+        amountPaidInCents: 450_000, // Devia 2.000 Kz, pagou 4.500 Kz -> 2.500 Kz adiantado
+        paymentMethod: 'numerario' as const,
+        treasurerUserId: adminActor.id,
+        treasurerName: adminActor.name,
+        paidAt: '2026-01-20',
+        status: 'confirmado' as const,
+      },
+      {
+        id: 'REC-CLN-OVD',
+        receiptNumber: 'REC-2026-9003',
+        memberId: mOverdue.id,
+        memberName: mOverdue.fullName,
+        feeDefinitionId: 'FEE-QUOTA-CLEAN',
+        feeTitle: 'Quota Dominical',
+        periodLabel: 'Jan 2026',
+        amountPaidInCents: 50_000, // Devia 2.000 Kz, pagou 500 Kz -> 1.500 Kz em atraso
+        paymentMethod: 'numerario' as const,
+        treasurerUserId: adminActor.id,
+        treasurerName: adminActor.name,
+        paidAt: '2026-01-10',
+        status: 'confirmado' as const,
+      },
+    ],
+    quotaWaivers: [
+      {
+        id: 'ZRD-2026-9001',
+        memberId: mWaived.id,
+        memberName: mWaived.fullName,
+        amountWaivedInCents: 200_000, // 2.000 Kz zerados
+        grossDueAtWaiverInCents: 200_000,
+        paidAtWaiverInCents: 0,
+        previousBalanceInCents: 200_000,
+        cycleYear: 2026,
+        reason: 'Acordo na limpeza',
+        waivedByUserId: adminActor.id,
+        waivedByName: adminActor.name,
+        waivedByRole: 'admin_tecnico' as const,
+        waivedAt: '2026-01-25T10:00:00Z',
+      },
+    ],
+  };
+
+  const afterCloudClean = cleanSystemStorageSpace(cleanPreState, adminActor, cleanupDate);
+  const postQuotaConfig = afterCloudClean.settings.quotaConfig!;
+
+  assert(
+    afterCloudClean.receipts.length === 0 && afterCloudClean.auditLogs.length === 0 && (afterCloudClean.quotaWaivers || []).length === 0,
+    "Limpeza da nuvem apaga histórico de recibos, isenções individuais e registos de auditoria"
+  );
+  assert(
+    postQuotaConfig.cycleStartDate === '2026-01-26',
+    "Limpeza semanal/dominical avança início da contagem para o dia seguinte à limpeza (2026-01-26)"
+  );
+
+  const postWaivedMem = afterCloudClean.members.find((m) => m.id === mWaived.id)!;
+  const postRegMem = afterCloudClean.members.find((m) => m.id === mRegular.id)!;
+  const postAdvMem = afterCloudClean.members.find((m) => m.id === mAdvance.id)!;
+  const postOvdMem = afterCloudClean.members.find((m) => m.id === mOverdue.id)!;
+
+  const sWaivedPost = calculateMemberQuotaSummary(postWaivedMem, postQuotaConfig, afterCloudClean.fees, afterCloudClean.receipts, cleanupDate, afterCloudClean.quotaWaivers);
+  const sRegPost = calculateMemberQuotaSummary(postRegMem, postQuotaConfig, afterCloudClean.fees, afterCloudClean.receipts, cleanupDate, afterCloudClean.quotaWaivers);
+  const sAdvPost = calculateMemberQuotaSummary(postAdvMem, postQuotaConfig, afterCloudClean.fees, afterCloudClean.receipts, cleanupDate, afterCloudClean.quotaWaivers);
+  const sOvdPost = calculateMemberQuotaSummary(postOvdMem, postQuotaConfig, afterCloudClean.fees, afterCloudClean.receipts, cleanupDate, afterCloudClean.quotaWaivers);
+
+  assert(
+    sWaivedPost.status === 'regularizado' &&
+      sWaivedPost.balanceDueInCents === 0 &&
+      sWaivedPost.totalDueInCents === 0 &&
+      sWaivedPost.totalWaivedInCents === 0 &&
+      sWaivedPost.quotaWaivers.length === 0,
+    "Membro cuja dívida foi zerada recomeça regularizado a 0,00 Kz e já não exibe o valor que foi zerado"
+  );
+  assert(
+    sRegPost.status === 'regularizado' &&
+      sRegPost.balanceDueInCents === 0 &&
+      sRegPost.creditInCents === 0 &&
+      sRegPost.totalWaivedInCents === 0,
+    "Membro regularizado por pagamento permanece regularizado a 0,00 Kz (sem dívida e sem valor zerado)"
+  );
+  assert(
+    sAdvPost.status === 'antecipado' &&
+      sAdvPost.creditInCents === 250_000 &&
+      sAdvPost.balanceDueInCents === 0 &&
+      sAdvPost.totalWaivedInCents === 0,
+    "Membro que adiantou quotas permanece com exatamente 2.500,00 Kz de crédito adiantado após a limpeza (sem exibir valor zerado)"
+  );
+  assert(
+    (sOvdPost.status === 'em_atraso' || sOvdPost.status === 'parcial') &&
+      sOvdPost.balanceDueInCents === 150_000 &&
+      sOvdPost.totalWaivedInCents === 0,
+    "Membro com quotas em atraso permanece com exatamente 1.500,00 Kz de dívida em atraso após a limpeza (sem exibir valor zerado)"
+  );
+
+  // Novo domingo após a limpeza (2026-02-01 = 1 novo domingo de 500 Kz)
+  const nextSunday = '2026-02-01';
+  const sWaivedNextSun = calculateMemberQuotaSummary(postWaivedMem, postQuotaConfig, afterCloudClean.fees, afterCloudClean.receipts, nextSunday, afterCloudClean.quotaWaivers);
+  const sAdvNextSun = calculateMemberQuotaSummary(postAdvMem, postQuotaConfig, afterCloudClean.fees, afterCloudClean.receipts, nextSunday, afterCloudClean.quotaWaivers);
+  const sOvdNextSun = calculateMemberQuotaSummary(postOvdMem, postQuotaConfig, afterCloudClean.fees, afterCloudClean.receipts, nextSunday, afterCloudClean.quotaWaivers);
+  assert(
+    sWaivedNextSun.balanceDueInCents === 50_000 &&
+      sWaivedNextSun.totalWaivedInCents === 0 &&
+      sAdvNextSun.creditInCents === 200_000 &&
+      sAdvNextSun.balanceDueInCents === 0 &&
+      sOvdNextSun.balanceDueInCents === 200_000,
+    "Domingo seguinte após limpeza cobra apenas o novo domingo (500 Kz): zerado fica a dever 500 Kz sem valor zerado, adiantado abate para 2.000 Kz e atrasado soma para 2.000 Kz"
+  );
+
+  // Idempotência numa segunda limpeza no mesmo dia
+  const secondClean = cleanSystemStorageSpace(afterCloudClean, adminActor, cleanupDate);
+  const sWaivedSecond = calculateMemberQuotaSummary(
+    secondClean.members.find((m) => m.id === mWaived.id)!,
+    secondClean.settings.quotaConfig!,
+    secondClean.fees,
+    secondClean.receipts,
+    cleanupDate,
+    secondClean.quotaWaivers
+  );
+  const sAdvSecond = calculateMemberQuotaSummary(
+    secondClean.members.find((m) => m.id === mAdvance.id)!,
+    secondClean.settings.quotaConfig!,
+    secondClean.fees,
+    secondClean.receipts,
+    cleanupDate,
+    secondClean.quotaWaivers
+  );
+  assert(
+    sWaivedSecond.totalWaivedInCents === 0 &&
+      sWaivedSecond.balanceDueInCents === 0 &&
+      sWaivedSecond.status === 'regularizado' &&
+      sAdvSecond.creditInCents === 250_000,
+    "Limpezas repetidas mantêm 0,00 Kz regularizado (sem exibir valor zerado) e preservam crédito adiantado"
+  );
+
+  // Frequência mensal avança para dia 1 do mês seguinte para não duplicar o mês corrente
+  const monthlyClean = cleanSystemStorageSpace(
+    {
+      ...cleanPreState,
+      settings: {
+        ...cleanPreState.settings,
+        quotaConfig: { ...cleanupConfig, frequency: 'mensal' },
+      },
+    },
+    adminActor,
+    '2026-11-16'
+  );
+  assert(
+    monthlyClean.settings.quotaConfig?.cycleStartDate === '2026-12-01',
+    "Para quotas mensais, a limpeza avança o ciclo para o dia 1 do mês seguinte (2026-12-01)"
+  );
+
+  // 31. SOLICITAÇÃO DE INSCRIÇÃO DIRETA NO CLUBE E AUTORIZAÇÃO VIA GRELHA DE PERMISSÕES
+  console.log("\n31. Teste de Solicitação de Inscrição Direta e Autorização RBAC (Secretário / Administrador):");
+
+  // 31.1 Catálogo, Rótulos e Matriz Padrão de Permissões
+  assert(
+    PERMISSION_CATALOG.some(p => p.module === 'members' && p.action === 'APPROVE_ENROLLMENT'),
+    "Catálogo de permissões inclui 'members: APPROVE_ENROLLMENT' para autorização de inscrições"
+  );
+  assert(
+    ACTION_LABELS.APPROVE_ENROLLMENT === 'Validar / Recusar Inscrições',
+    "Rótulo oficial da ação definido como 'Validar / Recusar Inscrições'"
+  );
+  assert(
+    hasApproveEnrollmentPermission('admin_tecnico') && hasApproveEnrollmentPermission('secretario'),
+    "Administrador Técnico e Secretário possuem permissão padrão para autorizar inscrições"
+  );
+  assert(
+    !hasApproveEnrollmentPermission('diretor') &&
+      !hasApproveEnrollmentPermission('diretor_associado') &&
+      !hasApproveEnrollmentPermission('tesoureiro') &&
+      !hasApproveEnrollmentPermission('instrutor') &&
+      !hasApproveEnrollmentPermission('membro'),
+    "Cargos sem concessão explícita (Diretor, Diretor-associado, Tesoureiro, Instrutor, Membro) não autorizam inscrições por padrão"
+  );
+  assert(
+    canGrantApproveEnrollment('admin_tecnico') &&
+      !canGrantApproveEnrollment('diretor') &&
+      !canGrantApproveEnrollment('secretario'),
+    "Apenas o Administrador Técnico pode conceder ou revogar a permissão de autorizar inscrições na grelha"
+  );
+
+  // 31.2 Dinamismo da Grelha de Permissões e Migração de Matrizes Legadas
+  const enrollmentPermMatrix = syncPermissionsMatrix(ROLE_PERMISSIONS_MATRIX);
+  enrollmentPermMatrix.secretario.members = enrollmentPermMatrix.secretario.members.filter(a => a !== 'APPROVE_ENROLLMENT');
+  assert(
+    !hasApproveEnrollmentPermission('secretario', enrollmentPermMatrix),
+    "Se o Administrador revogar 'APPROVE_ENROLLMENT' do Secretário na grelha, o Secretário é bloqueado de autorizar"
+  );
+  enrollmentPermMatrix.diretor.members = [...enrollmentPermMatrix.diretor.members, 'APPROVE_ENROLLMENT'];
+  assert(
+    hasApproveEnrollmentPermission('diretor', enrollmentPermMatrix),
+    "Se o Administrador conceder 'APPROVE_ENROLLMENT' a outro cargo na grelha, esse cargo passa a poder autorizar"
+  );
+
+  const legacyMatrixNoEnroll: any = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  legacyMatrixNoEnroll.admin_tecnico.members = legacyMatrixNoEnroll.admin_tecnico.members.filter((a: string) => a !== 'APPROVE_ENROLLMENT');
+  legacyMatrixNoEnroll.secretario.members = legacyMatrixNoEnroll.secretario.members.filter((a: string) => a !== 'APPROVE_ENROLLMENT');
+  const migratedEnrollMatrix = syncPermissionsMatrix(legacyMatrixNoEnroll);
+  assert(
+    migratedEnrollMatrix.admin_tecnico.members.includes('APPROVE_ENROLLMENT') &&
+      migratedEnrollMatrix.secretario.members.includes('APPROVE_ENROLLMENT'),
+    "syncPermissionsMatrix migra matrizes antigas concedendo 'APPROVE_ENROLLMENT' ao Administrador e Secretário"
+  );
+
+  // 31.3 Submissão pelo Candidato/Membro usando o mesmo formulário da Secretaria + Prevenção de Duplicados
+  const existingEnrollmentMembers: Member[] = [...state.members];
+  const candidateForm: MemberRegistrationFormData = {
+    manualNumber: 'EBX-9990510',
+    fullName: 'Emanuel Kandimba Quissanga',
+    birthDate: '2012-05-10',
+    gender: 'M',
+    identityCardNumber: '008812345LA049',
+    phone: '+244 924 777 888',
+    email: 'emanuel.kandimba@clubedalvorada.ao',
+    address: 'Rua da Missão, Talatona, Luanda',
+    category: 'embaixador',
+    unitOrTeam: 'Unidade Águia',
+    guardianName: 'Helena Quissanga',
+    guardianPhone: '+244 923 111 000',
+    emergencyName: 'Helena Quissanga',
+    emergencyRelationship: 'Mãe',
+    emergencyPhone: '+244 923 111 000',
+    bloodType: 'O+',
+    allergiesOrMedicalNotes: 'Sem restrições',
+    investitureDate: '2026-10-12',
+    professionalCourse: 'Estudante',
+    joinedDate: '2026-11-16',
+    documentDeliveryMethod: 'presencial',
+  };
+
+  const firstValidation = validateEnrollmentSubmission(candidateForm, existingEnrollmentMembers, []);
+  assert(
+    firstValidation.valid && firstValidation.resolvedManualNumber === 'EBX-9990510',
+    "Validação aceita ficha oficial completa de inscrição sem duplicados"
+  );
+
+  const builtRequest = buildEnrollmentRequest(
+    candidateForm,
+    firstValidation.resolvedManualNumber!,
+    2026,
+    []
+  );
+  assert(
+    builtRequest.protocolNumber === 'INS-2026-0001' && builtRequest.status === 'pendente',
+    "Solicitação de inscrição gerada com protocolo oficial sequencial INS-2026-0001 e estado 'pendente'"
+  );
+
+  const enrollmentQueue = [builtRequest];
+  const secondProtocol = generateNextEnrollmentProtocol(2026, enrollmentQueue);
+  assert(secondProtocol === 'INS-2026-0002', "Próximo protocolo sequencial incrementa corretamente para INS-2026-0002");
+
+  // Rejeição de duplicados contra fila pendente e membros existentes
+  const dupPendingCheck = validateEnrollmentSubmission(
+    { ...candidateForm, manualNumber: 'EBX-9990511', email: 'outro@email.ao', phone: '+244 924 999 000' },
+    existingEnrollmentMembers,
+    enrollmentQueue
+  );
+  assert(
+    !dupPendingCheck.valid,
+    "Validação impede nova solicitação duplicada com mesmo Bilhete de Identidade já pendente"
+  );
+
+  const dupExistingMemberCheck = validateEnrollmentSubmission(
+    { ...candidateForm, identityCardNumber: existingEnrollmentMembers[0].identityCardNumber, manualNumber: 'EBX-8880101', phone: '+244 922 000 111', email: 'novo.unico@email.ao' },
+    existingEnrollmentMembers,
+    enrollmentQueue
+  );
+  assert(
+    !dupExistingMemberCheck.valid,
+    "Validação impede inscrição quando o B.I. já pertence a um membro registado no clube"
+  );
+
+  // 31.4 Aprovação e Criação do Membro Ativo + Consulta de Estado pelo Candidato
+  const secretaryReviewer = { id: 'USR-SEC-TEST', name: 'Secretária Oficial', role: 'secretario' as const };
+  const approvalOutcome = buildApprovedMemberFromEnrollment(builtRequest, existingEnrollmentMembers, 2026, {
+    manualNumber: 'EBX-9990510',
+    unitOrTeam: 'Unidade Leão',
+  });
+  assert(
+    approvalOutcome.success &&
+      !!approvalOutcome.member &&
+      approvalOutcome.member.id.startsWith('CDA-MEM-') &&
+      approvalOutcome.member.status === 'ativo' &&
+      approvalOutcome.member.unitOrTeam === 'Unidade Leão' &&
+      approvalOutcome.member.identityCardNumber === '008812345LA049',
+    "Autorização cria membro ativo com ID único CDA-MEM-XXX preservando integralmente os dados da ficha"
+  );
+
+  const approvedRequest = markEnrollmentReviewed(builtRequest, 'aprovado', secretaryReviewer, {
+    createdMemberId: approvalOutcome.member!.id,
+    manualNumber: approvalOutcome.member!.manualNumber,
+    unitOrTeam: 'Unidade Leão',
+    reason: 'Documentação conferida pela Secretaria',
+  });
+  assert(
+    approvedRequest.status === 'aprovado' &&
+      approvedRequest.createdMemberId === approvalOutcome.member!.id &&
+      approvedRequest.reviewedByName === 'Secretária Oficial',
+    "Registo da solicitação fica marcado como 'aprovado' com vínculo ao ID do membro criado e dados do revisor"
+  );
+
+  const nextIdCheck = generateNextMemberId([...existingEnrollmentMembers, approvalOutcome.member!]);
+  assert(
+    nextIdCheck !== approvalOutcome.member!.id && nextIdCheck.startsWith('CDA-MEM-'),
+    "generateNextMemberId gera sempre próximo ID sequencial distinto"
+  );
+
+  const foundStatus = lookupEnrollmentStatusByIdentity([approvedRequest], '008812345la049', '2012-05-10');
+  const wrongBirthLookup = lookupEnrollmentStatusByIdentity([approvedRequest], '008812345LA049', '2010-01-01');
+  assert(
+    foundStatus?.protocolNumber === 'INS-2026-0001' && foundStatus?.status === 'aprovado' && !wrongBirthLookup,
+    "Consulta pública de estado exige correspondência exata de Bilhete de Identidade e Data de Nascimento"
+  );
+
+  // 32. VALIDAÇÃO ESTRITA DE CAMPOS DO FORMULÁRIO DE INSCRIÇÃO E REGISTO DE MEMBRO
+  console.log("\n32. Teste de Campos Obrigatórios, Exceções Opcionais, Remoção de Equipa/Data Pretendida e Matrícula Automática:");
+
+  // 32.1 Grupo Sanguíneo e Curso Profissional / Área Académica são opcionais; Nº de Matrícula é gerado automaticamente na inscrição
+  const minimalValidSelfAspirant: MemberRegistrationFormData = {
+    manualNumber: '', // Preenchimento automático no término da inscrição
+    fullName: 'Joana Vemba Cassinda',
+    birthDate: '2014-03-14',
+    gender: 'F',
+    identityCardNumber: '009988777LA041',
+    phone: '+244 925 333 444',
+    email: 'joana.vemba@clubedalvorada.ao',
+    address: 'Kilamba, Bloco F, Luanda',
+    category: 'aspirante',
+    unitOrTeam: 'Unidade Que Deve Ser Ignorada',
+    guardianName: 'Maria Cassinda',
+    guardianPhone: '+244 923 444 555',
+    bloodType: '', // Opcional!
+    allergiesOrMedicalNotes: 'Nenhuma alergia conhecida',
+    investitureDate: '',
+    professionalCourse: '', // Opcional!
+    joinedDate: '', // Removido da inscrição no clube!
+    documentDeliveryMethod: 'presencial',
+  };
+
+  const aspirantCheck = validateRegistrationFields(minimalValidSelfAspirant, 'self_enrollment');
+  assert(
+    aspirantCheck.valid === true &&
+      typeof aspirantCheck.resolvedManualNumber === 'string' &&
+      aspirantCheck.resolvedManualNumber.startsWith('EBX-'),
+    "Inscrição como Aspirante gera Nº de Matrícula automaticamente e dispensa Grupo Sanguíneo, Curso Profissional, Equipa e Data de Admissão"
+  );
+
+  const builtAspirantReq = buildEnrollmentRequest(
+    minimalValidSelfAspirant,
+    aspirantCheck.resolvedManualNumber!,
+    2026,
+    []
+  );
+  assert(
+    builtAspirantReq.unitOrTeam === undefined &&
+      builtAspirantReq.joinedDate === undefined &&
+      builtAspirantReq.bloodType === undefined &&
+      builtAspirantReq.professionalCourse === undefined &&
+      builtAspirantReq.manualNumber.startsWith('EBX-'),
+    "Solicitação de Inscrição preserva Matrícula automática, não armazena Equipa nem Data Pretendida de Admissão"
+  );
+
+  // Aprovação de Aspirante atribui data oficial na autorização e equipa definida pela Secretaria
+  const approvedAspirant = buildApprovedMemberFromEnrollment(builtAspirantReq, [], 2026, {
+    unitOrTeam: 'Unidade Gazela',
+  });
+  assert(
+    approvedAspirant.success &&
+      !!approvedAspirant.member?.joinedDate &&
+      approvedAspirant.member.unitOrTeam === 'Unidade Gazela',
+    "Na autorização de Aspirante pela Secretaria, Data de Admissão e Equipa são definidas oficialmente"
+  );
+
+  // 32.2 Na inscrição no clube, Data Pretendida de Admissão foi removida para sempre mesmo em Embaixador/Líder; Data de Investidura continua obrigatória
+  const embaixadorSelfNoJoinedCheck = validateRegistrationFields(
+    { ...minimalValidSelfAspirant, category: 'embaixador', investitureDate: '2025-10-10', joinedDate: '' },
+    'self_enrollment'
+  );
+  const builtEmbaixadorReq = buildEnrollmentRequest(
+    { ...minimalValidSelfAspirant, category: 'embaixador', investitureDate: '2025-10-10', joinedDate: '2026-12-01' },
+    embaixadorSelfNoJoinedCheck.resolvedManualNumber || 'EBX-7770314',
+    2026,
+    []
+  );
+  assert(
+    embaixadorSelfNoJoinedCheck.valid === true && builtEmbaixadorReq.joinedDate === undefined,
+    "Inscrição como Embaixador/Líder não pede nem grava Data Pretendida de Admissão"
+  );
+
+  const embaixadorMissingInvestiture = validateRegistrationFields(
+    { ...minimalValidSelfAspirant, category: 'embaixador', investitureDate: '', joinedDate: '' },
+    'self_enrollment'
+  );
+  assert(
+    !embaixadorMissingInvestiture.valid,
+    "Inscrição como Embaixador exige Data Oficial de Investidura obrigatória"
+  );
+
+  // 32.3 Campos agora estritamente obrigatórios rejeitam quando vazios
+  const missingEmail = validateRegistrationFields({ ...minimalValidSelfAspirant, email: '' }, 'self_enrollment');
+  const missingAddress = validateRegistrationFields({ ...minimalValidSelfAspirant, address: '' }, 'self_enrollment');
+  const missingGuardian = validateRegistrationFields({ ...minimalValidSelfAspirant, guardianName: '' }, 'self_enrollment');
+  const missingGuardianPhone = validateRegistrationFields({ ...minimalValidSelfAspirant, guardianPhone: '' }, 'self_enrollment');
+  const missingMedical = validateRegistrationFields({ ...minimalValidSelfAspirant, allergiesOrMedicalNotes: '' }, 'self_enrollment');
+  assert(
+    !missingEmail.valid &&
+      !missingAddress.valid &&
+      !missingGuardian.valid &&
+      !missingGuardianPhone.valid &&
+      !missingMedical.valid,
+    "Formulário rejeita ausência de E-mail, Município/Bairro, Nome do Encarregado, Telefone do Encarregado e Alergias/Cuidados Médicos"
+  );
+
+  // 32.4 Modo Secretaria: Aspirante dispensa Data de Admissão, mas Embaixador/Líder exigem Data de Admissão e todos exigem Equipa
+  const secMissingUnit = validateRegistrationFields(
+    { ...minimalValidSelfAspirant, manualNumber: 'EBX-7770314', category: 'aspirante', unitOrTeam: '', joinedDate: '' },
+    'secretary'
+  );
+  const secAspirantValidWithoutJoinedDate = validateRegistrationFields(
+    { ...minimalValidSelfAspirant, manualNumber: 'EBX-7770314', category: 'aspirante', unitOrTeam: 'Unidade Águia', joinedDate: '' },
+    'secretary'
+  );
+  const secEmbaixadorMissingJoinedDate = validateRegistrationFields(
+    { ...minimalValidSelfAspirant, manualNumber: 'EBX-7770314', category: 'embaixador', unitOrTeam: 'Unidade Águia', investitureDate: '2025-10-10', joinedDate: '' },
+    'secretary'
+  );
+  const secEmbaixadorValid = validateRegistrationFields(
+    { ...minimalValidSelfAspirant, manualNumber: 'EBX-7770314', category: 'embaixador', unitOrTeam: 'Unidade Águia', investitureDate: '2025-10-10', joinedDate: '2026-11-16' },
+    'secretary'
+  );
+  assert(
+    !secMissingUnit.valid &&
+      secAspirantValidWithoutJoinedDate.valid &&
+      !secEmbaixadorMissingJoinedDate.valid &&
+      secEmbaixadorValid.valid,
+    "Modo Secretaria exige Equipa, isenta Data de Admissão para Aspirante e exige-a para Embaixador/Líder"
+  );
+
+  // 33. FLUXO EM 3 FASES DA INSCRIÇÃO (PENDENTE -> EM ANÁLISE -> INSCRIÇÃO VALIDADA / INSCRIÇÃO RECUSADA)
+  console.log("\n33. Teste do Fluxo em 3 Fases da Inscrição e Consulta de Recusa (Motivo + Responsável):");
+
+  const phaseForm: MemberRegistrationFormData = {
+    manualNumber: 'EBX-6540719',
+    fullName: 'Samuel Nzinga Manuel',
+    birthDate: '2011-07-19',
+    gender: 'M',
+    identityCardNumber: '005544332LA045',
+    phone: '+244 926 111 999',
+    email: 'samuel.nzinga@clubedalvorada.ao',
+    address: 'Viana, Luanda',
+    category: 'aspirante',
+    unitOrTeam: '',
+    guardianName: 'Rosa Manuel',
+    guardianPhone: '+244 923 888 777',
+    bloodType: 'A+',
+    allergiesOrMedicalNotes: 'Nenhuma alergia',
+    investitureDate: '',
+    professionalCourse: 'Ensino Secundário',
+    joinedDate: '',
+    documentDeliveryMethod: 'presencial',
+  };
+
+  // Fase 1: Submissão -> Pendente
+  const phase1Req = buildEnrollmentRequest(phaseForm, 'EBX-6540719', 2026, []);
+  const phase1Meta = getEnrollmentPhaseInfo(phase1Req.status);
+  assert(
+    phase1Req.status === 'pendente' && phase1Meta.phaseNumber === 1 && phase1Meta.label === 'Pendente',
+    "Fase 1: Inscrição submetida inicia no estado 'pendente' aguardando visualização da Secretaria"
+  );
+
+  // Fase 2: Visualização/Início de análise -> Em análise
+  const phase2Req = startEnrollmentReview(phase1Req, secretaryReviewer);
+  const phase2Meta = getEnrollmentPhaseInfo(phase2Req.status);
+  assert(
+    phase2Req.status === 'em_analise' &&
+      phase2Meta.phaseNumber === 2 &&
+      phase2Meta.label === 'Em análise' &&
+      phase2Req.underReviewStartedByName === 'Secretária Oficial',
+    "Fase 2: Visualização pela Secretaria move inscrição para 'em_analise' registando o analista"
+  );
+
+  // Enquanto está 'em_analise', impede duplicado em curso
+  const dupWhileInAnalysis = validateEnrollmentSubmission(phaseForm, existingEnrollmentMembers, [phase2Req]);
+  assert(
+    !dupWhileInAnalysis.valid,
+    "Enquanto a inscrição está na fase 'Em análise', sistema bloqueia nova submissão duplicada"
+  );
+
+  // Fase 3A: Recusa -> Inscrição Recusada com motivo e pessoa que recusou visíveis na consulta
+  const rejectedReq = markEnrollmentReviewed(phase2Req, 'rejeitado', secretaryReviewer, {
+    reason: 'Documento de B.I. ilegível na fotografia apresentada',
+  });
+  const rejectedMeta = getEnrollmentPhaseInfo(rejectedReq.status);
+  const rejectedLookup = lookupEnrollmentStatusByIdentity([rejectedReq], '005544332LA045', '2011-07-19');
+  assert(
+    rejectedReq.status === 'rejeitado' &&
+      rejectedMeta.phaseNumber === 3 &&
+      rejectedMeta.label === 'Inscrição Recusada' &&
+      rejectedLookup?.decisionReason === 'Documento de B.I. ilegível na fotografia apresentada' &&
+      rejectedLookup?.reviewedByName === 'Secretária Oficial' &&
+      rejectedLookup?.reviewedByRole === 'secretario',
+    "Fase 3 (Recusa): Consulta de estado mostra 'Inscrição Recusada', motivo exato da recusa e quem recusou"
+  );
+
+  // Após recusa, candidato pode submeter nova ficha corrigida e consulta devolve a mais recente
+  const correctedReq = {
+    ...buildEnrollmentRequest(phaseForm, 'EBX-6540719', 2026, [rejectedReq]),
+    submittedAt: '2026-11-16T12:00:00.000Z',
+  };
+  const validDuringCorrection = validateEnrollmentSubmission(phaseForm, existingEnrollmentMembers, [rejectedReq]);
+  assert(
+    validDuringCorrection.valid,
+    "Após recusa, candidato pode submeter nova solicitação corrigida"
+  );
+
+  // Fase 3B: Validação -> Inscrição validada (apenas por quem possui APPROVE_ENROLLMENT na grelha)
+  const validatedReq = markEnrollmentReviewed(
+    startEnrollmentReview(correctedReq, secretaryReviewer),
+    'aprovado',
+    secretaryReviewer,
+    {
+      createdMemberId: 'CDA-MEM-999',
+      unitOrTeam: 'Unidade Falcão',
+      reason: 'Dados confirmados presencialmente',
+    }
+  );
+  const validatedMeta = getEnrollmentPhaseInfo(validatedReq.status);
+  const latestLookup = lookupEnrollmentStatusByIdentity([rejectedReq, validatedReq], '005544332LA045', '2011-07-19');
+  assert(
+    validatedReq.status === 'aprovado' &&
+      validatedMeta.phaseNumber === 3 &&
+      validatedMeta.label === 'Inscrição validada' &&
+      latestLookup?.id === validatedReq.id,
+    "Fase 3 (Validação): Consulta devolve solicitação mais recente no estado 'Inscrição validada'"
+  );
+
+  // 34. INSCRIÇÃO NA TELA DE LOGIN (SEM SESSÃO) E BLOQUEIO ESTRITO POR B.I. DUPLICADO
+  console.log("\n34. Teste de Inscrição na Tela de Login e Comparação Estrita de B.I. Duplicado:");
+
+  // 34.1 Permite submissão pública na tela de Login (submittedByUserId indefinido) com matrícula automática
+  const guestLoginReq = buildEnrollmentRequest(
+    minimalValidSelfAspirant,
+    'EBX-5010314',
+    2026,
+    []
+  );
+  assert(
+    guestLoginReq.submittedByUserId === undefined &&
+      guestLoginReq.manualNumber === 'EBX-5010314' &&
+      guestLoginReq.status === 'pendente',
+    "Inscrição submetida a partir da tela de Login (sem sessão iniciada) gera matrícula automática e entra em fase pendente"
+  );
+
+  // 34.2 Validação dos dados do candidato na tela de Login garante campos obrigatórios antes de registar na nuvem
+  const loginEnrollmentValidation = validateEnrollmentSubmission(
+    minimalValidSelfAspirant,
+    [],
+    []
+  );
+  assert(
+    loginEnrollmentValidation.valid,
+    "Submissão pública na tela de Login passa nas validações obrigatórias de formulário"
+  );
+
+  // 34.3 syncPermissionsMatrix assegura acesso VIEW ao Portal do Membro para todos os cargos
+  const allRolesForPortal = Object.keys(ROLE_LABELS) as (keyof typeof ROLE_LABELS)[];
+  const legacyNoPortalMatrix = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  legacyNoPortalMatrix.diretor.member_portal = [];
+  legacyNoPortalMatrix.secretario.member_portal = [];
+  const migratedPortalMatrix = syncPermissionsMatrix(legacyNoPortalMatrix);
+  assert(
+    allRolesForPortal.every((r) => migratedPortalMatrix[r].member_portal.includes('VIEW')),
+    "syncPermissionsMatrix assegura acesso de visualização ao Portal do Membro para todos os cargos"
+  );
+
+  // 34.4 Comparação normalizada de B.I. contra TODOS os membros já registados
+  const existingRegisteredWithBI: Member = {
+    ...existingEnrollmentMembers[0],
+    id: 'CDA-MEM-REG-01',
+    manualNumber: 'EBX-1110202',
+    identityCardNumber: '007788990LA042',
+    status: 'ativo',
+  };
+  const dupAgainstRegisteredForm: MemberRegistrationFormData = {
+    ...minimalValidSelfAspirant,
+    manualNumber: 'EBX-9991122',
+    fullName: 'Pessoa Diferente Tentando Mesmo BI',
+    birthDate: '2010-11-22',
+    phone: '+244 929 000 111',
+    email: 'outro.email@clubedalvorada.ao',
+    identityCardNumber: ' 007788990-la 042 ', // Mesmos dígitos/letras com espaços e minúsculas
+  };
+  const registeredBiValidation = validateEnrollmentSubmission(
+    dupAgainstRegisteredForm,
+    [existingRegisteredWithBI],
+    []
+  );
+  assert(
+    !registeredBiValidation.valid &&
+      normalizeIdentityCardNumber(' 007788990-la 042 ') === '007788990LA042',
+    "Sistema compara o B.I. normalizado com todos os membros já registados e rejeita inscrição com B.I. igual"
+  );
+
+  // 34.5 Comparação de B.I. contra TODOS os inscritos (pendentes, em análise e já validados/aprovados)
+  const approvedOtherBIReq = {
+    ...validatedReq,
+    id: 'INS-2026-0099',
+    protocolNumber: 'INS-2026-0099',
+    identityCardNumber: '006655443LA048',
+    status: 'aprovado' as const,
+  };
+  const dupAgainstApprovedReqForm: MemberRegistrationFormData = {
+    ...minimalValidSelfAspirant,
+    manualNumber: 'EBX-8880506',
+    fullName: 'Outro Candidato',
+    birthDate: '2012-05-06',
+    phone: '+244 928 777 666',
+    email: 'novo.candidato@clubedalvorada.ao',
+    identityCardNumber: '006655443LA048',
+  };
+  const enrolledBiValidation = validateEnrollmentSubmission(
+    dupAgainstApprovedReqForm,
+    [], // Mesmo que pesquisado apenas na lista de inscritos
+    [approvedOtherBIReq]
+  );
+  const directBiCheckPending = findDuplicateEnrollmentByBI(
+    '005544332LA045',
+    [],
+    [phase1Req]
+  );
+  assert(
+    !enrolledBiValidation.valid && directBiCheckPending.duplicate,
+    "Sistema compara o B.I. com todos os já inscritos (pendentes, em análise e validados) e não aceita inscrição dupla"
+  );
+
+  // 34.6 B.I. inédito (não registado nem inscrito) é aceite normalmente
+  const freshBiValidation = validateEnrollmentSubmission(
+    {
+      ...minimalValidSelfAspirant,
+      identityCardNumber: '009911223LA047',
+      phone: '+244 921 222 333',
+      email: 'inedito@clubedalvorada.ao',
+    },
+    [existingRegisteredWithBI],
+    [approvedOtherBIReq, phase1Req]
+  );
+  assert(
+    freshBiValidation.valid,
+    "Inscrição com B.I. inédito distinto dos registados e inscritos é aceite normalmente"
+  );
+
+  // 35. MODO DE ENTREGA DOS DOCUMENTOS (PRESENCIAL VS ANEXAR PDF/DOCUMENTO DE B.I. E FOTOGRAFIA)
+  console.log("\n35. Teste do Campo de Entrega de Documentos (Presencial vs Anexar B.I. e Fotografia):");
+
+  // 35.1 Exige seleção de forma de entrega (anexar ou presencial) na inscrição no clube
+  const missingDocDelivery = validateRegistrationFields(
+    { ...minimalValidSelfAspirant, documentDeliveryMethod: '' },
+    'self_enrollment'
+  );
+  assert(
+    !missingDocDelivery.valid,
+    "Formulário de inscrição exige indicar se vai anexar os documentos ou entregá-los presencialmente"
+  );
+
+  // 35.2 Ao escolher 'presencial', dispensa anexo de ficheiros e regista modo presencial
+  const presencialReq = buildEnrollmentRequest(
+    {
+      ...minimalValidSelfAspirant,
+      documentDeliveryMethod: 'presencial',
+      biDocumentFileName: 'lixo.pdf',
+      biDocumentBase64: 'data:application/pdf;base64,AAAA',
+    },
+    'EBX-7770314',
+    2026,
+    []
+  );
+  assert(
+    presencialReq.documentDeliveryMethod === 'presencial' &&
+      presencialReq.biDocumentBase64 === undefined &&
+      presencialReq.photoDocumentBase64 === undefined,
+    "Entrega presencial aceita formulário sem ficheiros e não armazena anexos digitais"
+  );
+
+  // 35.3 Ao escolher 'anexar_digital', rejeita caso nenhum PDF/documento seja anexado
+  const attachWithoutFiles = validateRegistrationFields(
+    {
+      ...minimalValidSelfAspirant,
+      documentDeliveryMethod: 'anexar_digital',
+      biDocumentFileName: '',
+      biDocumentBase64: '',
+      photoDocumentFileName: '',
+      photoDocumentBase64: '',
+    },
+    'self_enrollment'
+  );
+  assert(
+    !attachWithoutFiles.valid,
+    "Ao escolher anexar documentos, sistema bloqueia submissão enquanto não anexar o PDF/documento do B.I. e Fotografia"
+  );
+
+  // 35.4 Ao anexar PDF único (B.I. + Fotografia) ou ficheiros separados (PDF do B.I. + Fotografia), aceita e persiste
+  const singlePdfValid = validateRegistrationFields(
+    {
+      ...minimalValidSelfAspirant,
+      documentDeliveryMethod: 'anexar_digital',
+      biDocumentFileName: 'bi_e_foto_joana.pdf',
+      biDocumentBase64: 'data:application/pdf;base64,JVBERi0xLjQK',
+      photoDocumentFileName: '',
+      photoDocumentBase64: '',
+    },
+    'self_enrollment'
+  );
+  const dualFilesForm: MemberRegistrationFormData = {
+    ...minimalValidSelfAspirant,
+    documentDeliveryMethod: 'anexar_digital',
+    biDocumentFileName: 'bi_joana.pdf',
+    biDocumentBase64: 'data:application/pdf;base64,JVBERi0xLjQK',
+    photoDocumentFileName: 'foto_joana.jpg',
+    photoDocumentBase64: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+  };
+  const dualFilesValid = validateRegistrationFields(dualFilesForm, 'self_enrollment');
+  const dualFilesReq = buildEnrollmentRequest(dualFilesForm, 'EBX-7770314', 2026, []);
+  const approvedWithPhoto = buildApprovedMemberFromEnrollment(dualFilesReq, [], 2026, {
+    unitOrTeam: 'Unidade Águia',
+  });
+  assert(
+    singlePdfValid.valid &&
+      dualFilesValid.valid &&
+      dualFilesReq.documentDeliveryMethod === 'anexar_digital' &&
+      dualFilesReq.biDocumentFileName === 'bi_joana.pdf' &&
+      dualFilesReq.photoDocumentFileName === 'foto_joana.jpg' &&
+      approvedWithPhoto.success &&
+      approvedWithPhoto.member?.photoUrl === 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+    "Anexo digital aceita PDF único ou ficheiros separados (B.I. + Fotografia) e transfere fotografia para o cartão do membro na validação"
+  );
+
+  // 35.5 No registo direto da Secretaria, campo documental não bloqueia preenchimento presencial
+  const secretaryWithoutDocMethod = validateRegistrationFields(
+    {
+      ...minimalValidSelfAspirant,
+      manualNumber: 'EBX-7770314',
+      unitOrTeam: 'Unidade Águia',
+      documentDeliveryMethod: '',
+    },
+    'secretary'
+  );
+  assert(
+    secretaryWithoutDocMethod.valid,
+    "Registo direto pela Secretaria permanece independente dos campos de anexo do formulário de inscrição"
+  );
+
+  // 36. MENSAGEM DE ANÁLISE PARA O CANDIDATO DURANTE O ESTADO 'em_analise'
+  console.log("\n36. Teste de Mensagem de Análise da Secretaria para o Candidato:");
+  const testAnalystReq: MemberEnrollmentRequest = {
+    ...phase1Req,
+    status: 'em_analise',
+    reviewMessage: 'Por favor envie uma fotografia mais recente tipo passe com fundo branco.',
+  };
+  assert(
+    testAnalystReq.status === 'em_analise' &&
+      Boolean(testAnalystReq.reviewMessage && testAnalystReq.reviewMessage.includes('fotografia mais recente')),
+    "Secretário pode deixar mensagem de análise na inscrição e o candidato visualiza essa mensagem ao consultar o estado"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");

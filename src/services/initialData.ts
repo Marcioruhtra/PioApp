@@ -20,7 +20,35 @@ import {
   DeletionRequest,
   ChaplaincyRequest,
   MemberSuggestion,
+  MusicItem,
 } from '../types';
+
+export const INITIAL_MUSIC_ITEMS: MusicItem[] = [
+  {
+    id: 'MUS-01',
+    title: 'Hino Oficial dos Embaixadores',
+    composer: 'Hinário Oficial',
+    category: 'hino_oficial',
+    lyrics: '1. Embaixadores da Pátria Celestial,\nLevemos a tocha da verdade e da luz!\nCom fé firme, coragem e amor sem igual,\nSeguimos os passos de Cristo Jesus!\n\nCoro:\nAvante, embaixadores, com valor!\nFirmes na rocha, unidos no amor!\nSalvando do pecado e guiando no serviço,\nAté que venha o nosso Salvador!',
+    createdAt: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'MUS-02',
+    title: 'Alvos ao Sol',
+    composer: 'Cantor Jovem / IASD',
+    category: 'louvor_jovem',
+    lyrics: '1. Alvos ao sol, alvos ao sol!\nSempre olhando para cima com fervor!\nTrabalhando com afinco e santo amor,\nAlvos ao sol, salvos pelo Senhor!',
+    createdAt: '2026-01-05T00:00:00Z',
+  },
+  {
+    id: 'MUS-03',
+    title: 'Marcha dos Pioneiros do Dondo',
+    composer: 'Diretoria do Clube D\'Alvorada',
+    category: 'marcha',
+    lyrics: 'Com passos firmes na vereda do dever,\nPioneiros do Dondo a marchar!\nNenhum obstáculo nos fará ceder,\nCom Cristo sempre vamos triunfar!',
+    createdAt: '2026-01-10T00:00:00Z',
+  },
+];
 
 export const INITIAL_USERS: UserAccount[] = [
   {

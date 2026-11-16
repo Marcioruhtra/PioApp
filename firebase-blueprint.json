@@ -71,6 +71,41 @@
         "reversedByName": { "type": "string" }
       },
       "required": ["id", "memberId", "memberName", "amountWaivedInCents", "cycleYear", "reason", "waivedByUserId", "waivedByName", "waivedByRole", "waivedAt"]
+    },
+    "MemberEnrollmentRequest": {
+      "title": "MemberEnrollmentRequest",
+      "description": "Self-enrollment application submitted directly by a candidate/member for Secretary authorization",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "protocolNumber": { "type": "string" },
+        "manualNumber": { "type": "string" },
+        "fullName": { "type": "string" },
+        "birthDate": { "type": "string" },
+        "gender": { "type": "string" },
+        "identityCardNumber": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "category": { "type": "string" },
+        "unitOrTeam": { "type": "string" },
+        "guardianName": { "type": "string" },
+        "guardianPhone": { "type": "string" },
+        "bloodType": { "type": "string" },
+        "allergiesOrMedicalNotes": { "type": "string" },
+        "joinedDate": { "type": "string" },
+        "investitureDate": { "type": "string" },
+        "professionalCourse": { "type": "string" },
+        "status": { "type": "string" },
+        "submittedAt": { "type": "string" },
+        "reviewedByUserId": { "type": "string" },
+        "reviewedByName": { "type": "string" },
+        "reviewedByRole": { "type": "string" },
+        "reviewedAt": { "type": "string" },
+        "decisionReason": { "type": "string" },
+        "createdMemberId": { "type": "string" }
+      },
+      "required": ["id", "protocolNumber", "fullName", "birthDate", "identityCardNumber", "phone", "category", "status", "submittedAt"]
     }
   },
   "firestore": {

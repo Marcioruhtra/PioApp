@@ -35,6 +35,7 @@ import { ChaplaincyModule } from './components/modules/ChaplaincyModule';
 import { SuggestionsModule } from './components/modules/SuggestionsModule';
 import { MessagingModule } from './components/modules/MessagingModule';
 import { AssociateDirectorModule } from './components/modules/AssociateDirectorModule';
+import { MusicModule } from './components/modules/MusicModule';
 
 const LAST_ACTIVITY_STORAGE_KEY = 'pioapp_last_activity_at';
 const INACTIVITY_LOGOUT_MESSAGE =
@@ -292,6 +293,7 @@ const MainAppContent: React.FC = () => {
             {activeModule === 'chaplaincy' && <ChaplaincyModule />}
             {activeModule === 'suggestions' && <SuggestionsModule />}
             {activeModule === 'messaging' && <MessagingModule />}
+            {activeModule === 'music' && can('music', 'VIEW') && <MusicModule />}
           </div>
         </main>
       </div>

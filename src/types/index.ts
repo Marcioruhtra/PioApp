@@ -11,7 +11,9 @@ export type RoleType =
   | 'tesoureiro' 
   | 'instrutor' 
   | 'membro'
-  | 'capelao';
+  | 'capelao'
+  | 'conselheiro'
+  | 'musica';
 
 export type PermissionAction =
   | 'VIEW'
@@ -29,7 +31,9 @@ export type PermissionAction =
   | 'CREATE_RUBRIC'
   | 'DELETE_RUBRIC'
   | 'CONFIGURE_QUOTAS'
-  | 'WAIVE_QUOTA_DEBT';
+  | 'WAIVE_QUOTA_DEBT'
+  | 'VIEW_DOSSIER_360'
+  | 'APPROVE_ENROLLMENT';
 
 export type ModuleName =
   | 'dashboard'
@@ -46,7 +50,10 @@ export type ModuleName =
   | 'audit'
   | 'chaplaincy'
   | 'suggestions'
-  | 'messaging';
+  | 'messaging'
+  | 'inventory'
+  | 'awards'
+  | 'music';
 
 export interface UserAccount {
   id: string;
@@ -76,11 +83,20 @@ export type MemberStatus =
   | 'arquivado' 
   | 'transferido';
 
+export type MemberDocumentationStatus = 'regularizado' | 'falta_documento';
+
 export interface EmergencyContact {
   name: string;
   relationship: string;
   phone: string;
   phoneVerified?: boolean;
+}
+
+export interface MemberQuotaCarryOver {
+  snapshotDate: string; // Data (AAAA-MM-DD) da consolidação após limpeza na nuvem
+  debtInCents: number; // Saldo em dívida transportado
+  creditInCents: number; // Crédito adiantado transportado
+  waivedInCents: number; // Total de dívidas zeradas preservado para exibição
 }
 
 export interface Member {
@@ -109,6 +125,13 @@ export interface Member {
   photoUrl?: string;
   investitureDate?: string; // Data oficial de investidura (AAAA-MM-DD) para Embaixador ou Líder
   professionalCourse?: string; // Curso profissional que o membro está fazendo ou fez
+  quotaCarryOver?: MemberQuotaCarryOver; // Saldo consolidado após limpeza da nuvem
+  documentationStatus?: MemberDocumentationStatus; // Definido pelo Secretário: regularizado ou falta_documento
+  missingDocumentsNote?: string; // Descrição dos documentos em falta quando documentationStatus === 'falta_documento'
+  documentationUpdatedAt?: string;
+  documentationUpdatedByName?: string;
+  documentationUpdatedByRole?: RoleType;
+  enrollmentProtocol?: string; // Protocolo de inscrição que originou o registo automático na Secretaria
   createdAt: string;
   updatedAt: string;
 }
@@ -643,5 +666,89 @@ export interface TeamEvaluation {
   evaluatedByName: string;
   evaluatedAt: string;
 }
+
+export type MusicCategory = 'hino_oficial' | 'louvor_jovem' | 'marcha' | 'coral' | 'especial';
+
+export interface MusicItem {
+  id: string;
+  title: string;
+  composer?: string;
+  category: MusicCategory;
+  keySignature?: string; // ex: Dó Maior (C), Sol Maior (G)
+  lyrics?: string;
+  chordChartUrl?: string;
+  audioUrl?: string;
+  createdAt: string;
+}
+
+export interface WorshipRoster {
+  id: string;
+  date: string; // AAAA-MM-DD
+  eventTitle: string; // ex: Reunião Regular de Domingo / Culto Jovem
+  leadSingerName: string;
+  instrumentalistNames: string[];
+  songIds: string[];
+  notes?: string;
+  status: 'agendado' | 'realizado' | 'cancelado';
+  createdByUserId: string;
+  createdByName: string;
+}
+
+export interface MusicGear {
+  id: string;
+  itemName: string; // ex: Violão Acústico Yamaha / Teclado Casio / Microfone Shure SM58
+  serialNumber?: string;
+  condition: 'excelente' | 'bom' | 'manutencao';
+  assignedToName?: string;
+  notes?: string;
+}
+
+export type EnrollmentStatus = 'pendente' | 'em_analise' | 'aprovado' | 'rejeitado';
+
+export type EnrollmentDocumentDeliveryMethod = 'anexar_digital' | 'presencial';
+
+export interface MemberEnrollmentRequest {
+  id: string; // ex: INS-2026-0001
+  protocolNumber: string; // ex: INS-2026-0001
+  manualNumber: string;
+  fullName: string;
+  birthDate: string; // AAAA-MM-DD
+  gender: 'M' | 'F';
+  identityCardNumber: string;
+  phone: string;
+  email?: string;
+  address: string;
+  category: MemberCategory;
+  unitOrTeam?: string;
+  guardianName?: string;
+  guardianPhone?: string;
+  emergencyContact: EmergencyContact;
+  bloodType?: string;
+  allergiesOrMedicalNotes?: string;
+  joinedDate?: string;
+  investitureDate?: string;
+  professionalCourse?: string;
+  documentDeliveryMethod?: EnrollmentDocumentDeliveryMethod;
+  biDocumentFileName?: string;
+  biDocumentBase64?: string;
+  photoDocumentFileName?: string;
+  photoDocumentBase64?: string;
+  status: EnrollmentStatus;
+  submittedAt: string;
+  submittedByUserId?: string;
+  underReviewStartedByUserId?: string;
+  underReviewStartedByName?: string;
+  underReviewStartedByRole?: RoleType;
+  underReviewStartedAt?: string;
+  reviewedByUserId?: string;
+  reviewedByName?: string;
+  reviewedByRole?: RoleType;
+  reviewedAt?: string;
+  decisionReason?: string;
+  reviewMessage?: string;
+  createdMemberId?: string;
+}
+
+
 
 

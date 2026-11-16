@@ -66,7 +66,9 @@ export const AndroidDrawer: React.FC<AndroidDrawerProps> = ({
   ];
 
   const visibleItems = navItems.filter((item) =>
-    item.id === 'treasury'
+    item.id === 'member_portal'
+      ? true
+      : item.id === 'treasury'
       ? can('treasury', 'VIEW') || can('treasury', 'CONFIGURE_QUOTAS') || can('treasury', 'WAIVE_QUOTA_DEBT')
       : can(item.id, 'VIEW')
   );

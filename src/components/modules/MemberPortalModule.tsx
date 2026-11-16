@@ -457,7 +457,6 @@ export const MemberPortalModule: React.FC = () => {
               <Upload className="w-3.5 h-3.5" />
               <span>Reportar Pagamento</span>
             </button>
-
           </div>
         </div>
       </div>

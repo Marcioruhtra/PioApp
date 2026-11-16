@@ -170,9 +170,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
   ];
 
-  // Filtra itens com base nas permissões de visualização (ou permissões específicas de Quotas na Tesouraria)
+  // Filtra itens com base nas permissões de visualização (Portal do Membro é acessível a qualquer cargo)
   const visibleItems = navItems.filter((item) =>
-    item.id === 'treasury'
+    item.id === 'member_portal'
+      ? true
+      : item.id === 'treasury'
       ? can('treasury', 'VIEW') || can('treasury', 'CONFIGURE_QUOTAS') || can('treasury', 'WAIVE_QUOTA_DEBT')
       : can(item.id, 'VIEW')
   );

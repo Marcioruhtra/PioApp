@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import { createServer as createViteServer } from 'vite';
 import * as admin from 'firebase-admin';
 import fs from 'fs';
@@ -29,6 +30,7 @@ if (!adminAny.apps || adminAny.apps.length === 0) {
 
 async function startServer() {
   const app = express();
+  const httpServer = http.createServer(app);
   app.use(express.json());
 
   // Admin API endpoint to permanently delete a user and revoke sessions
@@ -71,8 +73,12 @@ async function startServer() {
   // Vite middleware for development
   const isProduction = process.env.NODE_ENV === 'production';
   if (!isProduction) {
+    const hmrDisabled = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: hmrDisabled ? false : { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -101,9 +107,12 @@ async function startServer() {
     cliPort ||
     (!isProduction && envPort === 8080 ? defaultAppPort : envPort || defaultAppPort);
 
-  app.listen(port, '0.0.0.0', () => {
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${port}`);
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});

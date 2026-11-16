@@ -27,11 +27,13 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   
   // Membros
   { module: 'members', action: 'VIEW', description: 'Consultar catálogo de membros' },
+  { module: 'members', action: 'VIEW_DOSSIER_360', description: 'Consultar Dossiê 360º do Membro (Formação, Assiduidade, Quotas e Histórico)' },
   { module: 'members', action: 'CREATE', description: 'Registar novos membros (Secretário)' },
   { module: 'members', action: 'EDIT', description: 'Editar dados de membros' },
   { module: 'members', action: 'ARCHIVE', description: 'Arquivar membros mantendo histórico' },
   { module: 'members', action: 'DELETE', description: 'Eliminar definitivamente membros' },
   { module: 'members', action: 'APPROVE', description: 'Aprovar eliminações de membros' },
+  { module: 'members', action: 'APPROVE_ENROLLMENT', description: 'Analisar, validar ou recusar solicitações de inscrição de novos membros (Concedido pelo Administrador)' },
   { module: 'members', action: 'EXPORT', description: 'Exportar listas de membros' },
   { module: 'members', action: 'PRINT', description: 'Imprimir fichas e cartões de membros' },
   { module: 'members', action: 'ADMIN', description: 'Gestão institucional e renovação anual' },
@@ -115,6 +117,24 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   { module: 'messaging', action: 'VIEW', description: 'Consultar central de mensagens' },
   { module: 'messaging', action: 'CREATE', description: 'Enviar mensagens para membros, equipas ou clube' },
   { module: 'messaging', action: 'ADMIN', description: 'Eliminar mensagens no histórico' },
+
+  // Inventário e Património
+  { module: 'inventory', action: 'VIEW', description: 'Consultar stock de material e equipamentos do clube' },
+  { module: 'inventory', action: 'CREATE', description: 'Registar novos bens patrimoniais e empréstimos' },
+  { module: 'inventory', action: 'EDIT', description: 'Atualizar estado e manutenção de equipamentos' },
+  { module: 'inventory', action: 'APPROVE', description: 'Aprovar requisições de material de acampamento' },
+  { module: 'inventory', action: 'PRINT', description: 'Imprimir fichas de inventário e termos de responsabilidade' },
+
+  // Condecorações e Mérito
+  { module: 'awards', action: 'VIEW', description: 'Consultar menções honrosas, mérito e condecorações' },
+  { module: 'awards', action: 'CREATE', description: 'Propor condecoração ou menção honrosa para membros' },
+  { module: 'awards', action: 'APPROVE', description: 'Aprovar e homologar condecorações oficiais (Direção)' },
+
+  // Música e Louvor
+  { module: 'music', action: 'VIEW', description: 'Consultar repertório, hinos e escalas de louvor' },
+  { module: 'music', action: 'CREATE', description: 'Adicionar hinos ao repertório e agendar escalas de louvor' },
+  { module: 'music', action: 'EDIT', description: 'Editar letras, cifras e escalas musicais' },
+  { module: 'music', action: 'PRINT', description: 'Imprimir cifras, repertório e escalas de louvor' },
 ];
 
 // Matriz de permissões por papel institucional (Gerenciada pelo Admin)
@@ -122,7 +142,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   admin_tecnico: {
     dashboard: ['VIEW'],
     associate_director: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
-    members: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
+    members: ['VIEW', 'VIEW_DOSSIER_360', 'CREATE', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'APPROVE_ENROLLMENT'],
     treasury: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'ARCHIVE', 'ADMIN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
     activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
@@ -135,11 +155,14 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     chaplaincy: ['VIEW', 'CREATE', 'APPROVE'],
     suggestions: ['VIEW', 'ADMIN'],
     messaging: ['VIEW', 'CREATE', 'ADMIN'],
+    inventory: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'PRINT', 'ADMIN'],
+    awards: ['VIEW', 'CREATE', 'APPROVE', 'ADMIN'],
+    music: ['VIEW', 'CREATE', 'EDIT', 'PRINT', 'ADMIN'],
   },
   diretor: {
     dashboard: ['VIEW'],
     associate_director: [],
-    members: ['VIEW', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
+    members: ['VIEW', 'VIEW_DOSSIER_360', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
     treasury: ['VIEW', 'CREATE', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
     activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT'],
@@ -152,11 +175,14 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     chaplaincy: ['VIEW', 'CREATE', 'APPROVE'],
     suggestions: ['VIEW', 'APPROVE'],
     messaging: ['VIEW', 'CREATE'],
+    inventory: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'PRINT'],
+    awards: ['VIEW', 'CREATE', 'APPROVE'],
+    music: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
   },
   diretor_associado: {
     dashboard: ['VIEW'],
     associate_director: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT'],
-    members: ['VIEW', 'EDIT', 'EXPORT', 'PRINT'],
+    members: ['VIEW', 'VIEW_DOSSIER_360', 'EDIT', 'EXPORT', 'PRINT'],
     treasury: [],
     activities: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT'],
     training: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
@@ -169,14 +195,17 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     chaplaincy: ['VIEW', 'CREATE'],
     suggestions: [],
     messaging: ['VIEW', 'CREATE'],
+    inventory: ['VIEW', 'CREATE', 'APPROVE'],
+    awards: ['VIEW', 'CREATE', 'APPROVE'],
+    music: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
   },
   secretario: {
     dashboard: ['VIEW'],
     associate_director: [],
-    members: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'APPROVE'],
-    treasury: ['VIEW'],
+    members: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'APPROVE', 'APPROVE_ENROLLMENT'],
+    treasury: [],
     activities: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT'],
-    training: ['VIEW'],
+    training: [],
     documents: ['VIEW', 'CREATE', 'PRINT', 'EXPORT'],
     member_portal: ['VIEW'],
     requests: ['VIEW', 'CREATE', 'APPROVE'],
@@ -186,6 +215,9 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     chaplaincy: ['VIEW'],
     suggestions: [],
     messaging: ['VIEW', 'CREATE'],
+    inventory: ['VIEW', 'CREATE'],
+    awards: ['VIEW', 'CREATE'],
+    music: ['VIEW', 'CREATE'],
   },
   tesoureiro: {
     dashboard: ['VIEW'],
@@ -203,6 +235,9 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     chaplaincy: ['VIEW'],
     suggestions: [],
     messaging: ['VIEW', 'CREATE'],
+    inventory: ['VIEW'],
+    awards: ['VIEW'],
+    music: ['VIEW'],
   },
   instrutor: {
     dashboard: ['VIEW'],
@@ -220,6 +255,9 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     chaplaincy: ['VIEW', 'CREATE'],
     suggestions: [],
     messaging: ['VIEW'],
+    inventory: ['VIEW'],
+    awards: ['VIEW', 'CREATE'],
+    music: ['VIEW'],
   },
   membro: {
     dashboard: ['VIEW'],
@@ -237,6 +275,9 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     chaplaincy: ['VIEW', 'CREATE'],
     suggestions: ['CREATE'],
     messaging: ['VIEW'],
+    inventory: [],
+    awards: ['VIEW'],
+    music: ['VIEW'],
   },
   capelao: {
     dashboard: ['VIEW'],
@@ -254,6 +295,49 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     chaplaincy: ['VIEW', 'CREATE', 'APPROVE'],
     suggestions: [],
     messaging: ['VIEW'],
+    inventory: [],
+    awards: [],
+    music: ['VIEW'],
+  },
+  conselheiro: {
+    dashboard: ['VIEW'],
+    associate_director: [],
+    members: ['VIEW'],
+    treasury: [],
+    activities: ['VIEW', 'CREATE', 'EDIT'],
+    training: ['VIEW', 'CREATE', 'EDIT'],
+    documents: ['VIEW'],
+    member_portal: ['VIEW'],
+    requests: ['VIEW', 'CREATE'],
+    reports: ['VIEW'],
+    settings: [],
+    audit: [],
+    chaplaincy: ['VIEW', 'CREATE'],
+    suggestions: ['CREATE'],
+    messaging: ['VIEW', 'CREATE'],
+    inventory: ['VIEW', 'CREATE'],
+    awards: ['VIEW', 'CREATE'],
+    music: ['VIEW', 'CREATE'],
+  },
+  musica: {
+    dashboard: ['VIEW'],
+    associate_director: [],
+    members: ['VIEW'],
+    treasury: [],
+    activities: ['VIEW', 'CREATE', 'EDIT'],
+    training: ['VIEW'],
+    documents: ['VIEW', 'CREATE', 'PRINT'],
+    member_portal: ['VIEW'],
+    requests: ['VIEW', 'CREATE'],
+    reports: ['VIEW'],
+    settings: [],
+    audit: [],
+    chaplaincy: ['VIEW'],
+    suggestions: ['CREATE'],
+    messaging: ['VIEW', 'CREATE'],
+    inventory: ['VIEW'],
+    awards: ['VIEW', 'CREATE'],
+    music: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
   },
 };
 
@@ -315,6 +399,14 @@ export const ROLE_LABELS: Record<RoleType, { label: string; description: string 
     label: 'Capelão',
     description: 'Gestão da capelania digital, acompanhamento pastoral e intercessão.',
   },
+  conselheiro: {
+    label: 'Conselheiro / Líder de Unidade',
+    description: 'Acompanhamento direto de unidades e patrulhas, registo de presenças, progresso e requisições de material.',
+  },
+  musica: {
+    label: 'Diretor de Música e Louvor',
+    description: 'Gestão do ministério de música, ensaios, hinos do clube e escalas de louvor.',
+  },
 };
 
 export const ACTION_LABELS: Record<PermissionAction, string> = {
@@ -334,6 +426,8 @@ export const ACTION_LABELS: Record<PermissionAction, string> = {
   DELETE_RUBRIC: 'Remover Rubricas',
   CONFIGURE_QUOTAS: 'Definir Quotas',
   WAIVE_QUOTA_DEBT: 'Zerar Dívida de Quotas',
+  VIEW_DOSSIER_360: 'Dossiê 360º do Membro',
+  APPROVE_ENROLLMENT: 'Validar / Recusar Inscrições',
 };
 
 /**
@@ -351,6 +445,8 @@ export const syncPermissionsMatrix = (
   const isLegacy = !newActions.some(act => synced.admin_tecnico?.treasury?.includes(act));
   const needsQuotaPermSync = !synced.admin_tecnico?.treasury?.includes('CONFIGURE_QUOTAS');
   const needsWaiveDebtPermSync = !synced.admin_tecnico?.treasury?.includes('WAIVE_QUOTA_DEBT');
+  const needsDossier360Sync = !synced.admin_tecnico?.members?.includes('VIEW_DOSSIER_360');
+  const needsEnrollmentPermSync = !synced.admin_tecnico?.members?.includes('APPROVE_ENROLLMENT');
 
   for (const role of roles) {
     if (!synced[role]) {
@@ -361,6 +457,13 @@ export const syncPermissionsMatrix = (
     for (const mod of modules) {
       if (!Array.isArray(synced[role][mod])) {
         synced[role][mod] = [...base[role][mod]];
+      } else if (mod === 'members') {
+        if (needsDossier360Sync && base[role].members.includes('VIEW_DOSSIER_360') && !synced[role].members.includes('VIEW_DOSSIER_360')) {
+          synced[role].members.push('VIEW_DOSSIER_360');
+        }
+        if (needsEnrollmentPermSync && base[role].members.includes('APPROVE_ENROLLMENT') && !synced[role].members.includes('APPROVE_ENROLLMENT')) {
+          synced[role].members.push('APPROVE_ENROLLMENT');
+        }
       } else if (mod === 'activities') {
         for (const act of base[role].activities) {
           if (!synced[role].activities.includes(act)) {
@@ -380,6 +483,17 @@ export const syncPermissionsMatrix = (
         }
         if (needsWaiveDebtPermSync && base[role].treasury.includes('WAIVE_QUOTA_DEBT') && !synced[role].treasury.includes('WAIVE_QUOTA_DEBT')) {
           synced[role].treasury.push('WAIVE_QUOTA_DEBT');
+        }
+        if (needsDossier360Sync && role === 'secretario') {
+          synced.secretario.treasury = synced.secretario.treasury.filter((a) => a !== 'VIEW');
+        }
+      } else if (mod === 'training') {
+        if (needsDossier360Sync && role === 'secretario') {
+          synced.secretario.training = synced.secretario.training.filter((a) => a !== 'VIEW');
+        }
+      } else if (mod === 'member_portal') {
+        if (!synced[role].member_portal.includes('VIEW')) {
+          synced[role].member_portal.push('VIEW');
         }
       }
     }
@@ -445,5 +559,43 @@ export const canAccessAssociateDirectorModule = (
 export const canGrantWaiveQuotaDebt = (actorRole: RoleType): boolean => {
   return actorRole === 'admin_tecnico';
 };
+
+/**
+ * Verifica pela Grelha de Permissões se o cargo pode consultar o Dossiê 360º completo na Ficha do Membro.
+ */
+export const hasDossier360Permission = (
+  role: RoleType,
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>
+): boolean => {
+  if (role === 'admin_tecnico') return true;
+  if (permissionsMatrix?.[role] && Array.isArray(permissionsMatrix[role].members)) {
+    return permissionsMatrix[role].members.includes('VIEW_DOSSIER_360');
+  }
+  return hasPermission(role, 'members', 'VIEW_DOSSIER_360');
+};
+
+/**
+ * Apenas o Administrador Técnico pode conceder ou revogar a permissão de autorizar/recusar
+ * solicitações de inscrição de membros na grelha de permissões.
+ */
+export const canGrantApproveEnrollment = (actorRole: RoleType): boolean => {
+  return actorRole === 'admin_tecnico';
+};
+
+/**
+ * Verifica pela Grelha de Permissões se o cargo pode autorizar ou recusar solicitações de inscrição.
+ */
+export const hasApproveEnrollmentPermission = (
+  role: RoleType,
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>
+): boolean => {
+  if (role === 'admin_tecnico') return true;
+  if (permissionsMatrix?.[role] && Array.isArray(permissionsMatrix[role].members)) {
+    return permissionsMatrix[role].members.includes('APPROVE_ENROLLMENT');
+  }
+  return hasPermission(role, 'members', 'APPROVE_ENROLLMENT');
+};
+
+
 
 

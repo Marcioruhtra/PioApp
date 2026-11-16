@@ -1,8 +1,26 @@
 import React, { useState } from 'react';
-import { AlertCircle, Loader2, CheckSquare, Square } from 'lucide-react';
+import {
+  AlertCircle,
+  Loader2,
+  CheckSquare,
+  Square,
+  UserPlus,
+  CheckCircle2,
+  Clock,
+  Search,
+} from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import { doc, getDoc, getDocFromServer } from 'firebase/firestore';
 import { db, auth, setPersistence, browserLocalPersistence, browserSessionPersistence } from '../../firebase';
+import { Modal } from '../common/Modal';
+import { MemberRegistrationForm } from '../members/MemberRegistrationForm';
+import { EnrollmentStatusCard } from '../members/EnrollmentStatusCard';
+import { MemberEnrollmentRequest } from '../../types';
+import {
+  lookupMemberOrEnrollmentStatus,
+  reconcileApprovedEnrollmentsWithMembers,
+  UnifiedEnrollmentLookupResult,
+} from '../../services/enrollmentService';
 
 interface LoginScreenProps {
   onLogin: () => void;
@@ -15,13 +33,28 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   sessionExpiredMessage,
   onClearSessionExpiredMessage,
 }) => {
-  const { state, setCurrentUser, requestPasswordReset, syncFromCloud, isCloudLoading } = useClub();
+  const {
+    state,
+    setCurrentUser,
+    requestPasswordReset,
+    syncFromCloud,
+    isCloudLoading,
+    submitEnrollmentRequest,
+  } = useClub();
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
   const [showForgotPwd, setShowForgotPwd] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Estados de Inscrição Direta no Clube (Ecrã de Login)
+  const [isEnrollmentModalOpen, setIsEnrollmentModalOpen] = useState(false);
+  const [enrollmentModalTab, setEnrollmentModalTab] = useState<'form' | 'status'>('form');
+  const [submittedRequest, setSubmittedRequest] = useState<MemberEnrollmentRequest | null>(null);
+  const [statusLookupBI, setStatusLookupBI] = useState('');
+  const [statusLookupBirth, setStatusLookupBirth] = useState('');
+  const [lookupResult, setLookupResult] = useState<UnifiedEnrollmentLookupResult | null | 'not_found'>(null);
 
   const GENERIC_LOGIN_ERROR = 'Não foi possível iniciar sessão. Verifique as credenciais ou contacte o administrador.';
 
@@ -199,6 +232,51 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
   };
 
+  const handleLookupEnrollmentStatus = async (e: React.FormEvent) => {
+    e.preventDefault();
+    let requests = state.enrollmentRequests || [];
+    let members = state.members || [];
+    let currentYear = state.settings.currentYear || new Date().getFullYear();
+    let deletions = state.deletionRequests || [];
+
+    if (db && (db as any).app) {
+      try {
+        const snap = await getDocFromServer(doc(db, 'club_data', 'main_state')).catch(() =>
+          getDoc(doc(db, 'club_data', 'main_state'))
+        );
+        if (snap && snap.exists()) {
+          const cloudData = snap.data();
+          if (cloudData) {
+            if (Array.isArray(cloudData.enrollmentRequests)) {
+              requests = cloudData.enrollmentRequests;
+            }
+            if (Array.isArray(cloudData.members)) {
+              members = cloudData.members;
+            }
+            if (Array.isArray(cloudData.deletionRequests)) {
+              deletions = cloudData.deletionRequests;
+            }
+            if (cloudData.settings?.currentYear) {
+              currentYear = cloudData.settings.currentYear;
+            }
+            syncFromCloud(cloudData);
+          }
+        }
+      } catch {
+        // Usa estado atual em cache em caso de falha de rede
+      }
+    }
+
+    const reconciled = reconcileApprovedEnrollmentsWithMembers(members, requests, currentYear, deletions);
+    const match = lookupMemberOrEnrollmentStatus(
+      reconciled.members,
+      reconciled.enrollmentRequests,
+      statusLookupBI,
+      statusLookupBirth
+    );
+    setLookupResult(match || 'not_found');
+  };
+
   return (
     <div className="min-h-[100dvh] flex items-center justify-center bg-slate-900 p-4 safe-area-pt safe-area-pb">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-6 sm:p-8 my-auto">
@@ -211,74 +289,105 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         <p className="text-xs text-slate-500 mb-5 sm:mb-6 text-center">Sistema de Gestão Oficial</p>
 
         {!showForgotPwd ? (
-          <form onSubmit={handleLogin} className="space-y-4">
-            {sessionExpiredMessage && !errorMessage && (
-              <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg text-xs flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
-                <span>{sessionExpiredMessage}</span>
-              </div>
-            )}
-            {errorMessage && (
-              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
-                <span>{errorMessage}</span>
-              </div>
-            )}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">E-mail ou Nº de Matrícula</label>
-              <input
-                type="text"
-                placeholder="ex: e-mail ou nº de matrícula"
-                value={identifier}
-                onChange={(e) => {
-                  setIdentifier(e.target.value);
-                  setErrorMessage(null);
-                }}
-                className="w-full p-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-900 focus:outline-none"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">Palavra-passe</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => {
-                  setPassword(e.target.value);
-                  setErrorMessage(null);
-                }}
-                className="w-full p-2.5 border rounded-lg text-sm focus:ring-2 focus:ring-blue-900 focus:outline-none"
-                required
-              />
-            </div>
-
-            <div className="flex items-center gap-2 cursor-pointer" onClick={() => setRememberMe(!rememberMe)}>
-              {rememberMe ? <CheckSquare className="w-4 h-4 text-blue-900" /> : <Square className="w-4 h-4 text-slate-400" />}
-              <span className="text-xs text-slate-600 font-medium">Lembrar credenciais no dispositivo</span>
-            </div>
-
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-2.5 bg-blue-900 hover:bg-blue-800 text-white rounded-lg font-bold text-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer shadow-md"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>A consultar credenciais na nuvem...</span>
-                </>
-              ) : (
-                'Entrar'
+          <div className="space-y-4">
+            <form onSubmit={handleLogin} className="space-y-4">
+              {sessionExpiredMessage && !errorMessage && (
+                <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg text-xs flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
+                  <span>{sessionExpiredMessage}</span>
+                </div>
               )}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowForgotPwd(true)}
-              className="w-full text-xs text-slate-500 hover:text-blue-900 transition-colors"
-            >
-              Esqueci-me da senha
-            </button>
-          </form>
+              {errorMessage && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                  <span>{errorMessage}</span>
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">E-mail ou Nº de Matrícula</label>
+                <input
+                  type="text"
+                  placeholder="ex: e-mail ou nº de matrícula"
+                  value={identifier}
+                  onChange={(e) => {
+                    setIdentifier(e.target.value);
+                    setErrorMessage(null);
+                  }}
+                  className="w-full p-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-900 focus:outline-none"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Palavra-passe</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setErrorMessage(null);
+                  }}
+                  className="w-full p-2.5 border rounded-lg text-sm focus:ring-2 focus:ring-blue-900 focus:outline-none"
+                  required
+                />
+              </div>
+
+              <div className="flex items-center gap-2 cursor-pointer" onClick={() => setRememberMe(!rememberMe)}>
+                {rememberMe ? <CheckSquare className="w-4 h-4 text-blue-900" /> : <Square className="w-4 h-4 text-slate-400" />}
+                <span className="text-xs text-slate-600 font-medium">Lembrar credenciais no dispositivo</span>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full py-2.5 bg-blue-900 hover:bg-blue-800 text-white rounded-lg font-bold text-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer shadow-md"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>A consultar credenciais na nuvem...</span>
+                  </>
+                ) : (
+                  'Entrar'
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowForgotPwd(true)}
+                className="w-full text-xs text-slate-500 hover:text-blue-900 transition-colors"
+              >
+                Esqueci-me da senha
+              </button>
+            </form>
+
+            {/* Secção de Inscrição Direta no Clube (Exclusiva do Ecrã de Login) */}
+            <div className="pt-4 border-t border-slate-200 space-y-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSubmittedRequest(null);
+                  setEnrollmentModalTab('form');
+                  setIsEnrollmentModalOpen(true);
+                }}
+                className="w-full py-2.5 px-4 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 rounded-lg font-bold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <UserPlus className="w-4 h-4 text-emerald-700" />
+                <span>Fazer Inscrição no Clube</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSubmittedRequest(null);
+                  setLookupResult(null);
+                  setEnrollmentModalTab('status');
+                  setIsEnrollmentModalOpen(true);
+                }}
+                className="w-full text-[11px] font-semibold text-slate-500 hover:text-blue-900 transition-colors flex items-center justify-center gap-1 cursor-pointer"
+              >
+                <Search className="w-3 h-3" />
+                <span>Consultar estado de inscrição</span>
+              </button>
+            </div>
+          </div>
         ) : (
           <form onSubmit={handleRequestPasswordReset} className="space-y-4">
             {resetFeedback && (
@@ -322,6 +431,193 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           </form>
         )}
       </div>
+
+      {/* Modal: Inscrição Direta no Clube (Ecrã de Login) */}
+      <Modal
+        isOpen={isEnrollmentModalOpen}
+        onClose={() => {
+          setIsEnrollmentModalOpen(false);
+          setSubmittedRequest(null);
+        }}
+        title="Inscrição Direta no Clube"
+        description="Preencha a ficha oficial de inscrição para avaliação e autorização da Secretaria do Clube."
+        maxWidth="3xl"
+      >
+        <div className="space-y-5">
+          {/* Alternador entre Formulário de Inscrição e Consulta de Estado */}
+          <div className="flex border-b border-slate-200 gap-4">
+            <button
+              type="button"
+              onClick={() => setEnrollmentModalTab('form')}
+              className={`pb-2.5 px-1 text-xs font-bold border-b-2 transition-colors flex items-center gap-1.5 ${
+                enrollmentModalTab === 'form'
+                  ? 'border-blue-900 text-blue-900'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>Formulário de Inscrição</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setEnrollmentModalTab('status')}
+              className={`pb-2.5 px-1 text-xs font-bold border-b-2 transition-colors flex items-center gap-1.5 ${
+                enrollmentModalTab === 'status'
+                  ? 'border-blue-900 text-blue-900'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Search className="w-3.5 h-3.5" />
+              <span>Consultar Estado da Inscrição</span>
+            </button>
+          </div>
+
+          {enrollmentModalTab === 'form' ? (
+            submittedRequest ? (
+              <div className="p-5 bg-emerald-50 border border-emerald-200 rounded-xl space-y-4 text-xs">
+                <div className="flex items-start gap-3">
+                  <CheckCircle2 className="w-6 h-6 text-emerald-700 shrink-0 mt-0.5" />
+                  <div>
+                    <h3 className="text-sm font-black text-emerald-950">
+                      Solicitação de Inscrição Submetida com Sucesso!
+                    </h3>
+                    <p className="text-emerald-900 mt-1 leading-relaxed">
+                      A sua ficha foi enviada para a aba <strong>Solicitação de Inscrição</strong> e aguarda a autorização da Secretaria do Clube.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-white p-4 rounded-lg border border-emerald-200 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Protocolo da Solicitação</span>
+                    <span className="font-mono font-black text-blue-900 text-sm">{submittedRequest.protocolNumber}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Nº de Matrícula Gerado Automaticamente</span>
+                    <span className="font-mono font-black text-blue-900 text-sm">{submittedRequest.manualNumber}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Nome Completo</span>
+                    <span className="font-semibold text-slate-900">{submittedRequest.fullName}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Estado Atual</span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 font-bold text-[10px]">
+                      <Clock className="w-3 h-3" />
+                      Pendente · Aguardando visualização da Secretaria
+                    </span>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <span className="text-[10px] uppercase font-bold text-slate-500 block">Entrega de Documentos (B.I. e Fotografia)</span>
+                    <span className="font-semibold text-slate-800">
+                      {submittedRequest.documentDeliveryMethod === 'anexar_digital'
+                        ? `Anexados digitalmente (${[submittedRequest.biDocumentFileName, submittedRequest.photoDocumentFileName]
+                            .filter(Boolean)
+                            .join(' · ')})`
+                        : 'Entrega presencial na Secretaria do Clube'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setSubmittedRequest(null)}
+                    className="px-4 py-2 text-xs font-semibold text-emerald-900 bg-white border border-emerald-300 hover:bg-emerald-100 rounded-lg transition-colors"
+                  >
+                    Fazer Outra Inscrição
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEnrollmentModalOpen(false);
+                      setSubmittedRequest(null);
+                    }}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg transition-colors"
+                  >
+                    Concluir
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <MemberRegistrationForm
+                mode="self_enrollment"
+                units={state.settings.units}
+                onSubmit={async (formData) => {
+                  const res = await submitEnrollmentRequest(formData);
+                  if (res.success && res.request) {
+                    setSubmittedRequest(res.request);
+                  }
+                  return res;
+                }}
+                onCancel={() => {
+                  setIsEnrollmentModalOpen(false);
+                  setSubmittedRequest(null);
+                }}
+              />
+            )
+          ) : (
+            <div className="space-y-4 text-xs">
+              <p className="text-slate-600">
+                Candidatos com inscrição submetida ou membros já registados na Secretaria: introduza o seu{' '}
+                <strong>Número do B.I. (ou Nº de Matrícula)</strong> e a sua{' '}
+                <strong>Data de Nascimento</strong> para consultar o estado da inscrição e verificar se está{' '}
+                <strong>Regularizado</strong> ou com <strong>Falta de Documento</strong>.
+              </p>
+
+              <form onSubmit={handleLookupEnrollmentStatus} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Nº do B.I. ou Matrícula</label>
+                  <input
+                    type="text"
+                    placeholder="007849312LA041 ou EBX-..."
+                    value={statusLookupBI}
+                    onChange={(e) => {
+                      setStatusLookupBI(e.target.value);
+                      setLookupResult(null);
+                    }}
+                    className="w-full p-2 border border-slate-300 rounded font-mono uppercase"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Data de Nascimento</label>
+                  <input
+                    type="date"
+                    value={statusLookupBirth}
+                    onChange={(e) => {
+                      setStatusLookupBirth(e.target.value);
+                      setLookupResult(null);
+                    }}
+                    className="w-full p-2 border border-slate-300 rounded"
+                    required
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-blue-900 hover:bg-blue-800 text-white font-bold rounded-lg transition-colors"
+                >
+                  Consultar Estado
+                </button>
+              </form>
+
+              {lookupResult === 'not_found' && (
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700">
+                  Nenhum registo de membro ou solicitação de inscrição encontrado com estes dados.
+                </div>
+              )}
+
+              {lookupResult && lookupResult !== 'not_found' && (
+                <EnrollmentStatusCard
+                  registeredMember={lookupResult.member}
+                  request={lookupResult.request}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 };
+
