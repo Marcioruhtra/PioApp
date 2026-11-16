@@ -1870,7 +1870,7 @@ function runTests() {
   // Após recusa, candidato pode submeter nova ficha corrigida e consulta devolve a mais recente
   const correctedReq = {
     ...buildEnrollmentRequest(phaseForm, 'EBX-6540719', 2026, [rejectedReq]),
-    submittedAt: '2026-11-16T12:00:00.000Z',
+    submittedAt: '2026-11-16T18:00:00.000Z',
   };
   const validDuringCorrection = validateEnrollmentSubmission(phaseForm, existingEnrollmentMembers, [rejectedReq]);
   assert(

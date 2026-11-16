@@ -46,6 +46,7 @@ import { PrintDocumentModal } from '../common/PrintDocumentModal';
 import { ProofDocumentViewerModal } from '../common/ProofDocumentViewerModal';
 import { MemberDigitalCardModal } from '../common/MemberDigitalCardModal';
 import { processProofFile } from '../../utils/fileUpload';
+import { EnrollmentStatusCard } from '../members/EnrollmentStatusCard';
 import {
   calculateMemberQuotaSummary,
   getTodayISODate,
@@ -524,6 +525,15 @@ export const MemberPortalModule: React.FC = () => {
 
       {activePortalTab === 'geral' && (
         <div className="space-y-6">
+          {/* Situação Documental na Secretaria */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-5 space-y-3">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+              <UserCheck className="w-4 h-4 text-blue-900" />
+              <span>Situação Documental na Secretaria</span>
+            </h2>
+            <EnrollmentStatusCard registeredMember={member} />
+          </div>
+
           {/* Alerta Institucional de Pagamentos */}
           <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl text-xs text-amber-900 flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 shrink-0 text-amber-700 mt-0.5" />
