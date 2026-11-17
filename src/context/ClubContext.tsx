@@ -67,6 +67,7 @@ import {
   canGrantManageEnrollmentPeriod,
   hasManageEnrollmentPeriodPermission,
   canExecuteMemberDeletion,
+  sanitizeRoleType,
 } from '../services/permissionService';
 import {
   MemberRegistrationFormData,
@@ -404,7 +405,9 @@ const getInitialUserSession = (): UserAccount | null => {
   if (session) {
     try {
       const parsed = JSON.parse(session);
-      if (parsed && parsed.id && parsed.role) return parsed;
+      if (parsed && parsed.id && parsed.role) {
+        return { ...parsed, role: sanitizeRoleType(parsed.role) };
+      }
     } catch {
       sessionStorage.removeItem('pioapp_current_user');
     }
@@ -413,7 +416,9 @@ const getInitialUserSession = (): UserAccount | null => {
   if (local) {
     try {
       const parsed = JSON.parse(local);
-      if (parsed && parsed.id && parsed.role) return parsed;
+      if (parsed && parsed.id && parsed.role) {
+        return { ...parsed, role: sanitizeRoleType(parsed.role) };
+      }
     } catch {
       localStorage.removeItem('pioapp_current_user');
     }
@@ -528,7 +533,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const reconciled = reconcileUsersAndMembers(remoteUsers, reconciledEnrollments.members);
 
     // Atualiza em tempo real os dados do utilizador atualmente autenticado neste dispositivo (ex: nome, email, Nº de Membro, senha, cargo, estado ativo)
-    let nextCurrentUser = prev.currentUser;
+    let nextCurrentUser = prev.currentUser
+      ? { ...prev.currentUser, role: sanitizeRoleType(prev.currentUser.role) }
+      : prev.currentUser;
     if (prev.currentUser && prev.currentUser.id !== 'INST-001' && reconciled.users.length > 0) {
       const liveUser = reconciled.users.find(
         (u) =>
@@ -3845,7 +3852,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     totalRequirements: number
   ) => {
     if (!can('training', 'CREATE')) {
-      return { success: false, error: 'Sem permissão para inscrever membro em classe ou especialidade.' };
+      return { success: false, error: 'Sem permissão para inscrever membro em módulo ou medalha.' };
     }
 
     const nextId = `PRG-${Date.now().toString().slice(-4)}`;
@@ -3968,7 +3975,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       currentUser.role !== 'diretor' &&
       currentUser.role !== 'admin_tecnico'
     ) {
-      return { success: false, error: 'Apenas a Direção possui permissão para retirar/desmatricular um membro da classe ou especialidade.' };
+      return { success: false, error: 'Apenas a Direção possui permissão para retirar/desmatricular um membro do módulo ou medalha.' };
     }
 
     const item = state.trainingProgress.find((p) => p.id === progressId);
@@ -3990,10 +3997,10 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     requirements?: string[];
   }) => {
     if (!can('training', 'CREATE') && !can('training', 'ADMIN') && currentUser.role !== 'diretor' && currentUser.role !== 'instrutor' && currentUser.role !== 'admin_tecnico') {
-      return { success: false, error: 'Apenas Diretores e Instrutores autorizados podem criar novas classes.' };
+      return { success: false, error: 'Apenas Diretores e Instrutores autorizados podem criar novos módulos.' };
     }
     if (!data.title.trim()) {
-      return { success: false, error: 'O título da classe é obrigatório.' };
+      return { success: false, error: 'O título do módulo é obrigatório.' };
     }
 
     const code = (data.code && data.code.trim()) 
@@ -4019,7 +4026,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       classes: [...prev.classes, newClass],
     }));
 
-    logAction('training', 'CRIACAO_CLASSE', `Nova classe criada: ${newClass.title} (${newClass.code}) com ${reqs.length} requisitos`, newClass.id, newClass.title);
+    logAction('training', 'CRIACAO_CLASSE', `Novo módulo criado: ${newClass.title} (${newClass.code}) com ${reqs.length} requisitos`, newClass.id, newClass.title);
     return { success: true, id: newClass.id };
   };
 
@@ -4030,7 +4037,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     requirementsCount?: number
   ) => {
     if (!can('training', 'EDIT') && !can('training', 'ADMIN') && currentUser.role !== 'diretor' && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'instrutor') {
-      return { success: false, error: 'Não possui permissão para editar classes.' };
+      return { success: false, error: 'Não possui permissão para editar módulos.' };
     }
 
     let title: string;
@@ -4107,7 +4114,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     });
 
-    logAction('training', 'ATUALIZACAO_CLASSE', `Classe atualizada: ${title}`, id, title);
+    logAction('training', 'ATUALIZACAO_CLASSE', `Módulo atualizado: ${title}`, id, title);
     return { success: true };
   };
 
@@ -4118,10 +4125,10 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     requirements?: string[];
   }) => {
     if (!can('training', 'CREATE') && !can('training', 'ADMIN') && currentUser.role !== 'diretor' && currentUser.role !== 'instrutor' && currentUser.role !== 'admin_tecnico') {
-      return { success: false, error: 'Apenas Diretores e Instrutores autorizados podem criar novas especialidades.' };
+      return { success: false, error: 'Apenas Diretores e Instrutores autorizados podem criar novas medalhas.' };
     }
     if (!data.title.trim()) {
-      return { success: false, error: 'O título da especialidade é obrigatório.' };
+      return { success: false, error: 'O título da medalha é obrigatório.' };
     }
 
     const code = (data.code && data.code.trim())
@@ -4147,7 +4154,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       specialties: [...prev.specialties, newSpecialty],
     }));
 
-    logAction('training', 'CRIACAO_ESPECIALIDADE', `Nova especialidade criada: ${newSpecialty.title} (${newSpecialty.category}) com ${reqs.length} requisitos`, newSpecialty.id, newSpecialty.title);
+    logAction('training', 'CRIACAO_ESPECIALIDADE', `Nova medalha criada: ${newSpecialty.title} (${newSpecialty.category}) com ${reqs.length} requisitos`, newSpecialty.id, newSpecialty.title);
     return { success: true, id: newSpecialty.id };
   };
 
@@ -4158,7 +4165,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     requirementsCount?: number
   ) => {
     if (!can('training', 'EDIT') && !can('training', 'ADMIN') && currentUser.role !== 'diretor' && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'instrutor') {
-      return { success: false, error: 'Não possui permissão para editar especialidades.' };
+      return { success: false, error: 'Não possui permissão para editar medalhas.' };
     }
 
     let title: string;
@@ -4235,33 +4242,33 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     });
 
-    logAction('training', 'ATUALIZACAO_ESPECIALIDADE', `Formação/Especialidade atualizada: ${title}`, id, title);
+    logAction('training', 'ATUALIZACAO_ESPECIALIDADE', `Formação/Medalha atualizada: ${title}`, id, title);
     return { success: true };
   };
 
   const deleteTrainingClass = (id: string) => {
     if (!can('training', 'ADMIN') && !can('training', 'EDIT') && !['diretor', 'admin_tecnico', 'instrutor', 'secretario'].includes(currentUser.role)) {
-      return { success: false, error: 'Apenas Diretores, Secretários e Instrutores têm autorização para remover classes.' };
+      return { success: false, error: 'Apenas Diretores, Secretários e Instrutores têm autorização para remover módulos.' };
     }
     setState((prev) => ({
       ...prev,
       classes: prev.classes.filter((c) => c.id !== id),
       trainingProgress: prev.trainingProgress.filter((p) => p.targetId !== id),
     }));
-    logAction('training', 'REMOCAO_CLASSE', `Classe removida: ${id}`, id);
+    logAction('training', 'REMOCAO_CLASSE', `Módulo removido: ${id}`, id);
     return { success: true };
   };
 
   const deleteSpecialtyHonor = (id: string) => {
     if (!can('training', 'ADMIN') && !can('training', 'EDIT') && !['diretor', 'admin_tecnico', 'instrutor', 'secretario'].includes(currentUser.role)) {
-      return { success: false, error: 'Apenas Diretores, Secretários e Instrutores têm autorização para remover especialidades.' };
+      return { success: false, error: 'Apenas Diretores, Secretários e Instrutores têm autorização para remover medalhas.' };
     }
     setState((prev) => ({
       ...prev,
       specialties: prev.specialties.filter((s) => s.id !== id),
       trainingProgress: prev.trainingProgress.filter((p) => p.targetId !== id),
     }));
-    logAction('training', 'REMOCAO_ESPECIALIDADE', `Especialidade removida: ${id}`, id);
+    logAction('training', 'REMOCAO_ESPECIALIDADE', `Medalha removida: ${id}`, id);
     return { success: true };
   };
 

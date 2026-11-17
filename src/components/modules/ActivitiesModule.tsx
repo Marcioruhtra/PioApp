@@ -1560,7 +1560,7 @@ export const ActivitiesModule: React.FC = () => {
                 <option value="reuniao_regular">Reunião Regular</option>
                 <option value="acampamento">Acampamento / Bivaque</option>
                 <option value="civica">Atividade Cívica</option>
-                <option value="formacao">Formação e Classes</option>
+                <option value="formacao">Formação e Módulos</option>
                 <option value="diretoria">Reunião de Diretoria</option>
               </select>
             </div>

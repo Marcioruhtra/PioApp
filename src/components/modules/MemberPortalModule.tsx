@@ -753,12 +753,12 @@ export const MemberPortalModule: React.FC = () => {
           </div>
         </div>
 
-        {/* Bloco 2: Minhas Classes e Formação */}
+        {/* Bloco 2: Meus Módulos e Medalhas */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50">
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
               <GraduationCap className="w-4 h-4 text-blue-900" />
-              <span>Classes e Especialidades em Curso</span>
+              <span>Módulos e Medalhas em Curso</span>
             </h2>
           </div>
 

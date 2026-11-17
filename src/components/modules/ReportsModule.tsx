@@ -167,7 +167,7 @@ export const ReportsModule: React.FC = () => {
             {reportType === 'members' && 'Relatório Oficial de Efetivo e Matrículas'}
             {reportType === 'treasury' && 'Mapa Geral de Arrecadação e Execução Financeira'}
             {reportType === 'activities' && 'Relatório de Atividades, Presenças e Custos'}
-            {reportType === 'training' && 'Mapa Geral de Classes, Especialidades e Investidura'}
+            {reportType === 'training' && 'Mapa Geral de Módulos, Medalhas e Investidura'}
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
             Ano Fiscal: {state.settings.currentYear} · Emitido em: {formatDateAO(new Date().toISOString())}
@@ -275,7 +275,7 @@ export const ReportsModule: React.FC = () => {
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold text-[10px] uppercase">
                   <th className="py-2.5 px-3">Membro</th>
                   <th className="py-2.5 px-3">Tipo</th>
-                  <th className="py-2.5 px-3">Classe / Especialidade</th>
+                  <th className="py-2.5 px-3">Módulo / Medalha</th>
                   <th className="py-2.5 px-3">Progresso</th>
                   <th className="py-2.5 px-3">Instrutor</th>
                   <th className="py-2.5 px-3">Investidura</th>
@@ -289,7 +289,7 @@ export const ReportsModule: React.FC = () => {
                   return (
                     <tr key={tp.id}>
                       <td className="py-2.5 px-3 font-semibold">{mem?.fullName || tp.memberId}</td>
-                      <td className="py-2.5 px-3 capitalize">{tp.type}</td>
+                      <td className="py-2.5 px-3">{tp.type === 'classe' ? 'Módulo' : 'Medalha'}</td>
                       <td className="py-2.5 px-3 font-bold">{tp.targetTitle}</td>
                       <td className="py-2.5 px-3 font-bold text-blue-900">{pct}% ({tp.completedRequirements.length}/{tp.totalRequirements})</td>
                       <td className="py-2.5 px-3">{tp.instructorName}</td>

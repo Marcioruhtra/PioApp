@@ -30,6 +30,7 @@ import {
   hasManageEnrollmentPeriodPermission,
   canExecuteMemberDeletion,
   ACTION_LABELS,
+  sanitizeRoleType,
 } from '../src/services/permissionService';
 import {
   MemberRegistrationFormData,
@@ -2468,7 +2469,7 @@ function runTests() {
     id: 'USR-LINKED-MAN',
     name: 'Membro Vinculado por Nº Manual',
     email: 'manual.only@clubedalvorada.ao',
-    role: 'conselheiro',
+    role: 'tesoureiro',
     manualNumber: 'emb-888',
     active: true,
     createdAt: '2026-01-01T00:00:00Z',
@@ -2669,6 +2670,67 @@ function runTests() {
     dirReconciled.members.find((m) => m.id === 'CDA-MEM-DIR')?.unitOrTeam === undefined &&
       dirReconciled.members.find((m) => m.id === 'CDA-MEM-REG-TEAM')?.unitOrTeam === 'Equipa Águias',
     "reconcileUsersAndMembers remove automaticamente qualquer equipa anterior de membros com cargo de Direção mantendo a equipa dos restantes"
+  );
+
+  // =========================================================================
+  // TESTE 43: Remoção dos cargos de Conselheiro e Diretor de Música e Louvor
+  // =========================================================================
+  console.log("\n=== TESTE 43: REMOÇÃO DOS CARGOS CONSELHEIRO E MÚSICA ===");
+  const roleKeys = Object.keys(ROLE_LABELS);
+  const matrixKeys = Object.keys(ROLE_PERMISSIONS_MATRIX);
+  assert(
+    !roleKeys.includes('conselheiro') && !roleKeys.includes('musica'),
+    "ROLE_LABELS não contém os cargos removidos 'conselheiro' nem 'musica'"
+  );
+  assert(
+    !matrixKeys.includes('conselheiro') && !matrixKeys.includes('musica'),
+    "ROLE_PERMISSIONS_MATRIX não contém os cargos removidos 'conselheiro' nem 'musica'"
+  );
+
+  assert(
+    sanitizeRoleType('conselheiro') === 'membro' &&
+      sanitizeRoleType('musica') === 'membro' &&
+      sanitizeRoleType('diretor') === 'diretor' &&
+      sanitizeRoleType('secretario') === 'secretario',
+    "sanitizeRoleType converte cargos removidos ('conselheiro', 'musica') para 'membro' e preserva cargos válidos"
+  );
+
+  const legacyMatrix: any = {
+    ...ROLE_PERMISSIONS_MATRIX,
+    conselheiro: { dashboard: ['VIEW'] },
+    musica: { music: ['VIEW', 'CREATE'] },
+  };
+  const cleanedMatrix = syncPermissionsMatrix(legacyMatrix);
+  assert(
+    !Object.prototype.hasOwnProperty.call(cleanedMatrix, 'conselheiro') &&
+      !Object.prototype.hasOwnProperty.call(cleanedMatrix, 'musica'),
+    "syncPermissionsMatrix remove automaticamente as chaves legadas 'conselheiro' e 'musica' da grelha de permissões"
+  );
+
+  const legacyUsers: any[] = [
+    {
+      id: 'USR-LEG-CONS',
+      name: 'Ex-Conselheiro',
+      email: 'ex.conselheiro@clubedalvorada.ao',
+      role: 'conselheiro',
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'USR-LEG-MUS',
+      name: 'Ex-Diretor de Música',
+      email: 'ex.musica@clubedalvorada.ao',
+      role: 'musica',
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+  ];
+  const migratedLegacy = reconcileUsersAndMembers(legacyUsers, []);
+  assert(
+    migratedLegacy.changed === true &&
+      migratedLegacy.users.find((u) => u.id === 'USR-LEG-CONS')?.role === 'membro' &&
+      migratedLegacy.users.find((u) => u.id === 'USR-LEG-MUS')?.role === 'membro',
+    "reconcileUsersAndMembers migra contas legadas com cargos 'conselheiro' ou 'musica' para 'membro'"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");

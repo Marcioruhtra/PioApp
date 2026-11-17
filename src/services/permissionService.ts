@@ -65,9 +65,9 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   { module: 'activities', action: 'PRINT', description: 'Imprimir atas estruturadas e presenças' },
   { module: 'activities', action: 'ARCHIVE', description: 'Encerrar atividades concluídas' },
 
-  // Formação (Classes e Especialidades)
-  { module: 'training', action: 'VIEW', description: 'Consultar classes e especialidades' },
-  { module: 'training', action: 'CREATE', description: 'Atribuir classe/especialidade a membro' },
+  // Formação (Módulos e Medalhas)
+  { module: 'training', action: 'VIEW', description: 'Consultar módulos e medalhas' },
+  { module: 'training', action: 'CREATE', description: 'Atribuir módulo/medalha a membro' },
   { module: 'training', action: 'EDIT', description: 'Registar progresso e requisitos concluídos' },
   { module: 'training', action: 'APPROVE', description: 'Validação final de investidura (Diretor)' },
   { module: 'training', action: 'EXPORT', description: 'Exportar mapa de formação' },
@@ -300,46 +300,6 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     awards: [],
     music: ['VIEW'],
   },
-  conselheiro: {
-    dashboard: ['VIEW'],
-    associate_director: [],
-    members: ['VIEW'],
-    treasury: [],
-    activities: ['VIEW', 'CREATE', 'EDIT'],
-    training: ['VIEW', 'CREATE', 'EDIT'],
-    documents: ['VIEW'],
-    member_portal: ['VIEW'],
-    requests: ['VIEW', 'CREATE'],
-    reports: ['VIEW'],
-    settings: [],
-    audit: [],
-    chaplaincy: ['VIEW', 'CREATE'],
-    suggestions: ['CREATE'],
-    messaging: ['VIEW', 'CREATE'],
-    inventory: ['VIEW', 'CREATE'],
-    awards: ['VIEW', 'CREATE'],
-    music: ['VIEW', 'CREATE'],
-  },
-  musica: {
-    dashboard: ['VIEW'],
-    associate_director: [],
-    members: ['VIEW'],
-    treasury: [],
-    activities: ['VIEW', 'CREATE', 'EDIT'],
-    training: ['VIEW'],
-    documents: ['VIEW', 'CREATE', 'PRINT'],
-    member_portal: ['VIEW'],
-    requests: ['VIEW', 'CREATE'],
-    reports: ['VIEW'],
-    settings: [],
-    audit: [],
-    chaplaincy: ['VIEW'],
-    suggestions: ['CREATE'],
-    messaging: ['VIEW', 'CREATE'],
-    inventory: ['VIEW'],
-    awards: ['VIEW', 'CREATE'],
-    music: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
-  },
 };
 
 export const getRolePermissions = (role: RoleType) => ROLE_PERMISSIONS_MATRIX[role];
@@ -390,7 +350,7 @@ export const ROLE_LABELS: Record<RoleType, { label: string; description: string 
   },
   instrutor: {
     label: 'Instrutor / Guia',
-    description: 'Acompanhamento de classes, especialidades, cumprimento de requisitos e presenças.',
+    description: 'Acompanhamento de módulos, medalhas, cumprimento de requisitos e presenças.',
   },
   membro: {
     label: 'Membro / Encarregado',
@@ -400,14 +360,16 @@ export const ROLE_LABELS: Record<RoleType, { label: string; description: string 
     label: 'Capelão',
     description: 'Gestão da capelania digital, acompanhamento pastoral e intercessão.',
   },
-  conselheiro: {
-    label: 'Conselheiro / Líder de Unidade',
-    description: 'Acompanhamento direto de unidades e patrulhas, registo de presenças, progresso e requisições de material.',
-  },
-  musica: {
-    label: 'Diretor de Música e Louvor',
-    description: 'Gestão do ministério de música, ensaios, hinos do clube e escalas de louvor.',
-  },
+};
+
+/**
+ * Converte cargos legados/removidos (ex.: conselheiro, musica) ou inválidos para 'membro'.
+ */
+export const sanitizeRoleType = (role?: string | null): RoleType => {
+  if (role && Object.prototype.hasOwnProperty.call(ROLE_LABELS, role)) {
+    return role as RoleType;
+  }
+  return 'membro';
 };
 
 export const ACTION_LABELS: Record<PermissionAction, string> = {
@@ -442,6 +404,11 @@ export const syncPermissionsMatrix = (
   if (!existingMatrix) return base;
 
   const synced: Record<RoleType, Record<ModuleName, PermissionAction[]>> = JSON.parse(JSON.stringify(existingMatrix));
+  for (const existingKey of Object.keys(synced)) {
+    if (!Object.prototype.hasOwnProperty.call(base, existingKey)) {
+      delete (synced as Record<string, unknown>)[existingKey];
+    }
+  }
   const roles = Object.keys(base) as RoleType[];
   const newActions: PermissionAction[] = ['CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC'];
   const isLegacy = !newActions.some(act => synced.admin_tecnico?.treasury?.includes(act));

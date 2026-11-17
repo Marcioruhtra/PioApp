@@ -512,13 +512,13 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
               <>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60">
                   <div>
-                    <span className="text-[11px] text-slate-500">Classes Registadas</span>
+                    <span className="text-[11px] text-slate-500">Módulos Registados</span>
                     <p className="font-bold text-slate-900 dark:text-white mt-0.5 tabular-nums">
                       {dossier.training.classesCount}
                     </p>
                   </div>
                   <div>
-                    <span className="text-[11px] text-slate-500">Especialidades Registadas</span>
+                    <span className="text-[11px] text-slate-500">Medalhas Registadas</span>
                     <p className="font-bold text-slate-900 dark:text-white mt-0.5 tabular-nums">
                       {dossier.training.honorsCount}
                     </p>
@@ -533,7 +533,7 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
 
                 {dossier.training.items.length === 0 ? (
                   <div className="p-8 text-center text-slate-500 border border-slate-200 dark:border-slate-800 rounded-xl">
-                    Nenhuma classe ou especialidade atribuída a este membro até ao momento.
+                    Nenhum módulo ou medalha atribuída a este membro até ao momento.
                   </div>
                 ) : (
                   <div className="divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
@@ -549,7 +549,7 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
                               <span>{item.targetTitle}</span>
                             </div>
                             <div className="text-[11px] text-slate-500 mt-0.5">
-                              <span>{item.type === 'classe' ? 'Classe Progressiva' : 'Especialidade'}</span>
+                              <span>{item.type === 'classe' ? 'Módulo Formativo' : 'Medalha'}</span>
                               <span aria-hidden="true"> · </span>
                               <span>Instrutor: {item.instructorName}</span>
                               <span aria-hidden="true"> · </span>

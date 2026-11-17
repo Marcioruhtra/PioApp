@@ -1,4 +1,5 @@
 import { Member, RoleType, UserAccount } from '../types';
+import { sanitizeRoleType } from './permissionService';
 
 export const DIRECTION_ROLES: readonly RoleType[] = ['diretor', 'diretor_associado', 'secretario'];
 export const DIRECTION_TEAM_LABEL = 'Direção';
@@ -317,7 +318,13 @@ export const reconcileUsersAndMembers = (
   const memberIndexById = new Map<string, number>();
   nextMembers.forEach((m, idx) => memberIndexById.set(m.id, idx));
 
-  const nextUsers = users.map((u) => {
+  const nextUsers = users.map((rawUser) => {
+    const normalizedRole = sanitizeRoleType(rawUser.role);
+    const u: UserAccount = rawUser.role !== normalizedRole ? { ...rawUser, role: normalizedRole } : rawUser;
+    if (rawUser.role !== normalizedRole) {
+      changed = true;
+    }
+
     if (isInstitutionalAccountRecord(u)) {
       if (u.linkedMemberId || u.manualNumber) {
         changed = true;

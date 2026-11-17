@@ -1538,9 +1538,9 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
                 onChange={(e) => setTrainingTypeFilter(e.target.value as any)}
                 className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
               >
-                <option value="todos">Classes & Especialidades</option>
-                <option value="classe">Apenas Classes</option>
-                <option value="especialidade">Apenas Especialidades</option>
+                <option value="todos">Módulos & Medalhas</option>
+                <option value="classe">Apenas Módulos</option>
+                <option value="especialidade">Apenas Medalhas</option>
               </select>
 
               <select
@@ -1566,7 +1566,7 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
                     <th className="py-3 px-4">Membro</th>
                     <th className="py-3 px-3">Equipa</th>
-                    <th className="py-3 px-3">Classe / Especialidade</th>
+                    <th className="py-3 px-3">Módulo / Medalha</th>
                     <th className="py-3 px-3">Instrutor</th>
                     <th className="py-3 px-3 text-right">Requisitos</th>
                     <th className="py-3 px-4 text-right">Situação</th>
@@ -1586,7 +1586,7 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
                       </td>
                       <td className="py-3 px-3">
                         <div className="font-semibold text-slate-900">{progress.targetTitle}</div>
-                        <div className="text-[11px] text-slate-500 capitalize">{progress.type}</div>
+                        <div className="text-[11px] text-slate-500">{progress.type === 'classe' ? 'Módulo' : 'Medalha'}</div>
                       </td>
                       <td className="py-3 px-3 text-slate-600">{progress.instructorName}</td>
                       <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-slate-800">
@@ -1867,7 +1867,7 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
           </div>
 
           <div>
-            <label className="block font-semibold text-slate-700 mb-1">Líder / Conselheiro Responsável</label>
+            <label className="block font-semibold text-slate-700 mb-1">Líder Responsável</label>
             <select
               value={unitForm.leaderUserId}
               onChange={(e) => setUnitForm({ ...unitForm, leaderUserId: e.target.value })}
@@ -2007,7 +2007,7 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
               required
               value={directiveForm.title}
               onChange={(e) => setDirectiveForm({ ...directiveForm, title: e.target.value })}
-              placeholder="Ex.: Conclusão dos requisitos de Classe até ao encerramento do trimestre"
+              placeholder="Ex.: Conclusão dos requisitos de Módulo até ao encerramento do trimestre"
               className="w-full px-3 py-2 border border-slate-200 rounded-lg"
             />
           </div>
