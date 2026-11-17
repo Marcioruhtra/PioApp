@@ -66,6 +66,8 @@ import {
   hasApproveEnrollmentPermission,
   canGrantManageEnrollmentPeriod,
   hasManageEnrollmentPeriodPermission,
+  canExecuteMemberDeletion,
+  sanitizeRoleType,
 } from '../services/permissionService';
 import {
   MemberRegistrationFormData,
@@ -96,6 +98,9 @@ import {
   syncMemberChangesToUsers,
   syncUserWithLinkedMember,
   getStrictLinkedMember,
+  removeLinkedAccountsForMember,
+  isDirectionMember,
+  isDirectionRole,
 } from '../services/accountSyncService';
 import {
   DEFAULT_QUOTA_FEE_ID,
@@ -338,7 +343,7 @@ interface ClubContextValue {
   updateUnit: (id: string, name: string, category: MemberCategory | 'mista', leaderUserId?: string) => { success: boolean; error?: string };
   deleteUnit: (id: string) => { success: boolean; error?: string };
   assignMemberToUnit: (memberId: string, unitOrTeam?: string) => { success: boolean; error?: string };
-  deleteMember: (id: string, directionAuthorized?: boolean) => { success: boolean; error?: string };
+  deleteMember: (id: string, directionAuthorized?: boolean, reason?: string) => { success: boolean; error?: string };
   selfResetPassword: (newPassword: string) => { success: boolean; error?: string; nextAllowedDate?: string; daysRemaining?: number };
   updateMemberCategory: (memberId: string, category: MemberCategory) => { success: boolean; error?: string };
   createTreasuryAccount: (data: Omit<TreasuryAccount, 'id' | 'currentBalanceInCents' | 'active'>) => { success: boolean; id?: string; error?: string };
@@ -400,7 +405,9 @@ const getInitialUserSession = (): UserAccount | null => {
   if (session) {
     try {
       const parsed = JSON.parse(session);
-      if (parsed && parsed.id && parsed.role) return parsed;
+      if (parsed && parsed.id && parsed.role) {
+        return { ...parsed, role: sanitizeRoleType(parsed.role) };
+      }
     } catch {
       sessionStorage.removeItem('pioapp_current_user');
     }
@@ -409,7 +416,9 @@ const getInitialUserSession = (): UserAccount | null => {
   if (local) {
     try {
       const parsed = JSON.parse(local);
-      if (parsed && parsed.id && parsed.role) return parsed;
+      if (parsed && parsed.id && parsed.role) {
+        return { ...parsed, role: sanitizeRoleType(parsed.role) };
+      }
     } catch {
       localStorage.removeItem('pioapp_current_user');
     }
@@ -524,7 +533,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const reconciled = reconcileUsersAndMembers(remoteUsers, reconciledEnrollments.members);
 
     // Atualiza em tempo real os dados do utilizador atualmente autenticado neste dispositivo (ex: nome, email, Nº de Membro, senha, cargo, estado ativo)
-    let nextCurrentUser = prev.currentUser;
+    let nextCurrentUser = prev.currentUser
+      ? { ...prev.currentUser, role: sanitizeRoleType(prev.currentUser.role) }
+      : prev.currentUser;
     if (prev.currentUser && prev.currentUser.id !== 'INST-001' && reconciled.users.length > 0) {
       const liveUser = reconciled.users.find(
         (u) =>
@@ -2027,6 +2038,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updatedName = updates.fullName !== undefined ? updates.fullName : m.fullName;
         const merged = { ...m, ...updates, updatedAt: now };
         const { sanitized } = sanitizeMemberIntegrity(merged);
+        if (isDirectionMember(sanitized, state.users)) {
+          sanitized.unitOrTeam = undefined;
+        }
         savedUpdatedMember = sanitized;
         return sanitized;
       }
@@ -2390,8 +2404,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Validação da permissão do executor segundo a grelha
     if (req.operationType === 'eliminacao') {
-      if (!can('members', 'ADMIN')) {
-        return { success: false, error: 'Sem permissão na grelha para executar a eliminação definitiva de membros (members: ADMIN).' };
+      if (!canExecuteMemberDeletion(currentUser.role, state.settings.permissionsMatrix, true)) {
+        return { success: false, error: 'Sem permissão na grelha para executar a eliminação definitiva de membros.' };
       }
     } else {
       if (!can('members', 'ARCHIVE')) {
@@ -2417,10 +2431,19 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     }
     let updatedUsers = state.users;
+    let removedLinkedUsers: UserAccount[] = [];
     if (req.operationType === 'eliminacao') {
       // Remoção estrita do membro PRESERVANDO integralmente recibos, movimentos financeiros e documentos (Req 2.4)
       updatedMembers = state.members.filter(m => m.id !== req.targetId);
-      updatedUsers = removeLinkedUserAccountForMember(state.users, member);
+      const removalResult = removeLinkedAccountsForMember(state.users, member);
+      updatedUsers = removalResult.updatedUsers;
+      removedLinkedUsers = removalResult.removedUsers;
+
+      if (removedLinkedUsers.length > 0) {
+        import('../services/pushService').then(({ removePushSubscription }) => {
+          removedLinkedUsers.forEach((u) => removePushSubscription(u.id));
+        }).catch(() => {});
+      }
     }
 
     const updatedRequests = (state.deletionRequests || []).map(r => {
@@ -2436,26 +2459,45 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return r;
     });
 
+    const extraAuditEntries: AuditLogEntry[] = [
+      createAuditLog(
+        currentUser.id,
+        currentUser.name,
+        currentUser.role,
+        'members',
+        req.operationType === 'eliminacao' ? 'ELIMINACAO_MEMBRO_EXECUTADA' : 'ARQUIVAMENTO_MEMBRO_EXECUTADO',
+        `${req.operationType === 'eliminacao' ? 'Eliminação definitiva' : 'Arquivamento'} de ${member.fullName} executado após autorização da Direção.`,
+        member.id,
+        member.fullName,
+        req.reason
+      ),
+      ...removedLinkedUsers.map((linkedUser) =>
+        createAuditLog(
+          currentUser.id,
+          currentUser.name,
+          currentUser.role,
+          'audit',
+          'ELIMINACAO_CONTA_VINCULADA',
+          `Conta vinculada eliminada automaticamente (${linkedUser.email}) com a eliminação do membro ${member.fullName}, sem necessidade de autorização prévia do administrador.`,
+          linkedUser.id,
+          linkedUser.email,
+          req.reason
+        )
+      ),
+    ];
+
     const newState = {
       ...state,
       members: updatedMembers,
       users: updatedUsers,
       deletionRequests: updatedRequests,
+      auditLogs: [...extraAuditEntries, ...state.auditLogs],
       updatedAt: now,
     };
 
     setState(newState);
     saveStateToStorage(newState);
     pushToFirestore(newState);
-
-    logAction(
-      'members',
-      req.operationType === 'eliminacao' ? 'ELIMINACAO_MEMBRO_EXECUTADA' : 'ARQUIVAMENTO_MEMBRO_EXECUTADO',
-      `${req.operationType === 'eliminacao' ? 'Eliminação definitiva' : 'Arquivamento'} de ${member.fullName} executado após autorização da Direção.`,
-      member.id,
-      member.fullName,
-      req.reason
-    );
 
     return { success: true };
   };
@@ -3810,7 +3852,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     totalRequirements: number
   ) => {
     if (!can('training', 'CREATE')) {
-      return { success: false, error: 'Sem permissão para inscrever membro em classe ou especialidade.' };
+      return { success: false, error: 'Sem permissão para inscrever membro em módulo ou medalha.' };
     }
 
     const nextId = `PRG-${Date.now().toString().slice(-4)}`;
@@ -3933,7 +3975,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       currentUser.role !== 'diretor' &&
       currentUser.role !== 'admin_tecnico'
     ) {
-      return { success: false, error: 'Apenas a Direção possui permissão para retirar/desmatricular um membro da classe ou especialidade.' };
+      return { success: false, error: 'Apenas a Direção possui permissão para retirar/desmatricular um membro do módulo ou medalha.' };
     }
 
     const item = state.trainingProgress.find((p) => p.id === progressId);
@@ -3955,10 +3997,10 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     requirements?: string[];
   }) => {
     if (!can('training', 'CREATE') && !can('training', 'ADMIN') && currentUser.role !== 'diretor' && currentUser.role !== 'instrutor' && currentUser.role !== 'admin_tecnico') {
-      return { success: false, error: 'Apenas Diretores e Instrutores autorizados podem criar novas classes.' };
+      return { success: false, error: 'Apenas Diretores e Instrutores autorizados podem criar novos módulos.' };
     }
     if (!data.title.trim()) {
-      return { success: false, error: 'O título da classe é obrigatório.' };
+      return { success: false, error: 'O título do módulo é obrigatório.' };
     }
 
     const code = (data.code && data.code.trim()) 
@@ -3984,7 +4026,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       classes: [...prev.classes, newClass],
     }));
 
-    logAction('training', 'CRIACAO_CLASSE', `Nova classe criada: ${newClass.title} (${newClass.code}) com ${reqs.length} requisitos`, newClass.id, newClass.title);
+    logAction('training', 'CRIACAO_CLASSE', `Novo módulo criado: ${newClass.title} (${newClass.code}) com ${reqs.length} requisitos`, newClass.id, newClass.title);
     return { success: true, id: newClass.id };
   };
 
@@ -3995,7 +4037,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     requirementsCount?: number
   ) => {
     if (!can('training', 'EDIT') && !can('training', 'ADMIN') && currentUser.role !== 'diretor' && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'instrutor') {
-      return { success: false, error: 'Não possui permissão para editar classes.' };
+      return { success: false, error: 'Não possui permissão para editar módulos.' };
     }
 
     let title: string;
@@ -4072,7 +4114,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     });
 
-    logAction('training', 'ATUALIZACAO_CLASSE', `Classe atualizada: ${title}`, id, title);
+    logAction('training', 'ATUALIZACAO_CLASSE', `Módulo atualizado: ${title}`, id, title);
     return { success: true };
   };
 
@@ -4083,10 +4125,10 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     requirements?: string[];
   }) => {
     if (!can('training', 'CREATE') && !can('training', 'ADMIN') && currentUser.role !== 'diretor' && currentUser.role !== 'instrutor' && currentUser.role !== 'admin_tecnico') {
-      return { success: false, error: 'Apenas Diretores e Instrutores autorizados podem criar novas especialidades.' };
+      return { success: false, error: 'Apenas Diretores e Instrutores autorizados podem criar novas medalhas.' };
     }
     if (!data.title.trim()) {
-      return { success: false, error: 'O título da especialidade é obrigatório.' };
+      return { success: false, error: 'O título da medalha é obrigatório.' };
     }
 
     const code = (data.code && data.code.trim())
@@ -4112,7 +4154,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       specialties: [...prev.specialties, newSpecialty],
     }));
 
-    logAction('training', 'CRIACAO_ESPECIALIDADE', `Nova especialidade criada: ${newSpecialty.title} (${newSpecialty.category}) com ${reqs.length} requisitos`, newSpecialty.id, newSpecialty.title);
+    logAction('training', 'CRIACAO_ESPECIALIDADE', `Nova medalha criada: ${newSpecialty.title} (${newSpecialty.category}) com ${reqs.length} requisitos`, newSpecialty.id, newSpecialty.title);
     return { success: true, id: newSpecialty.id };
   };
 
@@ -4123,7 +4165,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     requirementsCount?: number
   ) => {
     if (!can('training', 'EDIT') && !can('training', 'ADMIN') && currentUser.role !== 'diretor' && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'instrutor') {
-      return { success: false, error: 'Não possui permissão para editar especialidades.' };
+      return { success: false, error: 'Não possui permissão para editar medalhas.' };
     }
 
     let title: string;
@@ -4200,33 +4242,33 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     });
 
-    logAction('training', 'ATUALIZACAO_ESPECIALIDADE', `Formação/Especialidade atualizada: ${title}`, id, title);
+    logAction('training', 'ATUALIZACAO_ESPECIALIDADE', `Formação/Medalha atualizada: ${title}`, id, title);
     return { success: true };
   };
 
   const deleteTrainingClass = (id: string) => {
     if (!can('training', 'ADMIN') && !can('training', 'EDIT') && !['diretor', 'admin_tecnico', 'instrutor', 'secretario'].includes(currentUser.role)) {
-      return { success: false, error: 'Apenas Diretores, Secretários e Instrutores têm autorização para remover classes.' };
+      return { success: false, error: 'Apenas Diretores, Secretários e Instrutores têm autorização para remover módulos.' };
     }
     setState((prev) => ({
       ...prev,
       classes: prev.classes.filter((c) => c.id !== id),
       trainingProgress: prev.trainingProgress.filter((p) => p.targetId !== id),
     }));
-    logAction('training', 'REMOCAO_CLASSE', `Classe removida: ${id}`, id);
+    logAction('training', 'REMOCAO_CLASSE', `Módulo removido: ${id}`, id);
     return { success: true };
   };
 
   const deleteSpecialtyHonor = (id: string) => {
     if (!can('training', 'ADMIN') && !can('training', 'EDIT') && !['diretor', 'admin_tecnico', 'instrutor', 'secretario'].includes(currentUser.role)) {
-      return { success: false, error: 'Apenas Diretores, Secretários e Instrutores têm autorização para remover especialidades.' };
+      return { success: false, error: 'Apenas Diretores, Secretários e Instrutores têm autorização para remover medalhas.' };
     }
     setState((prev) => ({
       ...prev,
       specialties: prev.specialties.filter((s) => s.id !== id),
       trainingProgress: prev.trainingProgress.filter((p) => p.targetId !== id),
     }));
-    logAction('training', 'REMOCAO_ESPECIALIDADE', `Especialidade removida: ${id}`, id);
+    logAction('training', 'REMOCAO_ESPECIALIDADE', `Medalha removida: ${id}`, id);
     return { success: true };
   };
 
@@ -4329,8 +4371,18 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!isAllowed) {
       return { success: false, error: 'Apenas a Direção, Secretaria e Administração podem alocar membros em equipas.' };
     }
+    const targetMember = state.members.find((m) => m.id === memberId);
+    if (!targetMember) {
+      return { success: false, error: 'Membro não encontrado.' };
+    }
+    if (isDirectionMember(targetMember, state.users) && unitOrTeam?.trim()) {
+      return {
+        success: false,
+        error: 'Membros com cargo de Direção (Diretor, Diretor-associado ou Secretário) não fazem parte de equipas — na sua ficha consta automaticamente "Direção".',
+      };
+    }
     const now = getNowISOString();
-    let memberName = '';
+    let memberName = targetMember.fullName;
     setState((prev) => ({
       ...prev,
       members: prev.members.map((m) => {
@@ -4372,31 +4424,23 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
-  const removeLinkedUserAccountForMember = (users: UserAccount[], member: Member): UserAccount[] => {
-    return users.filter(u => {
-      const isLinkedById = u.linkedMemberId && u.linkedMemberId === member.id;
-      const isLinkedByManual = u.manualNumber && u.manualNumber === member.manualNumber;
-      const isLinkedByEmail = u.email && member.email && u.email.trim().toLowerCase() === member.email.trim().toLowerCase();
-      return !(isLinkedById || isLinkedByManual || isLinkedByEmail);
-    });
-  };
-
-  const deleteMember = (id: string, directionAuthorized?: boolean) => {
-    // 1. Verificação obrigatória na grelha de autorizações (members: DELETE)
-    if (!can('members', 'DELETE')) {
-      return { success: false, error: 'A eliminação definitiva de membros exige autorização prévia da Direção configurada na grelha de permissões (members: DELETE).' };
+  const deleteMember = (id: string, directionAuthorized?: boolean, reason?: string) => {
+    // 1. Verificação na grelha de permissões (members: DELETE ou members: ADMIN)
+    // Contas vinculadas são eliminadas automaticamente sem necessidade de autorização prévia do Administrador Técnico (audit: ADMIN)
+    const hasDeletePerm = can('members', 'DELETE') || can('members', 'ADMIN');
+    if (!hasDeletePerm) {
+      return { success: false, error: 'Sem permissão na grelha (members: DELETE ou members: ADMIN) para eliminar definitivamente membros.' };
     }
-    // 2. Confirmação expressa de autorização da Direção
     const isDirectorOrAdmin = currentUser.role === 'diretor' || currentUser.role === 'admin_tecnico';
-    if (!isDirectorOrAdmin && !directionAuthorized) {
-      return { success: false, error: 'A eliminação definitiva exige a confirmação expressa de autorização prévia da Direção do Clube.' };
+    if (!isDirectorOrAdmin && !hasDeletePerm && !directionAuthorized) {
+      return { success: false, error: 'A eliminação definitiva exige permissão na grelha ou autorização da Direção do Clube.' };
     }
 
-    let memberName = '';
     const now = getNowISOString();
     const target = state.members.find(m => m.id === id);
     if (!target) return { success: false, error: 'Membro não encontrado.' };
-    memberName = target.fullName;
+    const memberName = target.fullName;
+    const cleanReason = reason?.trim();
 
     // Atualiza eventual pedido de autorização pendente/aprovado para executado
     const updatedRequests = (state.deletionRequests || []).map(r => {
@@ -4416,18 +4460,53 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     // REGRA 2.4: Preserva integralmente recibos, movimentos financeiros, comprovativos e documentos oficiais
-    const updatedUsers = removeLinkedUserAccountForMember(state.users, target);
+    // E elimina automaticamente qualquer conta de utilizador vinculada sem exigir autorização prévia do administrador
+    const { updatedUsers, removedUsers } = removeLinkedAccountsForMember(state.users, target);
+    if (removedUsers.length > 0) {
+      import('../services/pushService').then(({ removePushSubscription }) => {
+        removedUsers.forEach((u) => removePushSubscription(u.id));
+      }).catch(() => {});
+    }
+
+    const auditEntries: AuditLogEntry[] = [
+      createAuditLog(
+        currentUser.id,
+        currentUser.name,
+        currentUser.role,
+        'members',
+        'ELIMINACAO_MEMBRO',
+        `Membro eliminado definitivamente por ${currentUser.name} (${ROLE_LABELS[currentUser.role]?.label || currentUser.role}): ${memberName}`,
+        id,
+        memberName,
+        cleanReason
+      ),
+      ...removedUsers.map((linkedUser) =>
+        createAuditLog(
+          currentUser.id,
+          currentUser.name,
+          currentUser.role,
+          'audit',
+          'ELIMINACAO_CONTA_VINCULADA',
+          `Conta vinculada eliminada automaticamente (${linkedUser.email}) com a eliminação do membro ${memberName}, sem necessidade de autorização prévia do administrador.`,
+          linkedUser.id,
+          linkedUser.email,
+          cleanReason
+        )
+      ),
+    ];
+
     const newState = {
       ...state,
       members: state.members.filter(m => m.id !== id),
       users: updatedUsers,
       deletionRequests: updatedRequests,
+      auditLogs: [...auditEntries, ...state.auditLogs],
+      updatedAt: now,
     };
 
     setState(newState);
     saveStateToStorage(newState);
     pushToFirestore(newState);
-    logAction('members', 'ELIMINACAO_MEMBRO', `Membro eliminado definitivamente com autorização prévia da Direção: ${memberName}`, id, memberName);
     return { success: true };
   };
 
@@ -5351,6 +5430,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const nowISO = getNowISOString();
     const updatedUsers = state.users.map(u => (u.id === userId ? { ...u, role: newRole } : u));
     const updatedTargetUser = updatedUsers.find(u => u.id === userId);
+    const updatedMembers = isDirectionRole(newRole)
+      ? state.members.map((m) =>
+          isDirectionMember(m, updatedUsers) && m.unitOrTeam
+            ? { ...m, unitOrTeam: undefined, updatedAt: nowISO }
+            : m
+        )
+      : state.members;
     const updatedCurrentUser =
       state.currentUser.id === userId && updatedTargetUser ? updatedTargetUser : state.currentUser;
 
@@ -5374,6 +5460,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const newState: ClubDatabaseState = {
       ...state,
       users: updatedUsers,
+      members: updatedMembers,
       currentUser: updatedCurrentUser,
       auditLogs: [auditEntry, ...state.auditLogs],
       updatedAt: nowISO,

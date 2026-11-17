@@ -1,4 +1,11 @@
-import { Member, UserAccount } from '../types';
+import { Member, RoleType, UserAccount } from '../types';
+import { sanitizeRoleType } from './permissionService';
+
+export const DIRECTION_ROLES: readonly RoleType[] = ['diretor', 'diretor_associado', 'secretario'];
+export const DIRECTION_TEAM_LABEL = 'Direção';
+
+export const isDirectionRole = (role?: RoleType | null): boolean =>
+  Boolean(role && DIRECTION_ROLES.includes(role));
 
 /**
  * Identifica contas institucionais independentes (que nunca devem ser vinculadas a fichas individuais de membros).
@@ -39,6 +46,93 @@ export const hasMemberPortalAccess = (
   members: Member[]
 ): boolean => {
   return Boolean(getStrictLinkedMember(user, members));
+};
+
+/**
+ * Localiza todas as contas de acesso não-institucionais vinculadas a uma ficha de membro
+ * (por linkedMemberId, Nº de Membro ou e-mail). Contas institucionais e do Administrador Técnico
+ * nunca são selecionadas para remoção automática.
+ */
+export const findLinkedUserAccountsForMember = (
+  users: UserAccount[],
+  member: Pick<Member, 'id' | 'manualNumber' | 'email'>
+): UserAccount[] => {
+  const memberIdClean = (member.id || '').trim();
+  const memberManualClean = (member.manualNumber || '').trim().toLowerCase();
+  const memberEmailClean = (member.email || '').trim().toLowerCase();
+
+  return users.filter((u) => {
+    if (isInstitutionalAccountRecord(u)) return false;
+
+    const uLinked = (u.linkedMemberId || '').trim();
+    const uManual = (u.manualNumber || '').trim().toLowerCase();
+    const uEmail = (u.email || '').trim().toLowerCase();
+
+    const isLinkedById =
+      Boolean(uLinked) &&
+      ((Boolean(memberIdClean) && uLinked === memberIdClean) ||
+        (Boolean(memberManualClean) && uLinked.toLowerCase() === memberManualClean));
+
+    const isLinkedByManual =
+      Boolean(uManual) && Boolean(memberManualClean) && uManual === memberManualClean;
+
+    const isLinkedByEmail =
+      Boolean(uEmail) && Boolean(memberEmailClean) && uEmail === memberEmailClean;
+
+    return isLinkedById || isLinkedByManual || isLinkedByEmail;
+  });
+};
+
+/**
+ * Remove automaticamente todas as contas de utilizador vinculadas ao membro eliminado,
+ * sem exigir autorização prévia do Administrador Técnico (audit: ADMIN), preservando
+ * integralmente contas institucionais/técnicas e outras contas não vinculadas.
+ */
+export const removeLinkedAccountsForMember = (
+  users: UserAccount[],
+  member: Pick<Member, 'id' | 'manualNumber' | 'email'>
+): { updatedUsers: UserAccount[]; removedUsers: UserAccount[] } => {
+  const linked = findLinkedUserAccountsForMember(users, member);
+  if (linked.length === 0) {
+    return { updatedUsers: users, removedUsers: [] };
+  }
+  const linkedIds = new Set(linked.map((u) => u.id));
+  return {
+    updatedUsers: users.filter((u) => !linkedIds.has(u.id)),
+    removedUsers: linked,
+  };
+};
+
+/**
+ * Indica se o membro pertence à Direção (Diretor, Diretor-associado ou Secretário)
+ * pela sua conta vinculada. Por definição, membros da Direção não pertencem a equipas.
+ */
+export const isDirectionMember = (
+  member: Pick<Member, 'id' | 'manualNumber' | 'email'>,
+  users: UserAccount[]
+): boolean => {
+  const linked = findLinkedUserAccountsForMember(users, member);
+  return (
+    linked.some((u) => u.active !== false && isDirectionRole(u.role)) ||
+    linked.some((u) => isDirectionRole(u.role))
+  );
+};
+
+/**
+ * Devolve o rótulo de equipa a apresentar na ficha do membro:
+ * - Para Diretor, Diretor-associado e Secretário: devolve sempre "Direção" (nunca "Sem Equipa").
+ * - Para os restantes membros: devolve a equipa atribuída ou "Sem Equipa".
+ */
+export const getMemberTeamLabel = (
+  member: Pick<Member, 'id' | 'manualNumber' | 'email' | 'unitOrTeam'>,
+  users: UserAccount[],
+  emptyFallback: string = 'Sem Equipa'
+): string => {
+  if (isDirectionMember(member, users)) {
+    return DIRECTION_TEAM_LABEL;
+  }
+  const trimmed = member.unitOrTeam?.trim();
+  return trimmed || emptyFallback;
 };
 
 /**
@@ -182,11 +276,14 @@ export const syncUserWithLinkedMember = (
     ...(resolvedManualNumber ? { manualNumber: resolvedManualNumber } : {}),
   };
 
+  const shouldClearTeamForDirection = isDirectionRole(user.role) && Boolean(targetMember.unitOrTeam);
+
   const memberChanged =
     targetMember.fullName !== resolvedName ||
     (resolvedEmail && targetMember.email !== resolvedEmail) ||
     (resolvedPhone && targetMember.phone !== resolvedPhone) ||
-    (resolvedManualNumber && targetMember.manualNumber !== resolvedManualNumber);
+    (resolvedManualNumber && targetMember.manualNumber !== resolvedManualNumber) ||
+    shouldClearTeamForDirection;
 
   const updatedMembers = memberChanged
     ? members.map((m) =>
@@ -197,6 +294,7 @@ export const syncUserWithLinkedMember = (
               email: resolvedEmail || m.email,
               phone: resolvedPhone || m.phone,
               manualNumber: resolvedManualNumber || m.manualNumber,
+              ...(isDirectionRole(user.role) ? { unitOrTeam: undefined } : {}),
               updatedAt: nowISO,
             }
           : m
@@ -220,7 +318,13 @@ export const reconcileUsersAndMembers = (
   const memberIndexById = new Map<string, number>();
   nextMembers.forEach((m, idx) => memberIndexById.set(m.id, idx));
 
-  const nextUsers = users.map((u) => {
+  const nextUsers = users.map((rawUser) => {
+    const normalizedRole = sanitizeRoleType(rawUser.role);
+    const u: UserAccount = rawUser.role !== normalizedRole ? { ...rawUser, role: normalizedRole } : rawUser;
+    if (rawUser.role !== normalizedRole) {
+      changed = true;
+    }
+
     if (isInstitutionalAccountRecord(u)) {
       if (u.linkedMemberId || u.manualNumber) {
         changed = true;
@@ -254,6 +358,10 @@ export const reconcileUsersAndMembers = (
       }
       if (!m.phone && u.phone && u.phone.trim()) {
         m.phone = u.phone.trim();
+        mModified = true;
+      }
+      if (isDirectionRole(u.role) && m.unitOrTeam) {
+        m.unitOrTeam = undefined;
         mModified = true;
       }
       if (mModified) {

@@ -14,6 +14,7 @@ import {
   resolveQuotaConfig,
 } from '../services/quotaService';
 import { calculateAgeYears, getTodayISODate } from './date';
+import { getMemberTeamLabel, isDirectionMember } from '../services/accountSyncService';
 
 export interface MemberAttendanceEntry {
   activityId: string;
@@ -194,12 +195,14 @@ export function buildMemberDossierData(
   const timeline: MemberTimelineEvent[] = [];
 
   if (member.joinedDate) {
+    const isDir = isDirectionMember(member, state.users || []);
+    const teamDisplay = getMemberTeamLabel(member, state.users || []);
     timeline.push({
       id: `ML-JOIN-${member.id}`,
       date: member.joinedDate,
       title: 'Admissão Oficial no Clube',
       description: `Ingresso registado na categoria ${member.category.toUpperCase()}${
-        member.unitOrTeam ? ` · Equipa ${member.unitOrTeam}` : ''
+        isDir ? ` · ${teamDisplay}` : member.unitOrTeam ? ` · Equipa ${member.unitOrTeam}` : ''
       }.`,
       category: 'cadastro',
     });

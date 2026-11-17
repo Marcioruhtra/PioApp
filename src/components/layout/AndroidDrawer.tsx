@@ -54,7 +54,7 @@ export const AndroidDrawer: React.FC<AndroidDrawerProps> = ({
     { id: 'members', label: 'Gestão de Membros', icon: Users, badge: state.members.filter((m) => m.status === 'ativo').length },
     { id: 'treasury', label: 'Tesouraria (Kz)', icon: Wallet, badge: pendingProofs > 0 ? pendingProofs : undefined },
     { id: 'activities', label: 'Atividades e Reuniões', icon: Calendar },
-    { id: 'training', label: 'Classes e Formação', icon: GraduationCap },
+    { id: 'training', label: 'Módulos e Medalhas', icon: GraduationCap },
     { id: 'documents', label: 'Documentos Oficiais', icon: FileText },
     { id: 'member_portal', label: 'Portal do Membro', icon: UserCheck },
     { id: 'requests', label: 'Circulares & Avisos', icon: MessageSquare },

@@ -52,7 +52,7 @@ import {
   getTodayISODate,
   resolveQuotaConfig,
 } from '../../services/quotaService';
-import { getStrictLinkedMember } from '../../services/accountSyncService';
+import { getStrictLinkedMember, getMemberTeamLabel } from '../../services/accountSyncService';
 
 const SUGGESTION_CATEGORY_MAP: Record<SuggestionCategory, { label: string; badgeBg: string; text: string }> = {
   geral: { label: 'Geral', badgeBg: 'bg-slate-100 border-slate-300 text-slate-800', text: 'text-slate-800' },
@@ -431,7 +431,7 @@ export const MemberPortalModule: React.FC = () => {
             </div>
             <h1 className="text-2xl font-black text-slate-100 mt-1">{member.fullName}</h1>
             <p className="text-xs text-slate-300 mt-0.5">
-              Matrícula Oficial: <strong>{member.manualNumber}</strong> · Equipa: <strong>{member.unitOrTeam?.trim() || 'Sem Equipa'}</strong>
+              Matrícula Oficial: <strong>{member.manualNumber}</strong> · Equipa: <strong>{getMemberTeamLabel(member, state.users)}</strong>
             </p>
           </div>
 
@@ -753,12 +753,12 @@ export const MemberPortalModule: React.FC = () => {
           </div>
         </div>
 
-        {/* Bloco 2: Minhas Classes e Formação */}
+        {/* Bloco 2: Meus Módulos e Medalhas */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50">
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
               <GraduationCap className="w-4 h-4 text-blue-900" />
-              <span>Classes e Especialidades em Curso</span>
+              <span>Módulos e Medalhas em Curso</span>
             </h2>
           </div>
 

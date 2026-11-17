@@ -110,9 +110,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'training',
-      label: 'Classes e Formação',
+      label: 'Módulos e Medalhas',
       icon: GraduationCap,
-      description: 'Classes, especialidades e investidura',
+      description: 'Módulos, medalhas e investidura',
     },
     {
       id: 'documents',

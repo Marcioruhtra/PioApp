@@ -1022,7 +1022,7 @@ export const AuditAndAdminModule: React.FC = () => {
                     <span>Zona Crítica: Eliminar Todos os Dados e Reiniciar do Zero</span>
                   </h2>
                   <p className="text-xs text-rose-950 mt-1 max-w-2xl leading-relaxed">
-                    Esta opção reinicia o sistema do zero absoluto: <strong>elimina todos os membros</strong>, <strong>zera todas as finanças (saldo a 0,00 Kz)</strong>, <strong>remove todos os documentos oficiais</strong>, <strong>apaga classes e especialidades</strong> e mantém <strong>exclusivamente a sua conta como Administrador Técnico</strong> (único utilizador cadastrado).
+                    Esta opção reinicia o sistema do zero absoluto: <strong>elimina todos os membros</strong>, <strong>zera todas as finanças (saldo a 0,00 Kz)</strong>, <strong>remove todos os documentos oficiais</strong>, <strong>apaga módulos e medalhas</strong> e mantém <strong>exclusivamente a sua conta como Administrador Técnico</strong> (único utilizador cadastrado).
                   </p>
                 </div>
 
@@ -1519,7 +1519,7 @@ export const AuditAndAdminModule: React.FC = () => {
                   <li><strong>Membros Registados e Situação de Quotas</strong>: Contas zeradas recomeçam regularizadas a 0,00 Kz (sem exibir o valor zerado), adiantamentos mantêm o crédito e quotas em atraso mantêm a dívida.</li>
                   <li><strong>Inscrições Pendentes e Em Análise</strong>: Todas as solicitações que ainda não foram concluídas pela Secretaria mantêm-se intactas, incluindo os seus ficheiros e comprovativos anexados (B.I. e fotografia).</li>
                   <li><strong>Contas de Login de Utilizadores</strong>: Todas as credenciais de acesso ao sistema.</li>
-                  <li><strong>Configurações do Clube</strong>: Unidades, parâmetros e classes/especialidades.</li>
+                  <li><strong>Configurações do Clube</strong>: Unidades, parâmetros e módulos/medalhas.</li>
                 </ul>
               </div>
 
@@ -1618,7 +1618,7 @@ export const AuditAndAdminModule: React.FC = () => {
                 <li><strong>Eliminação de todos os membros</strong>: Cadastro de membros ficará totalmente vazio (0 membros).</li>
                 <li><strong>Eliminação de todo o dinheiro e finanças</strong>: Todas as receitas, despesas, recibos e comprovativos são eliminados (saldo a 0,00 Kz).</li>
                 <li><strong>Eliminação de todos os documentos oficiais</strong>: Todas as atas, declarações e certificados emitidos são removidos.</li>
-                <li><strong>Eliminação de classes e especialidades</strong>: Todas as classes, especialidades e progressos formativos são esvaziados.</li>
+                <li><strong>Eliminação de módulos e medalhas</strong>: Todos os módulos, medalhas e progressos formativos são esvaziados.</li>
                 <li><strong>Eliminação de todas as outras contas de acesso</strong>: Todos os diretores, diretores-associados, secretários, tesoureiros, instrutores e capelães são removidos.</li>
                 <li><strong>Conta única mantida</strong>: Apenas a sua conta de Administrador Técnico continuará ativa no sistema como o primeiro e único registo.</li>
               </ul>

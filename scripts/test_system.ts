@@ -28,7 +28,9 @@ import {
   hasApproveEnrollmentPermission,
   canGrantManageEnrollmentPeriod,
   hasManageEnrollmentPeriodPermission,
+  canExecuteMemberDeletion,
   ACTION_LABELS,
+  sanitizeRoleType,
 } from '../src/services/permissionService';
 import {
   MemberRegistrationFormData,
@@ -57,6 +59,11 @@ import {
   reconcileUsersAndMembers,
   getStrictLinkedMember,
   hasMemberPortalAccess,
+  findLinkedUserAccountsForMember,
+  removeLinkedAccountsForMember,
+  isDirectionRole,
+  isDirectionMember,
+  getMemberTeamLabel,
 } from '../src/services/accountSyncService';
 import {
   countChargeableSundays,
@@ -2438,6 +2445,292 @@ function runTests() {
       reconciledUnlinked.users[1].linkedMemberId === undefined &&
       reconciledUnlinked.users[2].linkedMemberId === linkedMemberTarget.id,
     "reconcileUsersAndMembers não vincula contas sem linkedMemberId e limpa referências órfãs"
+  );
+
+  // 41. ELIMINAÇÃO DE MEMBRO PELA SECRETARIA REMOVE CONTA VINCULADA SEM AUTORIZAÇÃO PRÉVIA DO ADMINISTRADOR
+  console.log("\n41. Teste de Eliminação de Conta Vinculada na Eliminação de Membro pela Secretaria (Sem Autorização do Admin):");
+
+  const memberBeingDeleted = {
+    id: 'CDA-MEM-ELIM-LINK',
+    manualNumber: 'EMB-888',
+    email: 'membro.eliminado@clubedalvorada.ao',
+  };
+
+  const linkedByIdAcc: UserAccount = {
+    id: 'USR-LINKED-ID',
+    name: 'Membro Vinculado por ID',
+    email: 'outro.email@clubedalvorada.ao',
+    role: 'membro',
+    linkedMemberId: 'CDA-MEM-ELIM-LINK',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  const linkedByManualAcc: UserAccount = {
+    id: 'USR-LINKED-MAN',
+    name: 'Membro Vinculado por Nº Manual',
+    email: 'manual.only@clubedalvorada.ao',
+    role: 'tesoureiro',
+    manualNumber: 'emb-888',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  const linkedByEmailAcc: UserAccount = {
+    id: 'USR-LINKED-EMAIL',
+    name: 'Membro Vinculado por E-mail',
+    email: 'MEMBRO.ELIMINADO@clubedalvorada.ao',
+    role: 'instrutor',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  const unrelatedMemberAcc: UserAccount = {
+    id: 'USR-OTHER-MEMBER',
+    name: 'Outro Membro Ativo',
+    email: 'outro.membro@clubedalvorada.ao',
+    role: 'membro',
+    linkedMemberId: 'CDA-MEM-OUTRO',
+    manualNumber: 'EMB-999',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  const institutionalAccWithMatchingEmail: UserAccount = {
+    id: 'INST-001',
+    name: 'Conta Institucional',
+    email: 'membro.eliminado@clubedalvorada.ao',
+    role: 'admin_tecnico',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+
+  const poolBeforeDelete: UserAccount[] = [
+    linkedByIdAcc,
+    linkedByManualAcc,
+    linkedByEmailAcc,
+    unrelatedMemberAcc,
+    institutionalAccWithMatchingEmail,
+  ];
+
+  const foundLinked = findLinkedUserAccountsForMember(poolBeforeDelete, memberBeingDeleted);
+  assert(
+    foundLinked.length === 3 &&
+      foundLinked.some((u) => u.id === 'USR-LINKED-ID') &&
+      foundLinked.some((u) => u.id === 'USR-LINKED-MAN') &&
+      foundLinked.some((u) => u.id === 'USR-LINKED-EMAIL') &&
+      !foundLinked.some((u) => u.id === 'INST-001'),
+    "findLinkedUserAccountsForMember identifica contas vinculadas por ID, Nº Manual ou e-mail e protege contas institucionais/admin"
+  );
+
+  const deletionOutcome = removeLinkedAccountsForMember(poolBeforeDelete, memberBeingDeleted);
+  assert(
+    deletionOutcome.removedUsers.length === 3 &&
+      deletionOutcome.updatedUsers.length === 2 &&
+      deletionOutcome.updatedUsers.some((u) => u.id === 'USR-OTHER-MEMBER') &&
+      deletionOutcome.updatedUsers.some((u) => u.id === 'INST-001'),
+    "removeLinkedAccountsForMember elimina todas as contas vinculadas ao membro preservando outras contas e conta institucional"
+  );
+
+  // Secretaria pode executar eliminação aprovada pela Direção (sem precisar de admin_tecnico ou audit:ADMIN)
+  assert(
+    canExecuteMemberDeletion('secretario', ROLE_PERMISSIONS_MATRIX, true) === true &&
+      !hasPermission('secretario', 'audit', 'ADMIN'),
+    "Secretaria executa eliminação de membro (e respetiva conta vinculada) após aprovação da Direção sem precisar de audit:ADMIN do Administrador"
+  );
+
+  // Secretaria com members:DELETE atribuído na grelha pode eliminar diretamente (sem pedir autorização ao Administrador)
+  const matrixWithSecDelete = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  matrixWithSecDelete.secretario.members = [...matrixWithSecDelete.secretario.members, 'DELETE'];
+  assert(
+    canExecuteMemberDeletion('secretario', matrixWithSecDelete, false) === true &&
+      canExecuteMemberDeletion('diretor', ROLE_PERMISSIONS_MATRIX, false) === true &&
+      canExecuteMemberDeletion('membro', ROLE_PERMISSIONS_MATRIX, true) === false,
+    "Secretaria com members:DELETE e Diretor podem eliminar membro e conta vinculada diretamente; membro comum permanece bloqueado"
+  );
+
+  // 42. REGRA DE EQUIPA "DIREÇÃO" PARA DIRETOR, DIRETOR-ASSOCIADO E SECRETÁRIO
+  console.log("\n42. Teste de Enquadramento 'Direção' em vez de 'Sem Equipa' para Diretor, Diretor-associado e Secretário:");
+
+  assert(
+    isDirectionRole('diretor') === true &&
+      isDirectionRole('diretor_associado') === true &&
+      isDirectionRole('secretario') === true &&
+      isDirectionRole('membro') === false &&
+      isDirectionRole('tesoureiro') === false &&
+      isDirectionRole('instrutor') === false,
+    "Apenas Diretor, Diretor-associado e Secretário são classificados como cargos de Direção"
+  );
+
+  const dirMem: Member = {
+    ...state.members[0],
+    id: 'CDA-MEM-DIR',
+    manualNumber: 'DIR-001',
+    fullName: 'Diretor Sem Equipa Anterior',
+    email: 'dir.membro@clubedalvorada.ao',
+    unitOrTeam: 'Equipa Águias',
+  };
+  const assocDirMem: Member = {
+    ...state.members[0],
+    id: 'CDA-MEM-ASSOC',
+    manualNumber: 'DIR-002',
+    fullName: 'Diretor-associado Membro',
+    email: 'assoc.membro@clubedalvorada.ao',
+    unitOrTeam: undefined,
+  };
+  const secMem: Member = {
+    ...state.members[0],
+    id: 'CDA-MEM-SEC',
+    manualNumber: 'DIR-003',
+    fullName: 'Secretário Membro',
+    email: 'sec.membro@clubedalvorada.ao',
+    unitOrTeam: undefined,
+  };
+  const regularNoTeamMem: Member = {
+    ...state.members[0],
+    id: 'CDA-MEM-REG-NONE',
+    manualNumber: 'REG-001',
+    fullName: 'Membro Regular Sem Equipa',
+    email: 'regular.sem@clubedalvorada.ao',
+    unitOrTeam: undefined,
+  };
+  const regularWithTeamMem: Member = {
+    ...state.members[0],
+    id: 'CDA-MEM-REG-TEAM',
+    manualNumber: 'REG-002',
+    fullName: 'Membro Regular Com Equipa',
+    email: 'regular.com@clubedalvorada.ao',
+    unitOrTeam: 'Equipa Águias',
+  };
+
+  const dirUsersPool: UserAccount[] = [
+    {
+      id: 'U-DIR',
+      name: dirMem.fullName,
+      email: dirMem.email!,
+      role: 'diretor',
+      linkedMemberId: dirMem.id,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'U-ASSOC',
+      name: assocDirMem.fullName,
+      email: assocDirMem.email!,
+      role: 'diretor_associado',
+      linkedMemberId: assocDirMem.id,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'U-SEC',
+      name: secMem.fullName,
+      email: secMem.email!,
+      role: 'secretario',
+      linkedMemberId: secMem.id,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'U-REG-1',
+      name: regularNoTeamMem.fullName,
+      email: regularNoTeamMem.email!,
+      role: 'membro',
+      linkedMemberId: regularNoTeamMem.id,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'U-REG-2',
+      name: regularWithTeamMem.fullName,
+      email: regularWithTeamMem.email!,
+      role: 'membro',
+      linkedMemberId: regularWithTeamMem.id,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+  ];
+
+  assert(
+    isDirectionMember(dirMem, dirUsersPool) === true &&
+      isDirectionMember(assocDirMem, dirUsersPool) === true &&
+      isDirectionMember(secMem, dirUsersPool) === true &&
+      isDirectionMember(regularNoTeamMem, dirUsersPool) === false,
+    "isDirectionMember identifica corretamente membros vinculados a Diretor, Diretor-associado e Secretário"
+  );
+
+  assert(
+    getMemberTeamLabel(dirMem, dirUsersPool) === 'Direção' &&
+      getMemberTeamLabel(assocDirMem, dirUsersPool) === 'Direção' &&
+      getMemberTeamLabel(secMem, dirUsersPool) === 'Direção' &&
+      getMemberTeamLabel(regularNoTeamMem, dirUsersPool) === 'Sem Equipa' &&
+      getMemberTeamLabel(regularWithTeamMem, dirUsersPool) === 'Equipa Águias',
+    "getMemberTeamLabel exibe 'Direção' para Diretor, Diretor-associado e Secretário, 'Sem Equipa' para regulares sem equipa e mantém equipa dos restantes"
+  );
+
+  const dirMembersPool = [dirMem, assocDirMem, secMem, regularNoTeamMem, regularWithTeamMem];
+  const dirReconciled = reconcileUsersAndMembers(dirUsersPool, dirMembersPool);
+  assert(
+    dirReconciled.members.find((m) => m.id === 'CDA-MEM-DIR')?.unitOrTeam === undefined &&
+      dirReconciled.members.find((m) => m.id === 'CDA-MEM-REG-TEAM')?.unitOrTeam === 'Equipa Águias',
+    "reconcileUsersAndMembers remove automaticamente qualquer equipa anterior de membros com cargo de Direção mantendo a equipa dos restantes"
+  );
+
+  // =========================================================================
+  // TESTE 43: Remoção dos cargos de Conselheiro e Diretor de Música e Louvor
+  // =========================================================================
+  console.log("\n=== TESTE 43: REMOÇÃO DOS CARGOS CONSELHEIRO E MÚSICA ===");
+  const roleKeys = Object.keys(ROLE_LABELS);
+  const matrixKeys = Object.keys(ROLE_PERMISSIONS_MATRIX);
+  assert(
+    !roleKeys.includes('conselheiro') && !roleKeys.includes('musica'),
+    "ROLE_LABELS não contém os cargos removidos 'conselheiro' nem 'musica'"
+  );
+  assert(
+    !matrixKeys.includes('conselheiro') && !matrixKeys.includes('musica'),
+    "ROLE_PERMISSIONS_MATRIX não contém os cargos removidos 'conselheiro' nem 'musica'"
+  );
+
+  assert(
+    sanitizeRoleType('conselheiro') === 'membro' &&
+      sanitizeRoleType('musica') === 'membro' &&
+      sanitizeRoleType('diretor') === 'diretor' &&
+      sanitizeRoleType('secretario') === 'secretario',
+    "sanitizeRoleType converte cargos removidos ('conselheiro', 'musica') para 'membro' e preserva cargos válidos"
+  );
+
+  const legacyMatrix: any = {
+    ...ROLE_PERMISSIONS_MATRIX,
+    conselheiro: { dashboard: ['VIEW'] },
+    musica: { music: ['VIEW', 'CREATE'] },
+  };
+  const cleanedMatrix = syncPermissionsMatrix(legacyMatrix);
+  assert(
+    !Object.prototype.hasOwnProperty.call(cleanedMatrix, 'conselheiro') &&
+      !Object.prototype.hasOwnProperty.call(cleanedMatrix, 'musica'),
+    "syncPermissionsMatrix remove automaticamente as chaves legadas 'conselheiro' e 'musica' da grelha de permissões"
+  );
+
+  const legacyUsers: any[] = [
+    {
+      id: 'USR-LEG-CONS',
+      name: 'Ex-Conselheiro',
+      email: 'ex.conselheiro@clubedalvorada.ao',
+      role: 'conselheiro',
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'USR-LEG-MUS',
+      name: 'Ex-Diretor de Música',
+      email: 'ex.musica@clubedalvorada.ao',
+      role: 'musica',
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+  ];
+  const migratedLegacy = reconcileUsersAndMembers(legacyUsers, []);
+  assert(
+    migratedLegacy.changed === true &&
+      migratedLegacy.users.find((u) => u.id === 'USR-LEG-CONS')?.role === 'membro' &&
+      migratedLegacy.users.find((u) => u.id === 'USR-LEG-MUS')?.role === 'membro',
+    "reconcileUsersAndMembers migra contas legadas com cargos 'conselheiro' ou 'musica' para 'membro'"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");

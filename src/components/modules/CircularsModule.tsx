@@ -18,6 +18,7 @@ import { Circular, RoleType } from '../../types';
 import { formatDateAO, formatDateTimeAO } from '../../utils/date';
 import { Modal } from '../common/Modal';
 import { ROLE_LABELS } from '../../services/permissionService';
+import { getMemberTeamLabel } from '../../services/accountSyncService';
 
 export const CircularsModule: React.FC = () => {
   const { state, can, currentUser, createCircular, deleteCircular } = useClub();
@@ -358,7 +359,7 @@ export const CircularsModule: React.FC = () => {
                             </div>
                             <div>
                               <div className="text-[11px] font-bold text-slate-900">{member?.fullName || 'Membro Desconhecido'}</div>
-                              <div className="text-[9px] text-slate-500">{member?.unitOrTeam}</div>
+                              <div className="text-[9px] text-slate-500">{member ? getMemberTeamLabel(member, state.users) : ''}</div>
                             </div>
                           </div>
                           <CheckCircle2 className="w-4 h-4 text-emerald-500" />

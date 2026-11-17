@@ -42,6 +42,7 @@ import {
 } from '../../types';
 import { formatKz, parseKzToCents } from '../../utils/currency';
 import { formatDateAO, getMonthNamePT } from '../../utils/date';
+import { getMemberTeamLabel, isDirectionMember } from '../../services/accountSyncService';
 import {
   calculateClubQuotaTotals,
   calculateMemberQuotaSummary,
@@ -282,10 +283,14 @@ export const TreasuryModule: React.FC = () => {
   const quotaAvailableTeams = useMemo(() => {
     const teams = new Set<string>();
     state.members.forEach((m) => {
-      if (m.unitOrTeam?.trim()) teams.add(m.unitOrTeam.trim());
+      if (isDirectionMember(m, state.users)) {
+        teams.add('Direção');
+      } else if (m.unitOrTeam?.trim()) {
+        teams.add(m.unitOrTeam.trim());
+      }
     });
     return Array.from(teams).sort((a, b) => a.localeCompare(b));
-  }, [state.members]);
+  }, [state.members, state.users]);
 
   const filteredQuotaSummaries = useMemo(() => {
     const q = quotaSearch.trim().toLowerCase();
@@ -302,11 +307,14 @@ export const TreasuryModule: React.FC = () => {
           return false;
         }
 
-        if (quotaUnitFilter === '__sem_equipa__' && s.member.unitOrTeam?.trim()) return false;
+        const memberTeamLabel = getMemberTeamLabel(s.member, state.users);
+        if (quotaUnitFilter === '__sem_equipa__' && (s.member.unitOrTeam?.trim() || isDirectionMember(s.member, state.users))) {
+          return false;
+        }
         if (
           quotaUnitFilter !== 'all' &&
           quotaUnitFilter !== '__sem_equipa__' &&
-          (s.member.unitOrTeam || '').trim().toLowerCase() !== quotaUnitFilter.toLowerCase()
+          memberTeamLabel.toLowerCase() !== quotaUnitFilter.toLowerCase()
         ) {
           return false;
         }
@@ -314,7 +322,7 @@ export const TreasuryModule: React.FC = () => {
         if (q) {
           const matchName = s.member.fullName.toLowerCase().includes(q);
           const matchNum = (s.member.manualNumber || '').toLowerCase().includes(q);
-          const matchTeam = (s.member.unitOrTeam || 'sem equipa').toLowerCase().includes(q);
+          const matchTeam = memberTeamLabel.toLowerCase().includes(q);
           if (!matchName && !matchNum && !matchTeam) return false;
         }
 
@@ -961,7 +969,7 @@ export const TreasuryModule: React.FC = () => {
                                 {s.member.manualNumber}
                               </span>
                               <span>·</span>
-                              <span>{s.member.unitOrTeam?.trim() || 'Sem equipa'}</span>
+                              <span>{getMemberTeamLabel(s.member, state.users)}</span>
                               <span>·</span>
                               <span className="capitalize">{s.member.category}</span>
                             </div>
