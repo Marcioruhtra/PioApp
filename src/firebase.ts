@@ -4,6 +4,32 @@ import { getFirestore, initializeFirestore } from 'firebase/firestore';
 import { getMessaging } from 'firebase/messaging';
 import firebaseConfig from '../firebase-applet-config.json';
 
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
 let appInstance: any = null;
 let dbInstance: any = null;
 let authInstance: any = null;
@@ -14,7 +40,7 @@ try {
   appInstance = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
   const dbId = (firebaseConfig as any).firestoreDatabaseId as string | undefined;
   const firestoreSettings = {
-    experimentalForceLongPolling: true,
+    experimentalAutoDetectLongPolling: true,
     ignoreUndefinedProperties: true,
   };
   try {
@@ -26,12 +52,38 @@ try {
   }
   authInstance = getAuth(appInstance);
   // Default to session persistence to avoid localStorage, but we can upgrade to local for 'remember me'
-  setPersistence(authInstance, browserSessionPersistence);
+  setPersistence(authInstance, browserSessionPersistence).catch(() => {});
 } catch (e) {
   console.warn('Firebase initialization warning (running in offline/mock mode):', e);
   appInstance = { name: '[DEFAULT]' };
   dbInstance = {} as any;
   authInstance = { currentUser: null, onAuthStateChanged: () => () => {} } as any;
+}
+
+export function handleFirestoreError(
+  error: unknown,
+  operationType: OperationType,
+  path: string | null
+): never {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: authInstance?.currentUser?.uid,
+      email: authInstance?.currentUser?.email,
+      emailVerified: authInstance?.currentUser?.emailVerified,
+      isAnonymous: authInstance?.currentUser?.isAnonymous,
+      tenantId: authInstance?.currentUser?.tenantId,
+      providerInfo:
+        authInstance?.currentUser?.providerData?.map((provider: any) => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
+    },
+    operationType,
+    path,
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
 }
 
 try {

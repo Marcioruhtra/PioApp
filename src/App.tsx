@@ -18,6 +18,7 @@ import {
   INACTIVITY_WARNING_MS,
   isSessionInactive,
 } from './utils/inactivity';
+import { hasMemberPortalAccess } from './services/accountSyncService';
 
 // Módulos
 import { DashboardModule } from './components/modules/DashboardModule';
@@ -185,9 +186,29 @@ const MainAppContent: React.FC = () => {
     };
   }, [isAuthenticated, isCloudLoading, performLogout, addToast]);
 
+  const canAccessMemberPortal = React.useMemo(
+    () => hasMemberPortalAccess(currentUser, state.members) && can('member_portal', 'VIEW'),
+    [currentUser, state.members, state.settings.permissionsMatrix]
+  );
+
+  const navigateToModule = React.useCallback(
+    (mod: ModuleName) => {
+      if (mod === 'member_portal' && !hasMemberPortalAccess(currentUser, state.members)) {
+        addToast(
+          'Acesso Negado ao Portal do Membro',
+          'Esta conta de utilizador não está vinculada a uma ficha de membro.',
+          'warning'
+        );
+        return;
+      }
+      setActiveModule(mod);
+    },
+    [currentUser, state.members, addToast]
+  );
+
   React.useEffect(() => {
     if (isAuthenticated && !isCloudLoading && currentUser) {
-      setActiveModule('member_portal');
+      setActiveModule(canAccessMemberPortal ? 'member_portal' : 'dashboard');
       // Apenas regista subscrição de push se o utilizador já tiver concedido permissão expressa no navegador
       try {
         if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
@@ -200,6 +221,13 @@ const MainAppContent: React.FC = () => {
       }
     }
   }, [isAuthenticated, isCloudLoading, currentUser?.id]);
+
+  // Se o utilizador estiver no Portal do Membro e perder a vinculação em tempo real, redireciona de imediato
+  React.useEffect(() => {
+    if (isAuthenticated && !isCloudLoading && activeModule === 'member_portal' && !canAccessMemberPortal) {
+      setActiveModule('dashboard');
+    }
+  }, [isAuthenticated, isCloudLoading, activeModule, canAccessMemberPortal]);
 
   if (isCloudLoading) {
     return (
@@ -259,7 +287,7 @@ const MainAppContent: React.FC = () => {
         {/* Barra Lateral de Navegação */}
         <Sidebar
           activeModule={activeModule}
-          onSelectModule={(mod) => setActiveModule(mod)}
+          onSelectModule={navigateToModule}
           collapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
           isMobileOpen={isMobileOpen}
@@ -275,17 +303,17 @@ const MainAppContent: React.FC = () => {
         >
           <div className="w-full max-w-7xl mx-auto min-w-0">
             {activeModule === 'dashboard' && (
-              <DashboardModule onNavigate={(mod) => setActiveModule(mod)} />
+              <DashboardModule onNavigate={navigateToModule} />
             )}
             {activeModule === 'associate_director' && can('associate_director', 'VIEW') && (
-              <AssociateDirectorModule onNavigate={(mod) => setActiveModule(mod)} />
+              <AssociateDirectorModule onNavigate={navigateToModule} />
             )}
             {activeModule === 'members' && <MembersModule />}
             {activeModule === 'treasury' && <TreasuryModule />}
             {activeModule === 'activities' && <ActivitiesModule />}
             {activeModule === 'training' && <TrainingModule />}
             {activeModule === 'documents' && <DocumentsModule />}
-            {activeModule === 'member_portal' && <MemberPortalModule />}
+            {activeModule === 'member_portal' && canAccessMemberPortal && <MemberPortalModule />}
             {activeModule === 'requests' && <CircularsModule />}
             {activeModule === 'reports' && <ReportsModule />}
             {activeModule === 'settings' && <SettingsModule />}
@@ -301,7 +329,7 @@ const MainAppContent: React.FC = () => {
       {/* Navegação Inferior Móvel para Telemóveis */}
       <MobileNav
         activeModule={activeModule}
-        onSelectModule={(mod) => setActiveModule(mod)}
+        onSelectModule={navigateToModule}
         onOpenSidebar={() => setIsMobileOpen(true)}
       />
 
@@ -309,7 +337,7 @@ const MainAppContent: React.FC = () => {
       <NotificationCenterModal
         isOpen={isNotificationsOpen}
         onClose={() => setIsNotificationsOpen(false)}
-        onNavigate={(mod) => setActiveModule(mod)}
+        onNavigate={navigateToModule}
       />
 
       {/* Contentor de Toasts Flutuantes */}

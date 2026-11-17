@@ -59,9 +59,17 @@ import {
   normalizeIdentityCardNumber,
   resolveMemberDocumentationStatus,
   validateRegistrationFields,
+  evaluateEnrollmentAvailability,
+  getLocalTodayDateString,
+  getLocalCurrentTimeString,
 } from '../../services/enrollmentService';
 import { processProfilePhoto } from '../../utils/fileUpload';
-import { ROLE_LABELS } from '../../services/permissionService';
+import {
+  ROLE_LABELS,
+  hasManageEnrollmentPeriodPermission,
+  canExecuteMemberDeletion,
+} from '../../services/permissionService';
+import { findLinkedUserAccountsForMember, getMemberTeamLabel, isDirectionMember } from '../../services/accountSyncService';
 
 export const MembersModule: React.FC = () => {
   const {
@@ -89,6 +97,8 @@ export const MembersModule: React.FC = () => {
     rejectEnrollmentRequest,
     updateMemberDocumentationStatus,
     updateEnrollmentReviewMessage,
+    reopenEnrollments,
+    closeEnrollmentsImmediately,
   } = useClub();
 
   const isAdmin = currentUser.role === 'admin_tecnico' || can('audit', 'ADMIN');
@@ -100,6 +110,16 @@ export const MembersModule: React.FC = () => {
   const canEdit = can('members', 'EDIT') || isSecretary || isAdmin || isDirector || isAssociateDirector;
   const canEditCategory = isAdmin || isSecretary || isDirector || isAssociateDirector;
   const canApproveEnrollments = can('members', 'APPROVE_ENROLLMENT');
+  const canManageEnrollmentPeriod = hasManageEnrollmentPeriodPermission(
+    currentUser.role,
+    state.settings.permissionsMatrix
+  );
+  const canDirectDeleteMember = can('members', 'DELETE') || can('members', 'ADMIN');
+  const canExecuteApprovedDelete = canExecuteMemberDeletion(
+    currentUser.role,
+    state.settings.permissionsMatrix,
+    true
+  );
 
   // Visualização e Navegação
   const [activeView, setActiveView] = useState<'members' | 'enrollments' | 'authorizations'>('members');
@@ -155,7 +175,72 @@ export const MembersModule: React.FC = () => {
   });
   const [rejectingEnrollment, setRejectingEnrollment] = useState<MemberEnrollmentRequest | null>(null);
   const [rejectEnrollmentReason, setRejectEnrollmentReason] = useState('');
+  const [isEnrollmentScheduleModalOpen, setIsEnrollmentScheduleModalOpen] = useState(false);
+  const [enrollmentScheduleForm, setEnrollmentScheduleForm] = useState({
+    openDate: '',
+    openTime: '',
+    closeDate: '',
+    closeTime: '',
+  });
+  const [enrollmentScheduleError, setEnrollmentScheduleError] = useState<string | null>(null);
+  const [nowTick, setNowTick] = useState<Date>(() => new Date());
   const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  React.useEffect(() => {
+    const timer = setInterval(() => setNowTick(new Date()), 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const enrollmentAvailability = useMemo(
+    () => evaluateEnrollmentAvailability(state.settings.enrollmentConfig, nowTick),
+    [state.settings.enrollmentConfig, nowTick]
+  );
+
+  const handleOpenEnrollmentScheduleModal = () => {
+    const existing = state.settings.enrollmentConfig;
+    const now = new Date();
+    setEnrollmentScheduleForm({
+      openDate: existing?.isOpen && existing.openDate ? existing.openDate : getLocalTodayDateString(now),
+      openTime: existing?.isOpen && existing.openTime ? existing.openTime : getLocalCurrentTimeString(now),
+      closeDate: existing?.isOpen && existing.closeDate ? existing.closeDate : '',
+      closeTime: existing?.isOpen && existing.closeTime ? existing.closeTime : '',
+    });
+    setEnrollmentScheduleError(null);
+    setIsEnrollmentScheduleModalOpen(true);
+  };
+
+  const handleReopenEnrollmentsSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setEnrollmentScheduleError(null);
+    const res = reopenEnrollments(enrollmentScheduleForm);
+    if (!res.success) {
+      setEnrollmentScheduleError(res.error || 'Não foi possível reabrir as inscrições.');
+      return;
+    }
+    setNowTick(new Date());
+    setIsEnrollmentScheduleModalOpen(false);
+    const updatedAvail = evaluateEnrollmentAvailability(res.config, new Date());
+    showFeedback(
+      'success',
+      updatedAvail.status === 'agendadas'
+        ? `Reabertura de inscrições agendada: ${updatedAvail.reasonLabel}`
+        : `Inscrições reabertas com sucesso! ${updatedAvail.closeLabel ? `Encerramento estipulado para ${updatedAvail.closeLabel}.` : ''}`
+    );
+  };
+
+  const handleCloseEnrollmentsNow = () => {
+    const res = closeEnrollmentsImmediately();
+    if (!res.success) {
+      showFeedback('error', res.error || 'Sem permissão para encerrar inscrições.');
+      return;
+    }
+    setNowTick(new Date());
+    setIsEnrollmentScheduleModalOpen(false);
+    showFeedback(
+      'success',
+      'Inscrições encerradas imediatamente. O botão "Fazer Inscrição no Clube" foi ocultado do ecrã de login.'
+    );
+  };
 
   const showFeedback = (type: 'success' | 'error', message: string) => {
     setActionFeedback({ type, message });
@@ -528,6 +613,29 @@ export const MembersModule: React.FC = () => {
     }
   };
 
+  // 2B. Eliminação Definitiva Direta (com eliminação automática da conta vinculada sem autorização prévia do administrador)
+  const handleDirectDeleteMember = () => {
+    if (!memberToDelete) return;
+    if (!deleteReason || deleteReason.trim().length < 5) {
+      showFeedback('error', 'É obrigatório indicar o motivo fundamentado da eliminação (mínimo 5 caracteres).');
+      return;
+    }
+    const linkedAccounts = findLinkedUserAccountsForMember(state.users, memberToDelete);
+    const res = deleteMember(memberToDelete.id, true, deleteReason);
+    if (res.success) {
+      showFeedback(
+        'success',
+        linkedAccounts.length > 0
+          ? `Membro "${memberToDelete.fullName}" e ${linkedAccounts.length} conta(s) de acesso vinculada(s) eliminados definitivamente com sucesso.`
+          : `Membro "${memberToDelete.fullName}" eliminado definitivamente com sucesso.`
+      );
+      setMemberToDelete(null);
+      setDeleteReason('');
+    } else {
+      showFeedback('error', res.error || 'Erro ao eliminar membro.');
+    }
+  };
+
   // 3. Decisão da Direção: Aprovação (Req 2.2)
   const handleApproveRequest = (reqId: string) => {
     const res = decideMemberOperationRequest(reqId, 'aprovado', 'Autorizado pela Direção');
@@ -833,7 +941,15 @@ export const MembersModule: React.FC = () => {
                               </span>
                             )}
                           </div>
-                          <div className="text-[11px] text-slate-500 font-medium mt-1">{member.unitOrTeam?.trim() || 'Sem Equipa'}</div>
+                          <div className="text-[11px] text-slate-500 font-medium mt-1">
+                            {isDirectionMember(member, state.users) ? (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-blue-50 text-blue-900 border border-blue-200 font-bold text-[10px]">
+                                Direção
+                              </span>
+                            ) : (
+                              getMemberTeamLabel(member, state.users)
+                            )}
+                          </div>
                         </td>
                         <td className="py-3 px-4 font-mono text-[11px] text-slate-600">
                           {member.identityCardNumber}
@@ -950,14 +1066,14 @@ export const MembersModule: React.FC = () => {
                                 <RefreshCw className="w-4 h-4" />
                               </button>
                             )}
-                            {(can('members', 'ADMIN') || isDirectorOrSecretary) && (
+                            {(canDirectDeleteMember || isDirectorOrSecretary) && (
                               <button
                                 onClick={() => {
                                   setMemberToDelete(member);
                                   setDeleteReason('');
                                 }}
                                 className="p-1.5 text-slate-500 hover:text-rose-700 hover:bg-slate-100 rounded transition-colors"
-                                title="Solicitar Eliminação à Direção"
+                                title={canDirectDeleteMember ? 'Eliminar Membro (e Conta Vinculada)' : 'Solicitar Eliminação à Direção'}
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -1015,13 +1131,116 @@ export const MembersModule: React.FC = () => {
             </div>
           </div>
 
+          {/* Controlo do Período de Inscrições (Ecrã de Login) */}
+          <div
+            className={`p-4 rounded-xl border flex flex-col lg:flex-row lg:items-center justify-between gap-4 w-full max-w-full ${
+              enrollmentAvailability.status === 'abertas'
+                ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800'
+                : enrollmentAvailability.status === 'agendadas'
+                ? 'bg-blue-50/80 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800'
+                : 'bg-rose-50/80 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800'
+            }`}
+          >
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase ${
+                    enrollmentAvailability.status === 'abertas'
+                      ? 'bg-emerald-100 dark:bg-emerald-900/70 text-emerald-900 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700'
+                      : enrollmentAvailability.status === 'agendadas'
+                      ? 'bg-blue-100 dark:bg-blue-900/70 text-blue-900 dark:text-blue-200 border border-blue-300 dark:border-blue-700'
+                      : 'bg-rose-100 dark:bg-rose-900/70 text-rose-900 dark:text-rose-200 border border-rose-300 dark:border-rose-700'
+                  }`}
+                >
+                  {enrollmentAvailability.status === 'abertas' ? (
+                    <CheckCircle className="w-3.5 h-3.5" />
+                  ) : enrollmentAvailability.status === 'agendadas' ? (
+                    <Clock className="w-3.5 h-3.5" />
+                  ) : (
+                    <Lock className="w-3.5 h-3.5" />
+                  )}
+                  <span>{enrollmentAvailability.statusLabel}</span>
+                </span>
+                <span className="text-xs font-bold text-slate-900 dark:text-white">
+                  Período de Inscrições no Clube (Ecrã de Login)
+                </span>
+              </div>
+
+              <p className="text-xs text-slate-700 dark:text-slate-200">
+                {enrollmentAvailability.reasonLabel}{' '}
+                <span className="text-slate-600 dark:text-slate-300">
+                  {enrollmentAvailability.isCurrentlyOpen
+                    ? 'O botão «Fazer Inscrição no Clube» está visível no ecrã de login.'
+                    : 'O botão «Fazer Inscrição no Clube» encontra-se oculto no ecrã de login.'}
+                </span>
+              </p>
+
+              {(enrollmentAvailability.openLabel || enrollmentAvailability.closeLabel) && state.settings.enrollmentConfig?.isOpen && (
+                <div className="flex flex-wrap gap-3 text-[11px] text-slate-600 dark:text-slate-300 pt-0.5">
+                  {enrollmentAvailability.openLabel && (
+                    <span>
+                      <strong>Abertura:</strong> {enrollmentAvailability.openLabel}
+                    </span>
+                  )}
+                  {enrollmentAvailability.closeLabel && (
+                    <span>
+                      <strong>Encerramento:</strong> {enrollmentAvailability.closeLabel}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {state.settings.enrollmentConfig?.updatedByName && (
+                <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                  Última atualização por <strong>{state.settings.enrollmentConfig.updatedByName}</strong> em{' '}
+                  {formatDateTimeAO(state.settings.enrollmentConfig.updatedAt)}
+                </p>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {canManageEnrollmentPeriod ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleOpenEnrollmentScheduleModal}
+                    className="px-3.5 py-2 text-xs font-bold text-white bg-blue-900 hover:bg-blue-800 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Calendar className="w-3.5 h-3.5" />
+                    <span>
+                      {enrollmentAvailability.status === 'encerradas'
+                        ? 'Reabrir Inscrições'
+                        : 'Estipular Datas / Reabrir'}
+                    </span>
+                  </button>
+
+                  {state.settings.enrollmentConfig?.isOpen !== false && (
+                    <button
+                      type="button"
+                      onClick={handleCloseEnrollmentsNow}
+                      className="px-3.5 py-2 text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                      <span>Encerrar Imediatamente</span>
+                    </button>
+                  )}
+                </>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-[11px] text-slate-600 dark:text-slate-300">
+                  <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <span>Gestão restrita via Grelha de Permissões (Abrir / Encerrar Inscrições)</span>
+                </div>
+              )}
+            </div>
+          </div>
+
           {!canApproveEnrollments && (
-            <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-xl text-xs text-amber-950 flex items-start gap-2.5 w-full max-w-full">
-              <Lock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div className="p-3.5 bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-950 dark:text-amber-200 flex items-start gap-2.5 w-full max-w-full">
+              <Lock className="w-4 h-4 text-amber-700 dark:text-amber-400 shrink-0 mt-0.5" />
               <div>
                 <p className="font-bold">Modo apenas de consulta</p>
-                <p className="text-[11px] text-amber-900 mt-0.5">
-                  O seu cargo atual não tem a permissão <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">Validar / Recusar Inscrições</code> ativa na Grelha de Permissões gerida pelo Administrador Técnico.
+                <p className="text-[11px] text-amber-900 dark:text-amber-300 mt-0.5">
+                  O seu cargo atual não tem a permissão <code className="font-mono bg-amber-100 dark:bg-amber-900/60 px-1 py-0.5 rounded">Validar / Recusar Inscrições</code> ativa na Grelha de Permissões gerida pelo Administrador Técnico.
                 </p>
               </div>
             </div>
@@ -1311,7 +1530,7 @@ export const MembersModule: React.FC = () => {
                     {filteredAuthRequests.map((req) => {
                       const isTargetDelete = req.operationType === 'eliminacao';
                       const canApproveOperation = isTargetDelete
-                        ? can('members', 'APPROVE') && isDirectorOrSecretary
+                        ? can('members', 'ADMIN') && (isDirector || isAdmin)
                         : can('members', 'ARCHIVE') && (isDirector || isAdmin);
                       const isOwnRequest = req.requestedByUserId === currentUser.id;
                       const canApproveStrict = canApproveOperation && (!isOwnRequest || isAdmin || isDirector);
@@ -1435,12 +1654,12 @@ export const MembersModule: React.FC = () => {
 
                             {req.status === 'aprovado' && (
                               <div className="flex items-center justify-end gap-1.5">
-                                {(isTargetDelete ? can('members', 'ADMIN') : can('members', 'ARCHIVE')) ? (
+                                {(isTargetDelete ? canExecuteApprovedDelete : can('members', 'ARCHIVE')) ? (
                                   <button
                                     type="button"
                                     onClick={() => handleExecuteRequest(req.id)}
                                     className="px-3 py-1.5 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded shadow-xs flex items-center gap-1.5 transition-colors"
-                                    title="Efetivar a operação autorizada no sistema"
+                                    title="Efetivar a operação autorizada no sistema (contas vinculadas são eliminadas automaticamente)"
                                   >
                                     <Check className="w-3.5 h-3.5" />
                                     <span>Executar Operação</span>
@@ -2019,70 +2238,143 @@ export const MembersModule: React.FC = () => {
         </Modal>
       )}
 
-      {/* MODAL: Solicitação Formal de Eliminação Definitiva à Direção (Req 2.1 & 2.4) */}
-      {memberToDelete && (
-        <Modal
-          isOpen={Boolean(memberToDelete)}
-          onClose={() => {
-            setMemberToDelete(null);
-            setDeleteReason('');
-          }}
-          title={`Solicitar Eliminação Definitiva: ${memberToDelete.fullName}`}
-          description="Fluxo formal de autorização prévia da Direção com preservação de registos financeiros."
-          maxWidth="md"
-        >
-          <div className="space-y-4 text-xs">
-            <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-950 rounded-xl space-y-2">
-              <p className="font-bold text-xs text-rose-900 flex items-center gap-1.5">
-                <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0" />
-                <span>Salvaguarda e Autorização Prévia da Direção</span>
-              </p>
-              <p className="leading-relaxed">
-                A solicitação criará um pedido de autorização pendente na Direção. A ficha do membro <strong>não é eliminada de imediato</strong>. Adicionalmente, todos os recibos emitidos, quotas liquidadas e documentos oficiais <strong>são preservados permanentemente</strong> para auditoria.
-              </p>
-              <div className="bg-white/80 p-2 rounded border border-rose-200 font-mono text-[11px] text-slate-800">
-                Membro: <strong>{memberToDelete.fullName}</strong> · Nº: <strong>{memberToDelete.manualNumber}</strong> · ID: <strong>{memberToDelete.id}</strong>
+      {/* MODAL: Eliminação Definitiva ou Solicitação à Direção (Req 2.1 & 2.4 + Eliminação automática da conta vinculada) */}
+      {memberToDelete && (() => {
+        const linkedAccounts = findLinkedUserAccountsForMember(state.users, memberToDelete);
+        return (
+          <Modal
+            isOpen={Boolean(memberToDelete)}
+            onClose={() => {
+              setMemberToDelete(null);
+              setDeleteReason('');
+            }}
+            title={
+              canDirectDeleteMember
+                ? `Eliminar Membro Definitivamente: ${memberToDelete.fullName}`
+                : `Solicitar Eliminação Definitiva: ${memberToDelete.fullName}`
+            }
+            description={
+              canDirectDeleteMember
+                ? 'A ficha do membro e qualquer conta de acesso vinculada serão eliminadas sem necessidade de autorização prévia do administrador.'
+                : 'Fluxo formal de autorização prévia da Direção com preservação de registos financeiros.'
+            }
+            maxWidth="md"
+          >
+            <div className="space-y-4 text-xs">
+              <div className="p-3.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-950 dark:text-rose-100 rounded-xl space-y-2">
+                <p className="font-bold text-xs text-rose-900 dark:text-rose-200 flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 text-rose-700 dark:text-rose-400 shrink-0" />
+                  <span>
+                    {canDirectDeleteMember
+                      ? 'Eliminação Definitiva & Salvaguarda Contabilística'
+                      : 'Salvaguarda e Autorização Prévia da Direção'}
+                  </span>
+                </p>
+                <p className="leading-relaxed">
+                  {canDirectDeleteMember ? (
+                    <>
+                      A eliminação remove permanentemente a ficha do membro. Todos os recibos emitidos, quotas liquidadas e documentos oficiais <strong>são preservados permanentemente</strong> para auditoria.
+                    </>
+                  ) : (
+                    <>
+                      A solicitação criará um pedido de autorização pendente na Direção. Após aprovação e execução (pela Secretaria ou Direção), os recibos e documentos oficiais <strong>são preservados permanentemente</strong> para auditoria.
+                    </>
+                  )}
+                </p>
+                <div className="bg-white/80 dark:bg-slate-900/80 p-2 rounded border border-rose-200 dark:border-rose-800 font-mono text-[11px] text-slate-800 dark:text-slate-100">
+                  Membro: <strong>{memberToDelete.fullName}</strong> · Nº: <strong>{memberToDelete.manualNumber}</strong> · ID: <strong>{memberToDelete.id}</strong>
+                </div>
+              </div>
+
+              {linkedAccounts.length > 0 && (
+                <div className="p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-950 dark:text-amber-100 rounded-xl space-y-1.5">
+                  <p className="font-bold text-xs flex items-center gap-1.5 text-amber-900 dark:text-amber-200">
+                    <Lock className="w-3.5 h-3.5 shrink-0" />
+                    <span>Conta(s) de Acesso Vinculada(s) Detetada(s) ({linkedAccounts.length})</span>
+                  </p>
+                  <p className="leading-relaxed text-[11px]">
+                    Com a eliminação deste membro, a(s) conta(s) abaixo será(ão) <strong>eliminada(s) automaticamente em simultâneo</strong>, sem necessidade de autorização prévia do Administrador Técnico:
+                  </p>
+                  <ul className="space-y-1 pt-1">
+                    {linkedAccounts.map((acc) => (
+                      <li
+                        key={acc.id}
+                        className="font-mono text-[11px] bg-white/80 dark:bg-slate-900/80 px-2 py-1 rounded border border-amber-200 dark:border-amber-800 text-slate-800 dark:text-slate-100"
+                      >
+                        {acc.name} ({acc.email}) · {ROLE_LABELS[acc.role]?.label || acc.role}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
+                  Motivo fundamentado da eliminação <span className="text-rose-500">*</span>
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="Ex: Duplicação de registo comprovada por certidão / Cancelamento definitivo de admissão (mínimo 5 caracteres)"
+                  value={deleteReason}
+                  onChange={(e) => setDeleteReason(e.target.value)}
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 rounded-lg text-xs focus:ring-2 focus:ring-rose-500"
+                  required
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-end gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMemberToDelete(null);
+                    setDeleteReason('');
+                  }}
+                  className="px-3 py-1.5 text-xs text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+                >
+                  Cancelar
+                </button>
+                {canDirectDeleteMember ? (
+                  <>
+                    {isSecretary && !isDirector && !isAdmin && (
+                      <button
+                        type="button"
+                        disabled={deleteReason.trim().length < 5}
+                        onClick={handleDeleteSubmitRequest}
+                        className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-40 rounded transition-colors"
+                      >
+                        Submeter Pedido à Direção
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={deleteReason.trim().length < 5}
+                      onClick={handleDirectDeleteMember}
+                      className="px-4 py-1.5 text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 disabled:opacity-40 rounded shadow-xs flex items-center gap-1.5 transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>
+                        {linkedAccounts.length > 0
+                          ? 'Eliminar Membro e Conta Vinculada'
+                          : 'Eliminar Membro Definitivamente'}
+                      </span>
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={deleteReason.trim().length < 5}
+                    onClick={handleDeleteSubmitRequest}
+                    className="px-4 py-1.5 text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 disabled:opacity-40 rounded shadow-xs flex items-center gap-1.5 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Submeter Pedido de Eliminação à Direção</span>
+                  </button>
+                )}
               </div>
             </div>
-
-            <div>
-              <label className="block text-slate-700 font-semibold mb-1">
-                Motivo fundamentado da eliminação <span className="text-rose-500">*</span>
-              </label>
-              <textarea
-                rows={3}
-                placeholder="Ex: Duplicação de registo comprovada por certidão / Cancelamento definitivo de admissão (mínimo 5 caracteres)"
-                value={deleteReason}
-                onChange={(e) => setDeleteReason(e.target.value)}
-                className="w-full p-2.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-rose-500"
-                required
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => {
-                  setMemberToDelete(null);
-                  setDeleteReason('');
-                }}
-                className="px-3 py-1.5 text-xs text-slate-600 hover:text-slate-900"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={deleteReason.trim().length < 5}
-                onClick={handleDeleteSubmitRequest}
-                className="px-4 py-1.5 text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 disabled:opacity-40 rounded shadow-xs flex items-center gap-1.5 transition-colors"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Submeter Pedido de Eliminação à Direção</span>
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+          </Modal>
+        );
+      })()}
 
       {/* MODAL: Rejeição de Pedido de Autorização com Justificação Obrigatória (Req 2.2) */}
       {rejectingReq && (
@@ -2363,7 +2655,7 @@ export const MembersModule: React.FC = () => {
                   const aspirantes = teamMembers.filter((m) => m.category === 'aspirante').length;
                   const isExpanded = expandedUnitId === unit.id;
                   const availableToAdd = state.members.filter(
-                    (m) => m.status === 'ativo' && m.unitOrTeam !== unit.name
+                    (m) => m.status === 'ativo' && m.unitOrTeam !== unit.name && !isDirectionMember(m, state.users)
                   );
 
                   return (
@@ -2737,18 +3029,25 @@ export const MembersModule: React.FC = () => {
                 </div>
                 <div>
                   <label className="block text-slate-700 font-semibold mb-1">Equipa</label>
-                  <select
-                    value={editFormData.unitOrTeam}
-                    onChange={(e) => setEditFormData({ ...editFormData, unitOrTeam: e.target.value })}
-                    className="w-full p-2 border border-slate-200 rounded bg-white"
-                  >
-                    <option value="">Sem Equipa</option>
-                    {state.settings.units.map((u) => (
-                      <option key={u.id} value={u.name}>
-                        {u.name} ({u.category})
-                      </option>
-                    ))}
-                  </select>
+                  {editingMember && isDirectionMember(editingMember, state.users) ? (
+                    <div className="w-full p-2 border border-blue-200 rounded bg-blue-50 text-blue-900 font-bold text-xs flex items-center justify-between">
+                      <span>Direção</span>
+                      <span className="text-[10px] font-medium text-blue-700">Cargo de Direção</span>
+                    </div>
+                  ) : (
+                    <select
+                      value={editFormData.unitOrTeam}
+                      onChange={(e) => setEditFormData({ ...editFormData, unitOrTeam: e.target.value })}
+                      className="w-full p-2 border border-slate-200 rounded bg-white"
+                    >
+                      <option value="">Sem Equipa</option>
+                      {state.settings.units.map((u) => (
+                        <option key={u.id} value={u.name}>
+                          {u.name} ({u.category})
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
                 {(editFormData.category === 'embaixador' || editFormData.category === 'lider') && (
                   <div className="sm:col-span-2 bg-amber-50/70 p-3 rounded-lg border border-amber-200">
@@ -2990,6 +3289,140 @@ export const MembersModule: React.FC = () => {
                 <FileCheck className="w-3.5 h-3.5" />
                 <span>Guardar Situação Documental</span>
               </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* MODAL: Reabrir / Estipular Datas e Horários do Período de Inscrições */}
+      {isEnrollmentScheduleModalOpen && canManageEnrollmentPeriod && (
+        <Modal
+          isOpen={isEnrollmentScheduleModalOpen}
+          onClose={() => {
+            setIsEnrollmentScheduleModalOpen(false);
+            setEnrollmentScheduleError(null);
+          }}
+          title="Gerir Abertura e Encerramento de Inscrições"
+          description="Estipule a data e horário de abertura e a data e horário de encerramento das inscrições no clube, ou encerre imediatamente."
+          maxWidth="lg"
+        >
+          <form onSubmit={handleReopenEnrollmentsSubmit} className="space-y-4 text-xs">
+            {enrollmentScheduleError && (
+              <div className="p-3 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 rounded-lg flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{enrollmentScheduleError}</span>
+              </div>
+            )}
+
+            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-3">
+              <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
+                <span>Abertura das Inscrições</span>
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
+                    Data de Abertura
+                  </label>
+                  <input
+                    type="date"
+                    value={enrollmentScheduleForm.openDate}
+                    onChange={(e) =>
+                      setEnrollmentScheduleForm((prev) => ({ ...prev, openDate: e.target.value }))
+                    }
+                    className="w-full p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-lg focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
+                    Horário da Abertura
+                  </label>
+                  <input
+                    type="time"
+                    value={enrollmentScheduleForm.openTime}
+                    onChange={(e) =>
+                      setEnrollmentScheduleForm((prev) => ({ ...prev, openTime: e.target.value }))
+                    }
+                    className="w-full p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-lg focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
+                  />
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Se definir uma data/horário futuro, o botão de inscrição no ecrã de login só aparecerá a partir desse momento.
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-3">
+              <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-rose-700 dark:text-rose-400" />
+                <span>Encerramento das Inscrições</span>
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
+                    Data de Encerramento
+                  </label>
+                  <input
+                    type="date"
+                    value={enrollmentScheduleForm.closeDate}
+                    onChange={(e) =>
+                      setEnrollmentScheduleForm((prev) => ({ ...prev, closeDate: e.target.value }))
+                    }
+                    className="w-full p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-lg focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
+                    Horário de Encerramento
+                  </label>
+                  <input
+                    type="time"
+                    value={enrollmentScheduleForm.closeTime}
+                    onChange={(e) =>
+                      setEnrollmentScheduleForm((prev) => ({ ...prev, closeTime: e.target.value }))
+                    }
+                    className="w-full p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-lg focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
+                  />
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Quando a data e o horário de encerramento forem atingidos (ou ao clicar em «Encerrar Imediatamente»), o botão de inscrição desaparecerá automaticamente do ecrã de login.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200 dark:border-slate-700">
+              {state.settings.enrollmentConfig?.isOpen !== false ? (
+                <button
+                  type="button"
+                  onClick={handleCloseEnrollmentsNow}
+                  className="px-3.5 py-2 font-bold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Encerrar Imediatamente</span>
+                </button>
+              ) : (
+                <span />
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsEnrollmentScheduleModalOpen(false);
+                    setEnrollmentScheduleError(null);
+                  }}
+                  className="px-3 py-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors"
+                >
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  <span>Reabrir / Salvar Período</span>
+                </button>
+              </div>
             </div>
           </form>
         </Modal>

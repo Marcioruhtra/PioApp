@@ -32,6 +32,7 @@ import { Modal } from '../common/Modal';
 import { PrintDocumentModal } from '../common/PrintDocumentModal';
 import { signInWithGoogleCalendar, getCalendarAccessToken, syncActivityToGoogleCalendar } from '../../services/googleCalendarService';
 import { canViewActivitiesAttendanceTab } from '../../services/permissionService';
+import { getMemberTeamLabel } from '../../services/accountSyncService';
 
 export const ActivitiesModule: React.FC = () => {
   const [isSyncingCalendar, setIsSyncingCalendar] = useState(false);
@@ -347,21 +348,22 @@ export const ActivitiesModule: React.FC = () => {
 
   // Unidades/Equipas para filtros
   const availableUnits = Array.from(
-    new Set(activeMembers.map((m) => m.unitOrTeam || 'Sem Equipa').filter(Boolean))
+    new Set(activeMembers.map((m) => getMemberTeamLabel(m, state.users)).filter(Boolean))
   );
 
   // Membros filtrados para a chamada
   const filteredAttendanceMembers = activeMembers.filter((m) => {
+    const memberTeamLabel = getMemberTeamLabel(m, state.users);
     const searchLower = attendanceSearchTerm.toLowerCase();
     const matchesSearch =
       !attendanceSearchTerm ||
       m.fullName.toLowerCase().includes(searchLower) ||
       m.manualNumber.toLowerCase().includes(searchLower) ||
-      (m.unitOrTeam && m.unitOrTeam.toLowerCase().includes(searchLower));
+      memberTeamLabel.toLowerCase().includes(searchLower);
 
     const matchesUnit =
       attendanceUnitFilter === 'todas' ||
-      (attendanceUnitFilter === 'Sem Equipa' ? !m.unitOrTeam || m.unitOrTeam === 'Sem Equipa' : m.unitOrTeam === attendanceUnitFilter);
+      memberTeamLabel === attendanceUnitFilter;
 
     if (!attendanceActivity) return matchesSearch && matchesUnit;
 
@@ -436,8 +438,8 @@ export const ActivitiesModule: React.FC = () => {
 
   // Ranking por Unidade
   const unitStats = availableUnits.map((unitName) => {
-    const unitMembers = activeMembers.filter((m) =>
-      unitName === 'Sem Equipa' ? !m.unitOrTeam || m.unitOrTeam === 'Sem Equipa' : m.unitOrTeam === unitName
+    const unitMembers = activeMembers.filter(
+      (m) => getMemberTeamLabel(m, state.users) === unitName
     );
     if (unitMembers.length === 0) return { unitName, rate: 0, memberCount: 0 };
 
@@ -1181,7 +1183,7 @@ export const ActivitiesModule: React.FC = () => {
                               <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-2">
                                 <span className="capitalize text-blue-900 font-semibold">{m.category}</span>
                                 <span>·</span>
-                                <span>Equipa: {m.unitOrTeam || 'Sem Equipa'}</span>
+                                <span>Equipa: {getMemberTeamLabel(m, state.users)}</span>
                               </div>
                             </div>
                           </div>
@@ -1377,7 +1379,7 @@ export const ActivitiesModule: React.FC = () => {
                                 {item.member.manualNumber}
                               </span>
                             </td>
-                            <td className="p-3 text-slate-600">{item.member.unitOrTeam || 'Sem Equipa'}</td>
+                            <td className="p-3 text-slate-600">{getMemberTeamLabel(item.member, state.users)}</td>
                             <td className="p-3 capitalize text-blue-900 font-medium">{item.member.category}</td>
                             <td className="p-3 text-center font-mono font-semibold text-slate-800">
                               {item.attendedEvents} / {item.totalEvents}

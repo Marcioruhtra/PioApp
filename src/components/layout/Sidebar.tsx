@@ -23,6 +23,7 @@ import {
 import { ModuleName } from '../../types';
 import { useClub } from '../../context/ClubContext';
 import { ROLE_LABELS } from '../../services/permissionService';
+import { getStrictLinkedMember, hasMemberPortalAccess } from '../../services/accountSyncService';
 
 interface SidebarProps {
   activeModule: ModuleName;
@@ -61,9 +62,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Contagem de comprovativos pendentes para a Tesouraria
   const pendingProofs = state.paymentProofs.filter(p => p.status === 'submetido').length;
 
+  const linkedMember = getStrictLinkedMember(currentUser, state.members);
+  const canOpenMemberPortal = Boolean(linkedMember) && can('member_portal', 'VIEW');
+
   // Conta circulares não lidas pelo membro
-  const unreadCirculars = currentUser.linkedMemberId 
-    ? (state.circulars || []).filter(c => !c.readBy.includes(currentUser.linkedMemberId!)).length
+  const unreadCirculars = linkedMember
+    ? (state.circulars || []).filter(c => !c.readBy.includes(linkedMember.id)).length
     : 0;
 
   const openDirectivesCount = (state.associateDirectives || []).filter(
@@ -170,10 +174,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
   ];
 
-  // Filtra itens com base nas permissões de visualização (Portal do Membro é acessível a qualquer cargo)
+  // Filtra itens com base nas permissões de visualização e vinculação obrigatória ao Portal do Membro
   const visibleItems = navItems.filter((item) =>
     item.id === 'member_portal'
-      ? true
+      ? canOpenMemberPortal
       : item.id === 'treasury'
       ? can('treasury', 'VIEW') || can('treasury', 'CONFIGURE_QUOTAS') || can('treasury', 'WAIVE_QUOTA_DEBT')
       : can(item.id, 'VIEW')

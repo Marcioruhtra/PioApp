@@ -17,6 +17,7 @@ import { MemberRegistrationForm } from '../members/MemberRegistrationForm';
 import { EnrollmentStatusCard } from '../members/EnrollmentStatusCard';
 import { MemberEnrollmentRequest } from '../../types';
 import {
+  evaluateEnrollmentAvailability,
   lookupMemberOrEnrollmentStatus,
   reconcileApprovedEnrollmentsWithMembers,
   UnifiedEnrollmentLookupResult,
@@ -38,6 +39,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setCurrentUser,
     requestPasswordReset,
     syncFromCloud,
+    refreshFromCloud,
     isCloudLoading,
     submitEnrollmentRequest,
   } = useClub();
@@ -55,6 +57,23 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [statusLookupBI, setStatusLookupBI] = useState('');
   const [statusLookupBirth, setStatusLookupBirth] = useState('');
   const [lookupResult, setLookupResult] = useState<UnifiedEnrollmentLookupResult | null | 'not_found'>(null);
+  const [nowTick, setNowTick] = useState<Date>(() => new Date());
+
+  React.useEffect(() => {
+    const timer = setInterval(() => setNowTick(new Date()), 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const enrollmentAvailability = React.useMemo(
+    () => evaluateEnrollmentAvailability(state.settings.enrollmentConfig, nowTick),
+    [state.settings.enrollmentConfig, nowTick]
+  );
+
+  React.useEffect(() => {
+    if (!enrollmentAvailability.isCurrentlyOpen && enrollmentModalTab === 'form' && !submittedRequest) {
+      setEnrollmentModalTab('status');
+    }
+  }, [enrollmentAvailability.isCurrentlyOpen, enrollmentModalTab, submittedRequest]);
 
   const GENERIC_LOGIN_ERROR = 'Não foi possível iniciar sessão. Verifique as credenciais ou contacte o administrador.';
 
@@ -185,10 +204,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       }
 
       const resolvedMember =
-        matchingMember ||
-        (user.linkedMemberId
+        user.linkedMemberId
           ? membersToSearch.find((m: any) => m && (m.id === user.linkedMemberId || m.manualNumber === user.linkedMemberId))
-          : undefined);
+          : undefined;
 
       const syncedLoginUser =
         resolvedMember && user.role !== 'admin_tecnico' && user.id !== 'INST-001' && user.id !== 'USR-ADMIN'
@@ -360,28 +378,32 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             </form>
 
             {/* Secção de Inscrição Direta no Clube (Exclusiva do Ecrã de Login) */}
-            <div className="pt-4 border-t border-slate-200 space-y-2">
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2">
+              {enrollmentAvailability.isCurrentlyOpen && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void refreshFromCloud();
+                    setSubmittedRequest(null);
+                    setEnrollmentModalTab('form');
+                    setIsEnrollmentModalOpen(true);
+                  }}
+                  className="w-full py-2.5 px-4 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 rounded-lg font-bold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <UserPlus className="w-4 h-4 text-emerald-700" />
+                  <span>Fazer Inscrição no Clube</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
-                  setSubmittedRequest(null);
-                  setEnrollmentModalTab('form');
-                  setIsEnrollmentModalOpen(true);
-                }}
-                className="w-full py-2.5 px-4 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 rounded-lg font-bold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <UserPlus className="w-4 h-4 text-emerald-700" />
-                <span>Fazer Inscrição no Clube</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
+                  void refreshFromCloud();
                   setSubmittedRequest(null);
                   setLookupResult(null);
                   setEnrollmentModalTab('status');
                   setIsEnrollmentModalOpen(true);
                 }}
-                className="w-full text-[11px] font-semibold text-slate-500 hover:text-blue-900 transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                className="w-full text-[11px] font-semibold text-slate-500 dark:text-slate-400 hover:text-blue-900 dark:hover:text-blue-400 transition-colors flex items-center justify-center gap-1 cursor-pointer"
               >
                 <Search className="w-3 h-3" />
                 <span>Consultar estado de inscrição</span>
@@ -445,19 +467,21 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       >
         <div className="space-y-5">
           {/* Alternador entre Formulário de Inscrição e Consulta de Estado */}
-          <div className="flex border-b border-slate-200 gap-4">
-            <button
-              type="button"
-              onClick={() => setEnrollmentModalTab('form')}
-              className={`pb-2.5 px-1 text-xs font-bold border-b-2 transition-colors flex items-center gap-1.5 ${
-                enrollmentModalTab === 'form'
-                  ? 'border-blue-900 text-blue-900'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              <span>Formulário de Inscrição</span>
-            </button>
+          <div className="flex border-b border-slate-200 dark:border-slate-700 gap-4">
+            {enrollmentAvailability.isCurrentlyOpen && (
+              <button
+                type="button"
+                onClick={() => setEnrollmentModalTab('form')}
+                className={`pb-2.5 px-1 text-xs font-bold border-b-2 transition-colors flex items-center gap-1.5 ${
+                  enrollmentModalTab === 'form'
+                    ? 'border-blue-900 text-blue-900 dark:border-blue-400 dark:text-blue-400'
+                    : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+                }`}
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Formulário de Inscrição</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setEnrollmentModalTab('status')}
@@ -472,7 +496,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             </button>
           </div>
 
-          {enrollmentModalTab === 'form' ? (
+          {enrollmentModalTab === 'form' && (enrollmentAvailability.isCurrentlyOpen || submittedRequest) ? (
             submittedRequest ? (
               <div className="p-5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl space-y-4 text-xs">
                 <div className="flex items-start gap-3">

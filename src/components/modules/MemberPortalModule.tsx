@@ -52,6 +52,7 @@ import {
   getTodayISODate,
   resolveQuotaConfig,
 } from '../../services/quotaService';
+import { getStrictLinkedMember, getMemberTeamLabel } from '../../services/accountSyncService';
 
 const SUGGESTION_CATEGORY_MAP: Record<SuggestionCategory, { label: string; badgeBg: string; text: string }> = {
   geral: { label: 'Geral', badgeBg: 'bg-slate-100 border-slate-300 text-slate-800', text: 'text-slate-800' },
@@ -67,6 +68,7 @@ export const MemberPortalModule: React.FC = () => {
   const {
     state,
     currentUser,
+    can,
     submitPaymentProof,
     createCircular,
     markCircularAsRead,
@@ -87,11 +89,9 @@ export const MemberPortalModule: React.FC = () => {
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const [fileUploadError, setFileUploadError] = useState<string | null>(null);
 
-  // Membro vinculado ao utilizador autenticado
-  const memberId = currentUser.linkedMemberId || 'PIO-MEM-001';
-  const member =
-    state.members.find((m) => m.id === memberId || m.manualNumber === memberId) ||
-    state.members[0];
+  // Membro estritamente vinculado ao utilizador autenticado (sem fallback para outros membros)
+  const member = getStrictLinkedMember(currentUser, state.members);
+  const memberId = member?.id || '';
 
   // Dados exclusivos do membro
   const myReceipts = state.receipts.filter((r) => r.memberId === member?.id);
@@ -120,7 +120,9 @@ export const MemberPortalModule: React.FC = () => {
     return false;
   });
 
-  const unreadMessagesCount = myMessages.filter(m => !(m.readBy && m.readBy.includes(member?.id))).length;
+  const unreadMessagesCount = member
+    ? myMessages.filter(m => !(m.readBy && m.readBy.includes(member.id))).length
+    : 0;
   const [replyInputMap, setReplyInputMap] = useState<Record<string, string>>({});
   const [replyFeedback, setReplyFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -303,10 +305,10 @@ export const MemberPortalModule: React.FC = () => {
 
   const allSuggestions = state.suggestions || [];
   
-  // Sugestões do próprio membro
-  const mySuggestions = allSuggestions.filter(
-    (s) => s.memberId === memberId || s.memberId === currentUser.id || s.memberName === currentUser.name
-  );
+  // Sugestões exclusivas do próprio membro vinculado
+  const mySuggestions = member
+    ? allSuggestions.filter((s) => s.memberId === member.id)
+    : [];
 
   // Sugestões para visualização do Diretor
   const directorSuggestions = allSuggestions.filter((s) => {
@@ -389,8 +391,20 @@ export const MemberPortalModule: React.FC = () => {
     markSuggestionAsViewed(suggestionId);
   };
 
-  if (!member) {
-    return <div className="p-8 text-center text-slate-500">Nenhum membro vinculado ao perfil ativo.</div>;
+  if (!member || !can('member_portal', 'VIEW')) {
+    return (
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 max-w-xl mx-auto text-center space-y-3 shadow-xs">
+        <div className="w-12 h-12 rounded-full bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 flex items-center justify-center mx-auto">
+          <ShieldAlert className="w-6 h-6" />
+        </div>
+        <h2 className="text-base font-black text-slate-900 dark:text-white">
+          Acesso Restrito ao Portal do Membro
+        </h2>
+        <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+          Esta conta de utilizador não está vinculada a nenhuma ficha de membro oficial. Apenas utilizadores vinculados a um membro têm acesso ao Portal do Membro, garantindo que cada pessoa visualize e interaja exclusivamente com os seus próprios dados e registos.
+        </p>
+      </div>
+    );
   }
 
   return (
@@ -417,7 +431,7 @@ export const MemberPortalModule: React.FC = () => {
             </div>
             <h1 className="text-2xl font-black text-slate-100 mt-1">{member.fullName}</h1>
             <p className="text-xs text-slate-300 mt-0.5">
-              Matrícula Oficial: <strong>{member.manualNumber}</strong> · Equipa: <strong>{member.unitOrTeam?.trim() || 'Sem Equipa'}</strong>
+              Matrícula Oficial: <strong>{member.manualNumber}</strong> · Equipa: <strong>{getMemberTeamLabel(member, state.users)}</strong>
             </p>
           </div>
 

@@ -2,6 +2,7 @@ import React from 'react';
 import { LayoutDashboard, Users, Wallet, UserCheck, Menu } from 'lucide-react';
 import { ModuleName } from '../../types';
 import { useClub } from '../../context/ClubContext';
+import { hasMemberPortalAccess } from '../../services/accountSyncService';
 
 interface MobileNavProps {
   activeModule: ModuleName;
@@ -14,7 +15,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
   onSelectModule,
   onOpenSidebar,
 }) => {
-  const { can, currentUser } = useClub();
+  const { can, currentUser, state } = useClub();
 
   return (
     <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 text-slate-300 flex items-center justify-around h-16 px-1 safe-area-pb shadow-lg">
@@ -76,7 +77,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
         </button>
       )}
 
-      {currentUser.role === 'membro' && can('member_portal', 'VIEW') && (
+      {currentUser.role === 'membro' && hasMemberPortalAccess(currentUser, state.members) && can('member_portal', 'VIEW') && (
         <button
           onClick={() => onSelectModule('member_portal')}
           className="flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] transition-colors"

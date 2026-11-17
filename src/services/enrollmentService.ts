@@ -7,6 +7,7 @@
 import {
   DeletionRequest,
   EnrollmentDocumentDeliveryMethod,
+  EnrollmentScheduleConfig,
   Member,
   MemberCategory,
   MemberDocumentationStatus,
@@ -756,4 +757,230 @@ export function lookupMemberOrEnrollmentStatus(
   }
 
   return undefined;
+}
+
+export function getLocalTodayDateString(now: Date = new Date()): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function getLocalCurrentTimeString(now: Date = new Date()): string {
+  const h = String(now.getHours()).padStart(2, '0');
+  const min = String(now.getMinutes()).padStart(2, '0');
+  return `${h}:${min}`;
+}
+
+export function parseEnrollmentLocalDateTime(
+  dateStr?: string,
+  timeStr?: string,
+  defaultTime: string = '00:00',
+  defaultSeconds: number = 0
+): Date | null {
+  const cleanDate = String(dateStr || '').trim();
+  if (!cleanDate) return null;
+
+  const dateMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!dateMatch) return null;
+
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  const cleanTime = String(timeStr || '').trim() || defaultTime;
+  const timeMatch = cleanTime.match(/^(\d{2}):(\d{2})$/);
+  if (!timeMatch) return null;
+
+  const hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2]);
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+
+  const parsed = new Date(year, month - 1, day, hours, minutes, defaultSeconds, 0);
+  if (
+    isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return parsed;
+}
+
+export function formatScheduleDateTimeLabel(
+  dateStr?: string,
+  timeStr?: string,
+  fallbackTime: string = '00:00'
+): string {
+  const cleanDate = String(dateStr || '').trim();
+  if (!cleanDate) return '-';
+  const parts = cleanDate.split('-');
+  const formattedDate = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : cleanDate;
+  const formattedTime = String(timeStr || '').trim() || fallbackTime;
+  return `${formattedDate} às ${formattedTime}`;
+}
+
+export function validateEnrollmentScheduleInput(
+  input: {
+    openDate?: string;
+    openTime?: string;
+    closeDate?: string;
+    closeTime?: string;
+  },
+  now: Date = new Date()
+): {
+  valid: boolean;
+  error?: string;
+  normalized?: {
+    openDate?: string;
+    openTime?: string;
+    closeDate?: string;
+    closeTime?: string;
+  };
+} {
+  const cleanOpenDate = String(input.openDate || '').trim();
+  const cleanOpenTime = String(input.openTime || '').trim();
+  const cleanCloseDate = String(input.closeDate || '').trim();
+  const cleanCloseTime = String(input.closeTime || '').trim();
+
+  if (cleanOpenTime && !cleanOpenDate) {
+    return { valid: false, error: 'Indique a data de abertura para o horário de abertura estipulado.' };
+  }
+  if (cleanCloseTime && !cleanCloseDate) {
+    return { valid: false, error: 'Indique a data de encerramento para o horário de encerramento estipulado.' };
+  }
+
+  let openAt: Date | null = null;
+  let closeAt: Date | null = null;
+
+  if (cleanOpenDate) {
+    openAt = parseEnrollmentLocalDateTime(cleanOpenDate, cleanOpenTime || '00:00', '00:00', 0);
+    if (!openAt) {
+      return { valid: false, error: 'Data ou horário de abertura inválido.' };
+    }
+  }
+
+  if (cleanCloseDate) {
+    closeAt = parseEnrollmentLocalDateTime(
+      cleanCloseDate,
+      cleanCloseTime || '23:59',
+      '23:59',
+      cleanCloseTime ? 0 : 59
+    );
+    if (!closeAt) {
+      return { valid: false, error: 'Data ou horário de encerramento inválido.' };
+    }
+    if (closeAt.getTime() <= now.getTime()) {
+      return {
+        valid: false,
+        error: 'A data e o horário de encerramento estipulados devem ser futuros.',
+      };
+    }
+  }
+
+  if (openAt && closeAt && closeAt.getTime() <= openAt.getTime()) {
+    return {
+      valid: false,
+      error: 'A data e o horário de encerramento devem ser posteriores à abertura.',
+    };
+  }
+
+  return {
+    valid: true,
+    normalized: {
+      openDate: cleanOpenDate || undefined,
+      openTime: cleanOpenDate ? cleanOpenTime || '00:00' : undefined,
+      closeDate: cleanCloseDate || undefined,
+      closeTime: cleanCloseDate ? cleanCloseTime || '23:59' : undefined,
+    },
+  };
+}
+
+export interface EnrollmentAvailabilityStatus {
+  isCurrentlyOpen: boolean;
+  status: 'abertas' | 'agendadas' | 'encerradas';
+  statusLabel: string;
+  reasonLabel: string;
+  openLabel?: string;
+  closeLabel?: string;
+}
+
+export function evaluateEnrollmentAvailability(
+  config?: EnrollmentScheduleConfig,
+  now: Date = new Date()
+): EnrollmentAvailabilityStatus {
+  if (!config) {
+    return {
+      isCurrentlyOpen: true,
+      status: 'abertas',
+      statusLabel: 'Inscrições Abertas',
+      reasonLabel: 'As inscrições no clube estão atualmente abertas.',
+    };
+  }
+
+  const openLabel = config.openDate
+    ? formatScheduleDateTimeLabel(config.openDate, config.openTime, '00:00')
+    : undefined;
+  const closeLabel = config.closeDate
+    ? formatScheduleDateTimeLabel(config.closeDate, config.closeTime, '23:59')
+    : undefined;
+
+  if (!config.isOpen) {
+    return {
+      isCurrentlyOpen: false,
+      status: 'encerradas',
+      statusLabel: 'Inscrições Encerradas',
+      reasonLabel: 'As inscrições foram encerradas pela Direção do Clube.',
+      openLabel,
+      closeLabel,
+    };
+  }
+
+  const openAt = config.openDate
+    ? parseEnrollmentLocalDateTime(config.openDate, config.openTime, '00:00', 0)
+    : null;
+  const closeAt = config.closeDate
+    ? parseEnrollmentLocalDateTime(
+        config.closeDate,
+        config.closeTime,
+        '23:59',
+        config.closeTime ? 0 : 59
+      )
+    : null;
+
+  if (openAt && now.getTime() < openAt.getTime()) {
+    return {
+      isCurrentlyOpen: false,
+      status: 'agendadas',
+      statusLabel: 'Abertura Agendada',
+      reasonLabel: `As inscrições abrirão em ${openLabel}${closeLabel ? ` e encerram em ${closeLabel}` : ''}.`,
+      openLabel,
+      closeLabel,
+    };
+  }
+
+  if (closeAt && now.getTime() >= closeAt.getTime()) {
+    return {
+      isCurrentlyOpen: false,
+      status: 'encerradas',
+      statusLabel: 'Inscrições Encerradas',
+      reasonLabel: `O período estipulado de inscrições encerrou em ${closeLabel}.`,
+      openLabel,
+      closeLabel,
+    };
+  }
+
+  return {
+    isCurrentlyOpen: true,
+    status: 'abertas',
+    statusLabel: 'Inscrições Abertas',
+    reasonLabel: closeLabel
+      ? `Inscrições abertas até ${closeLabel}.`
+      : 'As inscrições no clube estão atualmente abertas.',
+    openLabel,
+    closeLabel,
+  };
 }

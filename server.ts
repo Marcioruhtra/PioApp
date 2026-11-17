@@ -107,6 +107,21 @@ async function startServer() {
     cliPort ||
     (!isProduction && envPort === 8080 ? defaultAppPort : envPort || defaultAppPort);
 
+  httpServer.on('error', (err: any) => {
+    console.error('Server error:', err);
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${port} is already in use.`);
+    }
+  });
+
+  const onShutdown = () => {
+    httpServer.close(() => {
+      process.exit(0);
+    });
+  };
+  process.once('SIGTERM', onShutdown);
+  process.once('SIGINT', onShutdown);
+
   httpServer.listen(port, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${port}`);
   });

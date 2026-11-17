@@ -34,6 +34,7 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   { module: 'members', action: 'DELETE', description: 'Eliminar definitivamente membros' },
   { module: 'members', action: 'APPROVE', description: 'Aprovar eliminações de membros' },
   { module: 'members', action: 'APPROVE_ENROLLMENT', description: 'Analisar, validar ou recusar solicitações de inscrição de novos membros (Concedido pelo Administrador)' },
+  { module: 'members', action: 'MANAGE_ENROLLMENT_PERIOD', description: 'Encerrar e reabrir o período de inscrições no clube (Concedido pelo Administrador)' },
   { module: 'members', action: 'EXPORT', description: 'Exportar listas de membros' },
   { module: 'members', action: 'PRINT', description: 'Imprimir fichas e cartões de membros' },
   { module: 'members', action: 'ADMIN', description: 'Gestão institucional e renovação anual' },
@@ -142,7 +143,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   admin_tecnico: {
     dashboard: ['VIEW'],
     associate_director: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
-    members: ['VIEW', 'VIEW_DOSSIER_360', 'CREATE', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'APPROVE_ENROLLMENT'],
+    members: ['VIEW', 'VIEW_DOSSIER_360', 'CREATE', 'EDIT', 'DELETE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'APPROVE_ENROLLMENT', 'MANAGE_ENROLLMENT_PERIOD'],
     treasury: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'ARCHIVE', 'ADMIN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
     activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
@@ -162,7 +163,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   diretor: {
     dashboard: ['VIEW'],
     associate_director: [],
-    members: ['VIEW', 'VIEW_DOSSIER_360', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
+    members: ['VIEW', 'VIEW_DOSSIER_360', 'EDIT', 'DELETE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'MANAGE_ENROLLMENT_PERIOD'],
     treasury: ['VIEW', 'CREATE', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
     activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT'],
@@ -428,6 +429,7 @@ export const ACTION_LABELS: Record<PermissionAction, string> = {
   WAIVE_QUOTA_DEBT: 'Zerar Dívida de Quotas',
   VIEW_DOSSIER_360: 'Dossiê 360º do Membro',
   APPROVE_ENROLLMENT: 'Validar / Recusar Inscrições',
+  MANAGE_ENROLLMENT_PERIOD: 'Abrir / Encerrar Inscrições',
 };
 
 /**
@@ -447,6 +449,8 @@ export const syncPermissionsMatrix = (
   const needsWaiveDebtPermSync = !synced.admin_tecnico?.treasury?.includes('WAIVE_QUOTA_DEBT');
   const needsDossier360Sync = !synced.admin_tecnico?.members?.includes('VIEW_DOSSIER_360');
   const needsEnrollmentPermSync = !synced.admin_tecnico?.members?.includes('APPROVE_ENROLLMENT');
+  const needsEnrollmentPeriodPermSync = !synced.admin_tecnico?.members?.includes('MANAGE_ENROLLMENT_PERIOD');
+  const needsMemberDeleteSync = !synced.admin_tecnico?.members?.includes('DELETE');
 
   for (const role of roles) {
     if (!synced[role]) {
@@ -463,6 +467,12 @@ export const syncPermissionsMatrix = (
         }
         if (needsEnrollmentPermSync && base[role].members.includes('APPROVE_ENROLLMENT') && !synced[role].members.includes('APPROVE_ENROLLMENT')) {
           synced[role].members.push('APPROVE_ENROLLMENT');
+        }
+        if (needsEnrollmentPeriodPermSync && base[role].members.includes('MANAGE_ENROLLMENT_PERIOD') && !synced[role].members.includes('MANAGE_ENROLLMENT_PERIOD')) {
+          synced[role].members.push('MANAGE_ENROLLMENT_PERIOD');
+        }
+        if (needsMemberDeleteSync && base[role].members.includes('DELETE') && !synced[role].members.includes('DELETE')) {
+          synced[role].members.push('DELETE');
         }
       } else if (mod === 'activities') {
         for (const act of base[role].activities) {
@@ -594,6 +604,54 @@ export const hasApproveEnrollmentPermission = (
     return permissionsMatrix[role].members.includes('APPROVE_ENROLLMENT');
   }
   return hasPermission(role, 'members', 'APPROVE_ENROLLMENT');
+};
+
+/**
+ * Apenas o Administrador Técnico pode conceder ou revogar a permissão de abrir/encerrar
+ * inscrições na grelha de permissões.
+ */
+export const canGrantManageEnrollmentPeriod = (actorRole: RoleType): boolean => {
+  return actorRole === 'admin_tecnico';
+};
+
+/**
+ * Verifica pela Grelha de Permissões se o cargo pode abrir, agendar ou encerrar inscrições no clube.
+ */
+export const hasManageEnrollmentPeriodPermission = (
+  role: RoleType,
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>
+): boolean => {
+  if (role === 'admin_tecnico') return true;
+  if (permissionsMatrix?.[role] && Array.isArray(permissionsMatrix[role].members)) {
+    return permissionsMatrix[role].members.includes('MANAGE_ENROLLMENT_PERIOD');
+  }
+  return hasPermission(role, 'members', 'MANAGE_ENROLLMENT_PERIOD');
+};
+
+/**
+ * Verifica se o cargo pode executar a eliminação definitiva de um membro (e da respetiva conta vinculada)
+ * sem necessitar de autorização prévia do Administrador Técnico (audit: ADMIN).
+ * - Diretor/Admin ou qualquer cargo com members:DELETE / members:ADMIN pode eliminar diretamente.
+ * - A Secretaria pode também executar eliminações já aprovadas pela Direção (members:APPROVE) ou diretas se possuir members:DELETE/ADMIN.
+ */
+export const canExecuteMemberDeletion = (
+  role: RoleType,
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>,
+  hasDirectionApproval: boolean = false
+): boolean => {
+  if (role === 'admin_tecnico') return true;
+  const actions =
+    permissionsMatrix?.[role] && Array.isArray(permissionsMatrix[role].members)
+      ? permissionsMatrix[role].members
+      : ROLE_PERMISSIONS_MATRIX[role]?.members || [];
+
+  if (actions.includes('DELETE') || actions.includes('ADMIN')) {
+    return true;
+  }
+  if (hasDirectionApproval && role === 'secretario' && actions.includes('APPROVE')) {
+    return true;
+  }
+  return false;
 };
 
 

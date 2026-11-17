@@ -33,7 +33,8 @@ export type PermissionAction =
   | 'CONFIGURE_QUOTAS'
   | 'WAIVE_QUOTA_DEBT'
   | 'VIEW_DOSSIER_360'
-  | 'APPROVE_ENROLLMENT';
+  | 'APPROVE_ENROLLMENT'
+  | 'MANAGE_ENROLLMENT_PERIOD';
 
 export type ModuleName =
   | 'dashboard'
@@ -527,6 +528,19 @@ export interface QuotaDebtWaiver {
   reversedByName?: string;
 }
 
+export interface EnrollmentScheduleConfig {
+  isOpen: boolean;
+  openDate?: string; // AAAA-MM-DD
+  openTime?: string; // HH:mm
+  closeDate?: string; // AAAA-MM-DD
+  closeTime?: string; // HH:mm
+  closedImmediatelyAt?: string;
+  updatedAt?: string;
+  updatedByUserId?: string;
+  updatedByName?: string;
+  updatedByRole?: RoleType;
+}
+
 export interface ClubSettings {
   clubName: string;
   headquarters?: string;
@@ -545,6 +559,7 @@ export interface ClubSettings {
   documentTemplates: Record<DocumentType, string>; // Conteúdo padrão de modelos
   permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>;
   quotaConfig?: QuotaConfig;
+  enrollmentConfig?: EnrollmentScheduleConfig;
 }
 
 export type ChaplaincyCategory = 'pedido_oracao' | 'aconselhamento' | 'visita_apoio' | 'outro';

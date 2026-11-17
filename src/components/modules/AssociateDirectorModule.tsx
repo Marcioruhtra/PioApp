@@ -38,6 +38,7 @@ import {
 import { formatDateAO } from '../../utils/date';
 import { Modal } from '../common/Modal';
 import { ROLE_LABELS } from '../../services/permissionService';
+import { getMemberTeamLabel, isDirectionMember } from '../../services/accountSyncService';
 
 interface AssociateDirectorModuleProps {
   onNavigate?: (module: ModuleName) => void;
@@ -189,8 +190,8 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
   );
 
   const membersWithoutTeam = useMemo(
-    () => activeMembers.filter((m) => !m.unitOrTeam?.trim()),
-    [activeMembers]
+    () => activeMembers.filter((m) => !m.unitOrTeam?.trim() && !isDirectionMember(m, state.users)),
+    [activeMembers, state.users]
   );
 
   const evaluations = state.teamEvaluations || [];
@@ -1581,7 +1582,7 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
                         </div>
                       </td>
                       <td className="py-3 px-3 text-slate-700">
-                        {member.unitOrTeam || 'Sem Equipa'}
+                        {getMemberTeamLabel(member, state.users)}
                       </td>
                       <td className="py-3 px-3">
                         <div className="font-semibold text-slate-900">{progress.targetTitle}</div>

@@ -21,6 +21,7 @@ import {
 import { ModuleName } from '../../types';
 import { useClub } from '../../context/ClubContext';
 import { ROLE_LABELS } from '../../services/permissionService';
+import { hasMemberPortalAccess } from '../../services/accountSyncService';
 
 interface AndroidDrawerProps {
   isOpen: boolean;
@@ -67,7 +68,7 @@ export const AndroidDrawer: React.FC<AndroidDrawerProps> = ({
 
   const visibleItems = navItems.filter((item) =>
     item.id === 'member_portal'
-      ? true
+      ? hasMemberPortalAccess(currentUser, state.members) && can('member_portal', 'VIEW')
       : item.id === 'treasury'
       ? can('treasury', 'VIEW') || can('treasury', 'CONFIGURE_QUOTAS') || can('treasury', 'WAIVE_QUOTA_DEBT')
       : can(item.id, 'VIEW')

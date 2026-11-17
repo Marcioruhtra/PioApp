@@ -24,6 +24,7 @@ import { Modal } from '../common/Modal';
 import { formatDateAO, formatDateTimeAO, getTodayISODate } from '../../utils/date';
 import { formatKz } from '../../utils/currency';
 import { buildMemberDossierData } from '../../utils/memberDossier';
+import { getMemberTeamLabel, isDirectionMember } from '../../services/accountSyncService';
 
 interface MemberDossierModalProps {
   member: Member | null;
@@ -142,7 +143,7 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
                   {CATEGORY_DISPLAY[member.category]}
                 </span>
                 <span aria-hidden="true">·</span>
-                <span>{member.unitOrTeam?.trim() || 'Sem Equipa'}</span>
+                <span>{getMemberTeamLabel(member, state.users)}</span>
                 <span aria-hidden="true">·</span>
                 <span className="tabular-nums">
                   {dossier.ageYears !== null
@@ -444,26 +445,35 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
 
                   <div className="flex items-center gap-2">
                     <span className="text-slate-600 dark:text-slate-400 whitespace-nowrap">Equipa:</span>
-                    <select
-                      value={member.unitOrTeam || ''}
-                      onChange={(e) => {
-                        const newTeam = e.target.value || undefined;
-                        const res = assignMemberToUnit(member.id, newTeam);
-                        if (res.success) {
-                          onFeedback('success', `Equipa atualizada para ${newTeam || 'Sem Equipa'}.`);
-                        } else {
-                          onFeedback('error', res.error || 'Erro ao alocar equipa.');
-                        }
-                      }}
-                      className="p-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-xs font-medium focus:ring-1 focus:ring-blue-900"
-                    >
-                      <option value="">Sem Equipa</option>
-                      {state.settings.units.map((u) => (
-                        <option key={u.id} value={u.name}>
-                          {u.name} ({u.category})
-                        </option>
-                      ))}
-                    </select>
+                    {isDirectionMember(member, state.users) ? (
+                      <span
+                        className="px-2.5 py-1 rounded-lg bg-blue-900/10 dark:bg-blue-900/40 text-blue-900 dark:text-blue-200 border border-blue-200 dark:border-blue-800 text-xs font-bold"
+                        title="Membros da Direção (Diretor, Diretor-associado e Secretário) não pertencem a equipas."
+                      >
+                        Direção
+                      </span>
+                    ) : (
+                      <select
+                        value={member.unitOrTeam || ''}
+                        onChange={(e) => {
+                          const newTeam = e.target.value || undefined;
+                          const res = assignMemberToUnit(member.id, newTeam);
+                          if (res.success) {
+                            onFeedback('success', `Equipa atualizada para ${newTeam || 'Sem Equipa'}.`);
+                          } else {
+                            onFeedback('error', res.error || 'Erro ao alocar equipa.');
+                          }
+                        }}
+                        className="p-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-xs font-medium focus:ring-1 focus:ring-blue-900"
+                      >
+                        <option value="">Sem Equipa</option>
+                        {state.settings.units.map((u) => (
+                          <option key={u.id} value={u.name}>
+                            {u.name} ({u.category})
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                 </div>
               </div>

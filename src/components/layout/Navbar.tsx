@@ -18,6 +18,7 @@ import { ROLE_LABELS } from '../../services/permissionService';
 import { RoleType } from '../../types';
 import { isNotificationAuthorizedForUser } from '../../utils/notificationSecurity';
 import { MemberDigitalCardModal } from '../common/MemberDigitalCardModal';
+import { getStrictLinkedMember } from '../../services/accountSyncService';
 
 interface NavbarProps {
   onToggleSidebar: () => void;
@@ -31,57 +32,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, onOpenNotificat
   const [isMyCardOpen, setIsMyCardOpen] = useState(false);
 
   const myMemberRecord = React.useMemo(() => {
-    if (!currentUser) return null;
-    const cleanUserEmail = (currentUser.email || '').trim().toLowerCase();
-    const cleanUserName = (currentUser.name || '').trim().toLowerCase();
-
-    if (currentUser.linkedMemberId) {
-      const found = state.members.find(
-        (m) =>
-          m.id === currentUser.linkedMemberId ||
-          m.manualNumber === currentUser.linkedMemberId ||
-          (m.manualNumber && m.manualNumber.toLowerCase() === currentUser.linkedMemberId?.toLowerCase())
-      );
-      if (found) return found;
-    }
-
-    if (cleanUserEmail) {
-      const found = state.members.find(
-        (m) => m.email && m.email.trim().toLowerCase() === cleanUserEmail
-      );
-      if (found) return found;
-    }
-
-    if (cleanUserName) {
-      const found = state.members.find(
-        (m) => m.fullName && m.fullName.trim().toLowerCase() === cleanUserName
-      );
-      if (found) return found;
-    }
-    return {
-      id: currentUser.id,
-      manualNumber: 'EBX-0010126',
-      fullName: currentUser.name,
-      birthDate: '1998-01-01',
-      gender: 'M' as const,
-      identityCardNumber: '007849312LA041',
-      phone: '923000000',
-      email: currentUser.email,
-      address: 'Luanda, Angola',
-      category: 'embaixador' as const,
-      status: 'ativo' as const,
-      annualRenewalYear: state.settings.currentYear || 2026,
-      joinedDate: '2026-01-01',
-      guardianName: 'Secretaria Executiva',
-      emergencyContact: {
-        name: 'Secretaria Executiva',
-        relationship: 'Direção do Clube',
-        phone: '931793101',
-      },
-      createdAt: currentUser.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-  }, [currentUser, state.members, state.settings.currentYear]);
+    return getStrictLinkedMember(currentUser, state.members) || null;
+  }, [currentUser, state.members]);
 
   // Notificações estritamente autorizadas e confidenciais para o utilizador ativo
   const authorizedNotifications = (state.notifications || []).filter((n) =>
@@ -183,15 +135,17 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, onOpenNotificat
             </button>
           </div>
 
-          {/* Cartão Digital do Utilizador */}
-          <button
-            onClick={() => setIsMyCardOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 active:bg-slate-800 border border-slate-700 rounded-lg text-xs text-amber-400 font-bold transition-all cursor-pointer shadow-xs"
-            title="Visualizar o meu Cartão Digital com QR Code"
-          >
-            <CreditCard className="w-4 h-4 text-amber-400" />
-            <span className="hidden xl:inline">O Meu Cartão</span>
-          </button>
+          {/* Cartão Digital do Utilizador (apenas para utilizadores vinculados a uma ficha de membro) */}
+          {myMemberRecord && (
+            <button
+              onClick={() => setIsMyCardOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 active:bg-slate-800 border border-slate-700 rounded-lg text-xs text-amber-400 font-bold transition-all cursor-pointer shadow-xs"
+              title="Visualizar o meu Cartão Digital com QR Code"
+            >
+              <CreditCard className="w-4 h-4 text-amber-400" />
+              <span className="hidden xl:inline">O Meu Cartão</span>
+            </button>
+          )}
 
           {/* Utilizador Ativo */}
           <div className="flex items-center gap-2 pl-2 border-l border-slate-800">

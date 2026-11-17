@@ -860,7 +860,8 @@ export const AuditAndAdminModule: React.FC = () => {
                         const isAdminOnlyPerm =
                           isAssociateExclusive ||
                           p.action === 'WAIVE_QUOTA_DEBT' ||
-                          p.action === 'APPROVE_ENROLLMENT';
+                          p.action === 'APPROVE_ENROLLMENT' ||
+                          p.action === 'MANAGE_ENROLLMENT_PERIOD';
                         const canToggleThisPerm = isAdminOnlyPerm
                           ? currentUser.role === 'admin_tecnico'
                           : canToggleModulePerm;
@@ -878,7 +879,7 @@ export const AuditAndAdminModule: React.FC = () => {
                               className="w-3.5 h-3.5 text-blue-900 rounded focus:ring-blue-900 cursor-pointer disabled:cursor-not-allowed"
                             />
                             <span>{p.description}</span>
-                            {(p.action === 'WAIVE_QUOTA_DEBT' || p.action === 'APPROVE_ENROLLMENT') && currentUser.role !== 'admin_tecnico' && (
+                            {(p.action === 'WAIVE_QUOTA_DEBT' || p.action === 'APPROVE_ENROLLMENT' || p.action === 'MANAGE_ENROLLMENT_PERIOD') && currentUser.role !== 'admin_tecnico' && (
                               <span className="text-[10px] text-slate-400">(Apenas Admin)</span>
                             )}
                           </label>

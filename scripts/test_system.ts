@@ -26,6 +26,9 @@ import {
   hasDossier360Permission,
   canGrantApproveEnrollment,
   hasApproveEnrollmentPermission,
+  canGrantManageEnrollmentPeriod,
+  hasManageEnrollmentPeriodPermission,
+  canExecuteMemberDeletion,
   ACTION_LABELS,
 } from '../src/services/permissionService';
 import {
@@ -42,12 +45,25 @@ import {
   startEnrollmentReview,
   getEnrollmentPhaseInfo,
   lookupEnrollmentStatusByIdentity,
+  validateEnrollmentScheduleInput,
+  evaluateEnrollmentAvailability,
 } from '../src/services/enrollmentService';
 import { formatKz } from '../src/utils/currency';
 import { formatDateAO, calculateAgeYears } from '../src/utils/date';
 import { INACTIVITY_TIMEOUT_MS, isSessionInactive, getRemainingInactivityMs } from '../src/utils/inactivity';
 import { buildMemberDossierData } from '../src/utils/memberDossier';
-import { syncMemberChangesToUsers, syncUserWithLinkedMember, reconcileUsersAndMembers } from '../src/services/accountSyncService';
+import {
+  syncMemberChangesToUsers,
+  syncUserWithLinkedMember,
+  reconcileUsersAndMembers,
+  getStrictLinkedMember,
+  hasMemberPortalAccess,
+  findLinkedUserAccountsForMember,
+  removeLinkedAccountsForMember,
+  isDirectionRole,
+  isDirectionMember,
+  getMemberTeamLabel,
+} from '../src/services/accountSyncService';
 import {
   countChargeableSundays,
   calculateMemberQuotaSummary,
@@ -60,6 +76,13 @@ import {
   resolveDocumentOperatorSigner,
   resolveReceiptOperatorSigner,
 } from '../src/utils/documentSigner';
+import {
+  getNextMonotonicSyncTimestamp,
+  hasCloudPayloadChanged,
+  isSafeCloudWritePayload,
+  shouldSkipIncomingSnapshot,
+  getReconnectDelayMs,
+} from '../src/services/realtimeSyncService';
 import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver, FeeDefinition } from '../src/types';
 
 function runTests() {
@@ -1878,7 +1901,7 @@ function runTests() {
   // Após recusa, candidato pode submeter nova ficha corrigida e consulta devolve a mais recente
   const correctedReq = {
     ...buildEnrollmentRequest(phaseForm, 'EBX-6540719', 2026, [rejectedReq]),
-    submittedAt: '2026-11-16T18:00:00.000Z',
+    submittedAt: new Date(new Date(rejectedReq.submittedAt).getTime() + 60000).toISOString(),
   };
   const validDuringCorrection = validateEnrollmentSubmission(phaseForm, existingEnrollmentMembers, [rejectedReq]);
   assert(
@@ -2204,6 +2227,448 @@ function runTests() {
       hasAnalise?.photoDocumentBase64 === 'data:image/jpeg;base64,FOTO_ANALISE' &&
       hasAnalise?.reviewMessage === 'Em análise pela Secretaria - Aguarda conferência física',
     "Inscrições pendentes ou em análise mantêm todos os documentos anexados (B.I., Fotografia) e mensagens intactos"
+  );
+
+  // 38. ABERTURA, AGENDAMENTO E ENCERRAMENTO DE INSCRIÇÕES PELO DIRETOR (COM PERMISSÃO NA GRELHA)
+  console.log("\n38. Teste de Controlo do Período de Inscrições e Permissão RBAC:");
+
+  assert(
+    PERMISSION_CATALOG.some((p) => p.module === 'members' && p.action === 'MANAGE_ENROLLMENT_PERIOD') &&
+      Boolean(ACTION_LABELS.MANAGE_ENROLLMENT_PERIOD),
+    "Catálogo RBAC e rótulos incluem a permissão MANAGE_ENROLLMENT_PERIOD"
+  );
+
+  assert(
+    canGrantManageEnrollmentPeriod('admin_tecnico') === true &&
+      canGrantManageEnrollmentPeriod('diretor') === false &&
+      canGrantManageEnrollmentPeriod('secretario') === false,
+    "Apenas o Administrador Técnico pode conceder ou revogar a permissão de gerir período de inscrições"
+  );
+
+  const syncedForPeriod = syncPermissionsMatrix();
+  assert(
+    hasManageEnrollmentPeriodPermission('admin_tecnico', syncedForPeriod) === true &&
+      hasManageEnrollmentPeriodPermission('diretor', syncedForPeriod) === true &&
+      hasManageEnrollmentPeriodPermission('secretario', syncedForPeriod) === false,
+    "Diretor e Administrador possuem permissão por padrão na matriz sincronizada; outros cargos não"
+  );
+
+  const revokedDirectorMatrix = JSON.parse(JSON.stringify(syncedForPeriod));
+  revokedDirectorMatrix.diretor.members = revokedDirectorMatrix.diretor.members.filter(
+    (a: string) => a !== 'MANAGE_ENROLLMENT_PERIOD'
+  );
+  const reSyncedAfterRevoke = syncPermissionsMatrix(revokedDirectorMatrix);
+  assert(
+    hasManageEnrollmentPeriodPermission('diretor', reSyncedAfterRevoke) === false,
+    "Quando revogada pelo Administrador na Grelha de Permissões, o Diretor perde acesso mesmo após sincronização"
+  );
+
+  // Validação de datas e horários de abertura e encerramento
+  const refNow = new Date(2026, 10, 17, 10, 0, 0); // 17/11/2026 10:00 local
+  const invalidNoDateOpen = validateEnrollmentScheduleInput({ openTime: '08:00' }, refNow);
+  const invalidCloseBeforeOpen = validateEnrollmentScheduleInput(
+    {
+      openDate: '2026-11-20',
+      openTime: '09:00',
+      closeDate: '2026-11-20',
+      closeTime: '08:30',
+    },
+    refNow
+  );
+  const validScheduledWindow = validateEnrollmentScheduleInput(
+    {
+      openDate: '2026-11-18',
+      openTime: '08:00',
+      closeDate: '2026-11-25',
+      closeTime: '17:30',
+    },
+    refNow
+  );
+  assert(
+    !invalidNoDateOpen.valid &&
+      !invalidCloseBeforeOpen.valid &&
+      validScheduledWindow.valid &&
+      validScheduledWindow.normalized?.openDate === '2026-11-18' &&
+      validScheduledWindow.normalized?.openTime === '08:00' &&
+      validScheduledWindow.normalized?.closeDate === '2026-11-25' &&
+      validScheduledWindow.normalized?.closeTime === '17:30',
+    "Validação de datas e horários rejeita intervalos inválidos e aceita abertura e encerramento válidos"
+  );
+
+  // Avaliação de disponibilidade ao longo do tempo e encerramento imediato
+  const defaultOpenEval = evaluateEnrollmentAvailability(undefined, refNow);
+  const closedImmediatelyEval = evaluateEnrollmentAvailability({ isOpen: false }, refNow);
+  const scheduledConfig = {
+    isOpen: true,
+    openDate: '2026-11-18',
+    openTime: '08:00',
+    closeDate: '2026-11-25',
+    closeTime: '17:30',
+  };
+  const beforeOpenEval = evaluateEnrollmentAvailability(scheduledConfig, new Date(2026, 10, 18, 7, 59, 0));
+  const atOpenEval = evaluateEnrollmentAvailability(scheduledConfig, new Date(2026, 10, 18, 8, 0, 0));
+  const duringWindowEval = evaluateEnrollmentAvailability(scheduledConfig, new Date(2026, 10, 20, 14, 0, 0));
+  const atCloseEval = evaluateEnrollmentAvailability(scheduledConfig, new Date(2026, 10, 25, 17, 30, 0));
+
+  assert(
+    defaultOpenEval.isCurrentlyOpen === true &&
+      closedImmediatelyEval.isCurrentlyOpen === false &&
+      closedImmediatelyEval.status === 'encerradas' &&
+      beforeOpenEval.isCurrentlyOpen === false &&
+      beforeOpenEval.status === 'agendadas' &&
+      atOpenEval.isCurrentlyOpen === true &&
+      atOpenEval.status === 'abertas' &&
+      duringWindowEval.isCurrentlyOpen === true &&
+      atCloseEval.isCurrentlyOpen === false &&
+      atCloseEval.status === 'encerradas',
+    "Botão de inscrição no login desaparece quando encerrado imediatamente ou fora do horário estipulado e reaparece na janela aberta"
+  );
+
+  // 39. REFORÇO DA SINCRONIZAÇÃO EM TEMPO REAL (ORDEM MONOTÓNICA, PROTEÇÃO CONTRA CASCA VAZIA E FILTRO DE ECOS)
+  console.log("\n39. Teste de Reforço da Sincronização em Tempo Real (Multi-dispositivo e Multi-aba):");
+
+  // 39.1 Carimbo temporal estritamente crescente (evita colisões no mesmo milissegundo)
+  const sameMs = Date.parse('2026-11-17T12:00:00.500Z');
+  const t1 = getNextMonotonicSyncTimestamp(undefined, sameMs);
+  const t2 = getNextMonotonicSyncTimestamp(t1, sameMs);
+  const t3 = getNextMonotonicSyncTimestamp(t2, sameMs - 5000);
+  assert(
+    Date.parse(t1) === sameMs &&
+      Date.parse(t2) > Date.parse(t1) &&
+      Date.parse(t3) > Date.parse(t2),
+    "getNextMonotonicSyncTimestamp garante ordem estritamente crescente mesmo com relógios empatados ou atrasados"
+  );
+
+  // 39.2 Deteção seletiva de alterações na nuvem (ignora alterações locais de currentUser)
+  const baseSyncState = { ...state };
+  const localOnlyUserSwitchState = {
+    ...baseSyncState,
+    currentUser: { ...baseSyncState.currentUser, name: 'Troca Apenas Local' },
+  };
+  const realCloudMutationState = {
+    ...baseSyncState,
+    members: [...baseSyncState.members],
+  };
+  assert(
+    hasCloudPayloadChanged(baseSyncState, localOnlyUserSwitchState) === false &&
+      hasCloudPayloadChanged(baseSyncState, realCloudMutationState) === true &&
+      hasCloudPayloadChanged(null, baseSyncState) === true,
+    "hasCloudPayloadChanged ignora trocas locais de sessão e deteta apenas mutações reais dos dados da nuvem"
+  );
+
+  // 39.3 Proteção contra sobrescrita acidental por estado-casca vazio não hidratado
+  const emptyShell = createCleanCloudShellState();
+  assert(
+    isSafeCloudWritePayload(emptyShell, false) === false &&
+      isSafeCloudWritePayload(emptyShell, true) === true &&
+      isSafeCloudWritePayload(state, false) === true,
+    "isSafeCloudWritePayload bloqueia escrita de estado vazio não hidratado na nuvem e permite quando há dados ou confirmação"
+  );
+
+  // 39.4 Filtragem rigorosa de ecos locais pendentes e snapshots já aplicados
+  assert(
+    shouldSkipIncomingSnapshot({ remoteUpdatedAt: t2, lastRemoteUpdatedAt: t1, lastPushedUpdatedAt: t1, hasPendingWrites: true }) === true &&
+      shouldSkipIncomingSnapshot({ remoteUpdatedAt: t1, lastRemoteUpdatedAt: t1, lastPushedUpdatedAt: '', hasPendingWrites: false }) === true &&
+      shouldSkipIncomingSnapshot({ remoteUpdatedAt: t2, lastRemoteUpdatedAt: t1, lastPushedUpdatedAt: t2, hasPendingWrites: false }) === true &&
+      shouldSkipIncomingSnapshot({ remoteUpdatedAt: t3, lastRemoteUpdatedAt: t1, lastPushedUpdatedAt: t2, hasPendingWrites: false }) === false,
+    "shouldSkipIncomingSnapshot descarta ecos pendentes e versões já processadas, aplicando novas atualizações remotas"
+  );
+
+  // 39.5 Backoff exponencial limitado para auto-reconexão do listener em tempo real
+  assert(
+    getReconnectDelayMs(0) === 1500 &&
+      getReconnectDelayMs(1) === 3000 &&
+      getReconnectDelayMs(2) === 6000 &&
+      getReconnectDelayMs(10) === 15000,
+    "getReconnectDelayMs calcula backoff exponencial seguro com teto de 15 segundos"
+  );
+
+  // 40. RESTRIÇÃO ESTRITA DO PORTAL DO MEMBRO A UTILIZADORES VINCULADOS
+  console.log("\n40. Teste de Acesso Exclusivo ao Portal do Membro para Utilizadores Vinculados:");
+
+  const linkedMemberTarget = state.members[0];
+  const unlinkedDirectorAccount: UserAccount = {
+    id: 'USR-NO-LINK',
+    name: 'Diretor Sem Ficha',
+    email: linkedMemberTarget.email || 'diretor.sem.ficha@clubedalvorada.ao', // Mesmo que e-mail coincida, sem linkedMemberId não acede!
+    role: 'diretor',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  const orphanedLinkedAccount: UserAccount = {
+    id: 'USR-ORPHAN-LINK',
+    name: 'Conta Com Ficha Eliminada',
+    email: 'orfao@clubedalvorada.ao',
+    role: 'membro',
+    linkedMemberId: 'CDA-MEM-INEXISTENTE-999',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  const validLinkedAccount: UserAccount = {
+    id: 'USR-VALID-LINK',
+    name: linkedMemberTarget.fullName,
+    email: linkedMemberTarget.email || 'membro.vinculado@clubedalvorada.ao',
+    role: 'membro',
+    linkedMemberId: linkedMemberTarget.id,
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+
+  assert(
+    hasMemberPortalAccess(unlinkedDirectorAccount, state.members) === false &&
+      getStrictLinkedMember(unlinkedDirectorAccount, state.members) === undefined,
+    "Utilizador sem vinculação a um membro não tem acesso ao Portal do Membro"
+  );
+  assert(
+    hasMemberPortalAccess(adminAccountFromCloud, state.members) === false &&
+      getStrictLinkedMember(adminAccountFromCloud, state.members) === undefined,
+    "Conta institucional/administrativa sem ficha vinculada não tem acesso ao Portal do Membro"
+  );
+  assert(
+    hasMemberPortalAccess(orphanedLinkedAccount, state.members) === false &&
+      getStrictLinkedMember(orphanedLinkedAccount, state.members) === undefined,
+    "Utilizador cujo linkedMemberId não existe nos membros ativos não tem acesso ao Portal do Membro (sem fallback para outro membro)"
+  );
+  assert(
+    hasMemberPortalAccess(validLinkedAccount, state.members) === true &&
+      getStrictLinkedMember(validLinkedAccount, state.members)?.id === linkedMemberTarget.id,
+    "Utilizador vinculado acede exclusivamente à ficha do seu próprio membro"
+  );
+
+  const reconciledUnlinked = reconcileUsersAndMembers(
+    [unlinkedDirectorAccount, orphanedLinkedAccount, validLinkedAccount],
+    state.members
+  );
+  assert(
+    reconciledUnlinked.users[0].linkedMemberId === undefined &&
+      reconciledUnlinked.users[1].linkedMemberId === undefined &&
+      reconciledUnlinked.users[2].linkedMemberId === linkedMemberTarget.id,
+    "reconcileUsersAndMembers não vincula contas sem linkedMemberId e limpa referências órfãs"
+  );
+
+  // 41. ELIMINAÇÃO DE MEMBRO PELA SECRETARIA REMOVE CONTA VINCULADA SEM AUTORIZAÇÃO PRÉVIA DO ADMINISTRADOR
+  console.log("\n41. Teste de Eliminação de Conta Vinculada na Eliminação de Membro pela Secretaria (Sem Autorização do Admin):");
+
+  const memberBeingDeleted = {
+    id: 'CDA-MEM-ELIM-LINK',
+    manualNumber: 'EMB-888',
+    email: 'membro.eliminado@clubedalvorada.ao',
+  };
+
+  const linkedByIdAcc: UserAccount = {
+    id: 'USR-LINKED-ID',
+    name: 'Membro Vinculado por ID',
+    email: 'outro.email@clubedalvorada.ao',
+    role: 'membro',
+    linkedMemberId: 'CDA-MEM-ELIM-LINK',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  const linkedByManualAcc: UserAccount = {
+    id: 'USR-LINKED-MAN',
+    name: 'Membro Vinculado por Nº Manual',
+    email: 'manual.only@clubedalvorada.ao',
+    role: 'conselheiro',
+    manualNumber: 'emb-888',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  const linkedByEmailAcc: UserAccount = {
+    id: 'USR-LINKED-EMAIL',
+    name: 'Membro Vinculado por E-mail',
+    email: 'MEMBRO.ELIMINADO@clubedalvorada.ao',
+    role: 'instrutor',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  const unrelatedMemberAcc: UserAccount = {
+    id: 'USR-OTHER-MEMBER',
+    name: 'Outro Membro Ativo',
+    email: 'outro.membro@clubedalvorada.ao',
+    role: 'membro',
+    linkedMemberId: 'CDA-MEM-OUTRO',
+    manualNumber: 'EMB-999',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+  const institutionalAccWithMatchingEmail: UserAccount = {
+    id: 'INST-001',
+    name: 'Conta Institucional',
+    email: 'membro.eliminado@clubedalvorada.ao',
+    role: 'admin_tecnico',
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+
+  const poolBeforeDelete: UserAccount[] = [
+    linkedByIdAcc,
+    linkedByManualAcc,
+    linkedByEmailAcc,
+    unrelatedMemberAcc,
+    institutionalAccWithMatchingEmail,
+  ];
+
+  const foundLinked = findLinkedUserAccountsForMember(poolBeforeDelete, memberBeingDeleted);
+  assert(
+    foundLinked.length === 3 &&
+      foundLinked.some((u) => u.id === 'USR-LINKED-ID') &&
+      foundLinked.some((u) => u.id === 'USR-LINKED-MAN') &&
+      foundLinked.some((u) => u.id === 'USR-LINKED-EMAIL') &&
+      !foundLinked.some((u) => u.id === 'INST-001'),
+    "findLinkedUserAccountsForMember identifica contas vinculadas por ID, Nº Manual ou e-mail e protege contas institucionais/admin"
+  );
+
+  const deletionOutcome = removeLinkedAccountsForMember(poolBeforeDelete, memberBeingDeleted);
+  assert(
+    deletionOutcome.removedUsers.length === 3 &&
+      deletionOutcome.updatedUsers.length === 2 &&
+      deletionOutcome.updatedUsers.some((u) => u.id === 'USR-OTHER-MEMBER') &&
+      deletionOutcome.updatedUsers.some((u) => u.id === 'INST-001'),
+    "removeLinkedAccountsForMember elimina todas as contas vinculadas ao membro preservando outras contas e conta institucional"
+  );
+
+  // Secretaria pode executar eliminação aprovada pela Direção (sem precisar de admin_tecnico ou audit:ADMIN)
+  assert(
+    canExecuteMemberDeletion('secretario', ROLE_PERMISSIONS_MATRIX, true) === true &&
+      !hasPermission('secretario', 'audit', 'ADMIN'),
+    "Secretaria executa eliminação de membro (e respetiva conta vinculada) após aprovação da Direção sem precisar de audit:ADMIN do Administrador"
+  );
+
+  // Secretaria com members:DELETE atribuído na grelha pode eliminar diretamente (sem pedir autorização ao Administrador)
+  const matrixWithSecDelete = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  matrixWithSecDelete.secretario.members = [...matrixWithSecDelete.secretario.members, 'DELETE'];
+  assert(
+    canExecuteMemberDeletion('secretario', matrixWithSecDelete, false) === true &&
+      canExecuteMemberDeletion('diretor', ROLE_PERMISSIONS_MATRIX, false) === true &&
+      canExecuteMemberDeletion('membro', ROLE_PERMISSIONS_MATRIX, true) === false,
+    "Secretaria com members:DELETE e Diretor podem eliminar membro e conta vinculada diretamente; membro comum permanece bloqueado"
+  );
+
+  // 42. REGRA DE EQUIPA "DIREÇÃO" PARA DIRETOR, DIRETOR-ASSOCIADO E SECRETÁRIO
+  console.log("\n42. Teste de Enquadramento 'Direção' em vez de 'Sem Equipa' para Diretor, Diretor-associado e Secretário:");
+
+  assert(
+    isDirectionRole('diretor') === true &&
+      isDirectionRole('diretor_associado') === true &&
+      isDirectionRole('secretario') === true &&
+      isDirectionRole('membro') === false &&
+      isDirectionRole('tesoureiro') === false &&
+      isDirectionRole('instrutor') === false,
+    "Apenas Diretor, Diretor-associado e Secretário são classificados como cargos de Direção"
+  );
+
+  const dirMem: Member = {
+    ...state.members[0],
+    id: 'CDA-MEM-DIR',
+    manualNumber: 'DIR-001',
+    fullName: 'Diretor Sem Equipa Anterior',
+    email: 'dir.membro@clubedalvorada.ao',
+    unitOrTeam: 'Equipa Águias',
+  };
+  const assocDirMem: Member = {
+    ...state.members[0],
+    id: 'CDA-MEM-ASSOC',
+    manualNumber: 'DIR-002',
+    fullName: 'Diretor-associado Membro',
+    email: 'assoc.membro@clubedalvorada.ao',
+    unitOrTeam: undefined,
+  };
+  const secMem: Member = {
+    ...state.members[0],
+    id: 'CDA-MEM-SEC',
+    manualNumber: 'DIR-003',
+    fullName: 'Secretário Membro',
+    email: 'sec.membro@clubedalvorada.ao',
+    unitOrTeam: undefined,
+  };
+  const regularNoTeamMem: Member = {
+    ...state.members[0],
+    id: 'CDA-MEM-REG-NONE',
+    manualNumber: 'REG-001',
+    fullName: 'Membro Regular Sem Equipa',
+    email: 'regular.sem@clubedalvorada.ao',
+    unitOrTeam: undefined,
+  };
+  const regularWithTeamMem: Member = {
+    ...state.members[0],
+    id: 'CDA-MEM-REG-TEAM',
+    manualNumber: 'REG-002',
+    fullName: 'Membro Regular Com Equipa',
+    email: 'regular.com@clubedalvorada.ao',
+    unitOrTeam: 'Equipa Águias',
+  };
+
+  const dirUsersPool: UserAccount[] = [
+    {
+      id: 'U-DIR',
+      name: dirMem.fullName,
+      email: dirMem.email!,
+      role: 'diretor',
+      linkedMemberId: dirMem.id,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'U-ASSOC',
+      name: assocDirMem.fullName,
+      email: assocDirMem.email!,
+      role: 'diretor_associado',
+      linkedMemberId: assocDirMem.id,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'U-SEC',
+      name: secMem.fullName,
+      email: secMem.email!,
+      role: 'secretario',
+      linkedMemberId: secMem.id,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'U-REG-1',
+      name: regularNoTeamMem.fullName,
+      email: regularNoTeamMem.email!,
+      role: 'membro',
+      linkedMemberId: regularNoTeamMem.id,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'U-REG-2',
+      name: regularWithTeamMem.fullName,
+      email: regularWithTeamMem.email!,
+      role: 'membro',
+      linkedMemberId: regularWithTeamMem.id,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+  ];
+
+  assert(
+    isDirectionMember(dirMem, dirUsersPool) === true &&
+      isDirectionMember(assocDirMem, dirUsersPool) === true &&
+      isDirectionMember(secMem, dirUsersPool) === true &&
+      isDirectionMember(regularNoTeamMem, dirUsersPool) === false,
+    "isDirectionMember identifica corretamente membros vinculados a Diretor, Diretor-associado e Secretário"
+  );
+
+  assert(
+    getMemberTeamLabel(dirMem, dirUsersPool) === 'Direção' &&
+      getMemberTeamLabel(assocDirMem, dirUsersPool) === 'Direção' &&
+      getMemberTeamLabel(secMem, dirUsersPool) === 'Direção' &&
+      getMemberTeamLabel(regularNoTeamMem, dirUsersPool) === 'Sem Equipa' &&
+      getMemberTeamLabel(regularWithTeamMem, dirUsersPool) === 'Equipa Águias',
+    "getMemberTeamLabel exibe 'Direção' para Diretor, Diretor-associado e Secretário, 'Sem Equipa' para regulares sem equipa e mantém equipa dos restantes"
+  );
+
+  const dirMembersPool = [dirMem, assocDirMem, secMem, regularNoTeamMem, regularWithTeamMem];
+  const dirReconciled = reconcileUsersAndMembers(dirUsersPool, dirMembersPool);
+  assert(
+    dirReconciled.members.find((m) => m.id === 'CDA-MEM-DIR')?.unitOrTeam === undefined &&
+      dirReconciled.members.find((m) => m.id === 'CDA-MEM-REG-TEAM')?.unitOrTeam === 'Equipa Águias',
+    "reconcileUsersAndMembers remove automaticamente qualquer equipa anterior de membros com cargo de Direção mantendo a equipa dos restantes"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");
