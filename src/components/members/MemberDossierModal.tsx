@@ -24,7 +24,6 @@ import { Modal } from '../common/Modal';
 import { formatDateAO, formatDateTimeAO, getTodayISODate } from '../../utils/date';
 import { formatKz } from '../../utils/currency';
 import { buildMemberDossierData } from '../../utils/memberDossier';
-import { getMemberTeamLabel, isDirectionMember } from '../../services/accountSyncService';
 
 interface MemberDossierModalProps {
   member: Member | null;
@@ -143,7 +142,7 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
                   {CATEGORY_DISPLAY[member.category]}
                 </span>
                 <span aria-hidden="true">·</span>
-                <span>{getMemberTeamLabel(member, state.users)}</span>
+                <span>{member.unitOrTeam?.trim() || 'Sem Equipa'}</span>
                 <span aria-hidden="true">·</span>
                 <span className="tabular-nums">
                   {dossier.ageYears !== null
@@ -445,35 +444,26 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
 
                   <div className="flex items-center gap-2">
                     <span className="text-slate-600 dark:text-slate-400 whitespace-nowrap">Equipa:</span>
-                    {isDirectionMember(member, state.users) ? (
-                      <span
-                        className="px-2.5 py-1 rounded-lg bg-blue-900/10 dark:bg-blue-900/40 text-blue-900 dark:text-blue-200 border border-blue-200 dark:border-blue-800 text-xs font-bold"
-                        title="Membros da Direção (Diretor, Diretor-associado e Secretário) não pertencem a equipas."
-                      >
-                        Direção
-                      </span>
-                    ) : (
-                      <select
-                        value={member.unitOrTeam || ''}
-                        onChange={(e) => {
-                          const newTeam = e.target.value || undefined;
-                          const res = assignMemberToUnit(member.id, newTeam);
-                          if (res.success) {
-                            onFeedback('success', `Equipa atualizada para ${newTeam || 'Sem Equipa'}.`);
-                          } else {
-                            onFeedback('error', res.error || 'Erro ao alocar equipa.');
-                          }
-                        }}
-                        className="p-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-xs font-medium focus:ring-1 focus:ring-blue-900"
-                      >
-                        <option value="">Sem Equipa</option>
-                        {state.settings.units.map((u) => (
-                          <option key={u.id} value={u.name}>
-                            {u.name} ({u.category})
-                          </option>
-                        ))}
-                      </select>
-                    )}
+                    <select
+                      value={member.unitOrTeam || ''}
+                      onChange={(e) => {
+                        const newTeam = e.target.value || undefined;
+                        const res = assignMemberToUnit(member.id, newTeam);
+                        if (res.success) {
+                          onFeedback('success', `Equipa atualizada para ${newTeam || 'Sem Equipa'}.`);
+                        } else {
+                          onFeedback('error', res.error || 'Erro ao alocar equipa.');
+                        }
+                      }}
+                      className="p-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-xs font-medium focus:ring-1 focus:ring-blue-900"
+                    >
+                      <option value="">Sem Equipa</option>
+                      {state.settings.units.map((u) => (
+                        <option key={u.id} value={u.name}>
+                          {u.name} ({u.category})
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
               </div>
@@ -512,13 +502,13 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
               <>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60">
                   <div>
-                    <span className="text-[11px] text-slate-500">Módulos Registados</span>
+                    <span className="text-[11px] text-slate-500">Classes Registadas</span>
                     <p className="font-bold text-slate-900 dark:text-white mt-0.5 tabular-nums">
                       {dossier.training.classesCount}
                     </p>
                   </div>
                   <div>
-                    <span className="text-[11px] text-slate-500">Medalhas Registadas</span>
+                    <span className="text-[11px] text-slate-500">Especialidades Registadas</span>
                     <p className="font-bold text-slate-900 dark:text-white mt-0.5 tabular-nums">
                       {dossier.training.honorsCount}
                     </p>
@@ -533,7 +523,7 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
 
                 {dossier.training.items.length === 0 ? (
                   <div className="p-8 text-center text-slate-500 border border-slate-200 dark:border-slate-800 rounded-xl">
-                    Nenhum módulo ou medalha atribuída a este membro até ao momento.
+                    Nenhuma classe ou especialidade atribuída a este membro até ao momento.
                   </div>
                 ) : (
                   <div className="divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
@@ -549,7 +539,7 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
                               <span>{item.targetTitle}</span>
                             </div>
                             <div className="text-[11px] text-slate-500 mt-0.5">
-                              <span>{item.type === 'classe' ? 'Módulo Formativo' : 'Medalha'}</span>
+                              <span>{item.type === 'classe' ? 'Classe Progressiva' : 'Especialidade'}</span>
                               <span aria-hidden="true"> · </span>
                               <span>Instrutor: {item.instructorName}</span>
                               <span aria-hidden="true"> · </span>

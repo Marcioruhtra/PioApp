@@ -391,7 +391,7 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
                         </thead>
                         <tbody className="text-xs divide-y divide-slate-300">
                           <tr>
-                            <td className="p-2 border-r border-slate-300 font-semibold">Investidura e Medalhas</td>
+                            <td className="p-2 border-r border-slate-300 font-semibold">Investidura e Especialidades</td>
                             <td className="p-2 border-r border-slate-300">Instrução e Formação</td>
                             <td className="p-2 border-r border-slate-300">Satisfatória / Excelente</td>
                             <td className="p-2 text-right font-bold text-emerald-800">Aprovado</td>

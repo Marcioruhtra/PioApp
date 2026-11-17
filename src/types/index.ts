@@ -11,7 +11,9 @@ export type RoleType =
   | 'tesoureiro' 
   | 'instrutor' 
   | 'membro'
-  | 'capelao';
+  | 'capelao'
+  | 'conselheiro'
+  | 'musica';
 
 export type PermissionAction =
   | 'VIEW'

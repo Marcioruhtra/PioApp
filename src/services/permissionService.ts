@@ -65,9 +65,9 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   { module: 'activities', action: 'PRINT', description: 'Imprimir atas estruturadas e presenças' },
   { module: 'activities', action: 'ARCHIVE', description: 'Encerrar atividades concluídas' },
 
-  // Formação (Módulos e Medalhas)
-  { module: 'training', action: 'VIEW', description: 'Consultar módulos e medalhas' },
-  { module: 'training', action: 'CREATE', description: 'Atribuir módulo/medalha a membro' },
+  // Formação (Classes e Especialidades)
+  { module: 'training', action: 'VIEW', description: 'Consultar classes e especialidades' },
+  { module: 'training', action: 'CREATE', description: 'Atribuir classe/especialidade a membro' },
   { module: 'training', action: 'EDIT', description: 'Registar progresso e requisitos concluídos' },
   { module: 'training', action: 'APPROVE', description: 'Validação final de investidura (Diretor)' },
   { module: 'training', action: 'EXPORT', description: 'Exportar mapa de formação' },
@@ -143,7 +143,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   admin_tecnico: {
     dashboard: ['VIEW'],
     associate_director: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
-    members: ['VIEW', 'VIEW_DOSSIER_360', 'CREATE', 'EDIT', 'DELETE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'APPROVE_ENROLLMENT', 'MANAGE_ENROLLMENT_PERIOD'],
+    members: ['VIEW', 'VIEW_DOSSIER_360', 'CREATE', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'APPROVE_ENROLLMENT', 'MANAGE_ENROLLMENT_PERIOD'],
     treasury: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'ARCHIVE', 'ADMIN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
     activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
@@ -163,7 +163,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   diretor: {
     dashboard: ['VIEW'],
     associate_director: [],
-    members: ['VIEW', 'VIEW_DOSSIER_360', 'EDIT', 'DELETE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'MANAGE_ENROLLMENT_PERIOD'],
+    members: ['VIEW', 'VIEW_DOSSIER_360', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'MANAGE_ENROLLMENT_PERIOD'],
     treasury: ['VIEW', 'CREATE', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
     activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT'],
@@ -300,6 +300,46 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     awards: [],
     music: ['VIEW'],
   },
+  conselheiro: {
+    dashboard: ['VIEW'],
+    associate_director: [],
+    members: ['VIEW'],
+    treasury: [],
+    activities: ['VIEW', 'CREATE', 'EDIT'],
+    training: ['VIEW', 'CREATE', 'EDIT'],
+    documents: ['VIEW'],
+    member_portal: ['VIEW'],
+    requests: ['VIEW', 'CREATE'],
+    reports: ['VIEW'],
+    settings: [],
+    audit: [],
+    chaplaincy: ['VIEW', 'CREATE'],
+    suggestions: ['CREATE'],
+    messaging: ['VIEW', 'CREATE'],
+    inventory: ['VIEW', 'CREATE'],
+    awards: ['VIEW', 'CREATE'],
+    music: ['VIEW', 'CREATE'],
+  },
+  musica: {
+    dashboard: ['VIEW'],
+    associate_director: [],
+    members: ['VIEW'],
+    treasury: [],
+    activities: ['VIEW', 'CREATE', 'EDIT'],
+    training: ['VIEW'],
+    documents: ['VIEW', 'CREATE', 'PRINT'],
+    member_portal: ['VIEW'],
+    requests: ['VIEW', 'CREATE'],
+    reports: ['VIEW'],
+    settings: [],
+    audit: [],
+    chaplaincy: ['VIEW'],
+    suggestions: ['CREATE'],
+    messaging: ['VIEW', 'CREATE'],
+    inventory: ['VIEW'],
+    awards: ['VIEW', 'CREATE'],
+    music: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
+  },
 };
 
 export const getRolePermissions = (role: RoleType) => ROLE_PERMISSIONS_MATRIX[role];
@@ -350,7 +390,7 @@ export const ROLE_LABELS: Record<RoleType, { label: string; description: string 
   },
   instrutor: {
     label: 'Instrutor / Guia',
-    description: 'Acompanhamento de módulos, medalhas, cumprimento de requisitos e presenças.',
+    description: 'Acompanhamento de classes, especialidades, cumprimento de requisitos e presenças.',
   },
   membro: {
     label: 'Membro / Encarregado',
@@ -360,16 +400,14 @@ export const ROLE_LABELS: Record<RoleType, { label: string; description: string 
     label: 'Capelão',
     description: 'Gestão da capelania digital, acompanhamento pastoral e intercessão.',
   },
-};
-
-/**
- * Converte cargos legados/removidos (ex.: conselheiro, musica) ou inválidos para 'membro'.
- */
-export const sanitizeRoleType = (role?: string | null): RoleType => {
-  if (role && Object.prototype.hasOwnProperty.call(ROLE_LABELS, role)) {
-    return role as RoleType;
-  }
-  return 'membro';
+  conselheiro: {
+    label: 'Conselheiro / Líder de Unidade',
+    description: 'Acompanhamento direto de unidades e patrulhas, registo de presenças, progresso e requisições de material.',
+  },
+  musica: {
+    label: 'Diretor de Música e Louvor',
+    description: 'Gestão do ministério de música, ensaios, hinos do clube e escalas de louvor.',
+  },
 };
 
 export const ACTION_LABELS: Record<PermissionAction, string> = {
@@ -404,11 +442,6 @@ export const syncPermissionsMatrix = (
   if (!existingMatrix) return base;
 
   const synced: Record<RoleType, Record<ModuleName, PermissionAction[]>> = JSON.parse(JSON.stringify(existingMatrix));
-  for (const existingKey of Object.keys(synced)) {
-    if (!Object.prototype.hasOwnProperty.call(base, existingKey)) {
-      delete (synced as Record<string, unknown>)[existingKey];
-    }
-  }
   const roles = Object.keys(base) as RoleType[];
   const newActions: PermissionAction[] = ['CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC'];
   const isLegacy = !newActions.some(act => synced.admin_tecnico?.treasury?.includes(act));
@@ -417,7 +450,6 @@ export const syncPermissionsMatrix = (
   const needsDossier360Sync = !synced.admin_tecnico?.members?.includes('VIEW_DOSSIER_360');
   const needsEnrollmentPermSync = !synced.admin_tecnico?.members?.includes('APPROVE_ENROLLMENT');
   const needsEnrollmentPeriodPermSync = !synced.admin_tecnico?.members?.includes('MANAGE_ENROLLMENT_PERIOD');
-  const needsMemberDeleteSync = !synced.admin_tecnico?.members?.includes('DELETE');
 
   for (const role of roles) {
     if (!synced[role]) {
@@ -437,9 +469,6 @@ export const syncPermissionsMatrix = (
         }
         if (needsEnrollmentPeriodPermSync && base[role].members.includes('MANAGE_ENROLLMENT_PERIOD') && !synced[role].members.includes('MANAGE_ENROLLMENT_PERIOD')) {
           synced[role].members.push('MANAGE_ENROLLMENT_PERIOD');
-        }
-        if (needsMemberDeleteSync && base[role].members.includes('DELETE') && !synced[role].members.includes('DELETE')) {
-          synced[role].members.push('DELETE');
         }
       } else if (mod === 'activities') {
         for (const act of base[role].activities) {
@@ -593,32 +622,6 @@ export const hasManageEnrollmentPeriodPermission = (
     return permissionsMatrix[role].members.includes('MANAGE_ENROLLMENT_PERIOD');
   }
   return hasPermission(role, 'members', 'MANAGE_ENROLLMENT_PERIOD');
-};
-
-/**
- * Verifica se o cargo pode executar a eliminação definitiva de um membro (e da respetiva conta vinculada)
- * sem necessitar de autorização prévia do Administrador Técnico (audit: ADMIN).
- * - Diretor/Admin ou qualquer cargo com members:DELETE / members:ADMIN pode eliminar diretamente.
- * - A Secretaria pode também executar eliminações já aprovadas pela Direção (members:APPROVE) ou diretas se possuir members:DELETE/ADMIN.
- */
-export const canExecuteMemberDeletion = (
-  role: RoleType,
-  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>,
-  hasDirectionApproval: boolean = false
-): boolean => {
-  if (role === 'admin_tecnico') return true;
-  const actions =
-    permissionsMatrix?.[role] && Array.isArray(permissionsMatrix[role].members)
-      ? permissionsMatrix[role].members
-      : ROLE_PERMISSIONS_MATRIX[role]?.members || [];
-
-  if (actions.includes('DELETE') || actions.includes('ADMIN')) {
-    return true;
-  }
-  if (hasDirectionApproval && role === 'secretario' && actions.includes('APPROVE')) {
-    return true;
-  }
-  return false;
 };
 
 

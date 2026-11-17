@@ -26,7 +26,6 @@ import { formatKz } from '../../utils/currency';
 import { formatDateAO } from '../../utils/date';
 import { ROLE_LABELS } from '../../services/permissionService';
 import { ModuleName } from '../../types';
-import { isDirectionMember } from '../../services/accountSyncService';
 
 interface DashboardModuleProps {
   onNavigate: (module: ModuleName) => void;
@@ -122,9 +121,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
     };
   });
 
-  const membersWithoutTeamCount = activeMembers.filter(
-    (m) => !m.unitOrTeam?.trim() && !isDirectionMember(m, state.users)
-  ).length;
+  const membersWithoutTeamCount = activeMembers.filter((m) => !m.unitOrTeam?.trim()).length;
 
   // Métricas de execução de Atividades & Reuniões (tarefas, fases e atas sem aceder à sub-aba de presenças)
   const totalTasksCount = state.activities.reduce((sum, act) => sum + (act.tasks?.length || 0), 0);

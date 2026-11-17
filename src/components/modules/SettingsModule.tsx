@@ -61,7 +61,7 @@ export const SettingsModule: React.FC = () => {
             </h1>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            Gestão dos dados institucionais, modelos de documentos e tabelas de módulos.
+            Gestão dos dados institucionais, modelos de documentos e tabelas de classes.
           </p>
         </div>
       </div>
@@ -205,7 +205,7 @@ export const SettingsModule: React.FC = () => {
             <span>Configurações Avançadas</span>
           </h2>
           <div className="text-xs space-y-3">
-             <p className="text-slate-600">Edição de Categorias, Módulos, Unidades e Modelos de Documentos disponível no Módulo Administrativo.</p>
+             <p className="text-slate-600">Edição de Categorias, Classes, Unidades e Modelos de Documentos disponível no Módulo Administrativo.</p>
              <div className="divide-y divide-slate-100">
                 {state.fees.map((fee) => (
                     <div key={fee.id} className="py-2.5 flex items-center justify-between">

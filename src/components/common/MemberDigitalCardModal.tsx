@@ -22,7 +22,6 @@ import { Member } from '../../types';
 import { useClub } from '../../context/ClubContext';
 import { processProfilePhoto } from '../../utils/fileUpload';
 import { formatDateAO } from '../../utils/date';
-import { getMemberTeamLabel } from '../../services/accountSyncService';
 
 interface MemberDigitalCardModalProps {
   member: Member | null;
@@ -73,7 +72,7 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
       manualNumber: liveMember.manualNumber,
       fullName: liveMember.fullName,
       category: liveMember.category,
-      unitOrTeam: getMemberTeamLabel(liveMember, state.users),
+      unitOrTeam: liveMember.unitOrTeam || 'Sem Equipa',
       guardian: guardianDisplayName,
       guardianPhone: liveMember.guardianPhone || liveMember.emergencyContact?.phone || 'N/A',
       investitureDate: liveMember.investitureDate || (showsInvestiture ? 'Sim' : 'N/A'),
@@ -93,7 +92,7 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
     })
       .then((url) => setQrCodeDataUrl(url))
       .catch((err) => console.error('Erro ao gerar QR Code:', err));
-  }, [liveMember, state.users, settings.currentYear, guardianDisplayName, showsInvestiture]);
+  }, [liveMember, settings.currentYear, guardianDisplayName, showsInvestiture]);
 
   if (!liveMember) return null;
 
@@ -332,7 +331,7 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
                         Equipa
                       </span>
                       <p className="text-[9.5px] sm:text-[10px] font-bold text-amber-300 truncate leading-tight">
-                        {getMemberTeamLabel(liveMember, state.users)}
+                        {liveMember.unitOrTeam?.trim() || 'Sem Equipa'}
                       </p>
                     </div>
                     <div className="min-w-0">

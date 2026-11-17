@@ -82,6 +82,7 @@ export const TrainingModule: React.FC = () => {
   const [isNewClassModalOpen, setIsNewClassModalOpen] = useState(false);
   const [newClassForm, setNewClassForm] = useState({
     title: '',
+    minimumAge: 10,
     requirements: [] as string[],
     newReqInput: '',
   });
@@ -97,6 +98,7 @@ export const TrainingModule: React.FC = () => {
   const [isNewSpecialtyModalOpen, setIsNewSpecialtyModalOpen] = useState(false);
   const [newSpecialtyForm, setNewSpecialtyForm] = useState({
     title: '',
+    category: 'natureza' as SpecialtyHonor['category'],
     requirements: [] as string[],
     newReqInput: '',
   });
@@ -146,11 +148,11 @@ export const TrainingModule: React.FC = () => {
 
     if (enrollForm.type === 'classe') {
       const cls = state.classes.find((c) => c.id === enrollForm.targetId);
-      targetTitle = cls ? cls.title : 'Módulo Oficial';
+      targetTitle = cls ? cls.title : 'Classe Oficial';
       totalReqs = cls ? (cls.requirements?.length || cls.requirementsCount) : 8;
     } else {
       const esp = state.specialties.find((s) => s.id === enrollForm.targetId);
-      targetTitle = esp ? esp.title : 'Medalha';
+      targetTitle = esp ? esp.title : 'Especialidade';
       totalReqs = esp ? (esp.requirements?.length || esp.requirementsCount) : 6;
     }
 
@@ -174,6 +176,7 @@ export const TrainingModule: React.FC = () => {
   const openNewClassModal = () => {
     setNewClassForm({
       title: '',
+      minimumAge: 10,
       requirements: [],
       newReqInput: '',
     });
@@ -183,26 +186,26 @@ export const TrainingModule: React.FC = () => {
   const handleCreateClass = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newClassForm.title.trim()) {
-      showFeedback('error', 'O título do módulo é obrigatório.');
+      showFeedback('error', 'O título da classe é obrigatório.');
       return;
     }
     const cleanReqs = newClassForm.requirements.map((r) => r.trim()).filter(Boolean);
     if (cleanReqs.length === 0) {
-      showFeedback('error', 'O módulo deve conter pelo menos 1 requisito de conclusão.');
+      showFeedback('error', 'A classe deve conter pelo menos 1 requisito de conclusão.');
       return;
     }
 
     const res = createTrainingClass({
       title: newClassForm.title.trim(),
-      minimumAge: 10,
+      minimumAge: Number(newClassForm.minimumAge) || 10,
       requirements: cleanReqs,
     });
 
     if (res.success) {
       setIsNewClassModalOpen(false);
-      showFeedback('success', `Novo módulo "${newClassForm.title.trim()}" criado com ${cleanReqs.length} requisitos de conclusão!`);
+      showFeedback('success', `Nova classe "${newClassForm.title.trim()}" criada com ${cleanReqs.length} requisitos de conclusão!`);
     } else {
-      showFeedback('error', res.error || 'Erro ao criar módulo.');
+      showFeedback('error', res.error || 'Erro ao criar classe.');
     }
   };
 
@@ -222,12 +225,12 @@ export const TrainingModule: React.FC = () => {
     e.preventDefault();
     if (!editingClass) return;
     if (!classTitleInput.trim()) {
-      showFeedback('error', 'O título do módulo é obrigatório.');
+      showFeedback('error', 'O título da classe é obrigatório.');
       return;
     }
     const cleanReqs = classRequirementsInput.map((r) => r.trim()).filter(Boolean);
     if (cleanReqs.length === 0) {
-      showFeedback('error', 'O módulo deve possuir pelo menos 1 requisito de conclusão.');
+      showFeedback('error', 'A classe deve possuir pelo menos 1 requisito de conclusão.');
       return;
     }
 
@@ -239,9 +242,9 @@ export const TrainingModule: React.FC = () => {
 
     if (res.success) {
       setEditingClass(null);
-      showFeedback('success', `Módulo "${classTitleInput.trim()}" e respetivos requisitos atualizados com sucesso!`);
+      showFeedback('success', `Classe "${classTitleInput.trim()}" e respetivos requisitos atualizados com sucesso!`);
     } else {
-      showFeedback('error', res.error || 'Erro ao atualizar módulo.');
+      showFeedback('error', res.error || 'Erro ao atualizar classe.');
     }
   };
 
@@ -257,16 +260,16 @@ export const TrainingModule: React.FC = () => {
     if (deleteTarget.type === 'classe') {
       const res = deleteTrainingClass(deleteTarget.id);
       if (res.success) {
-        showFeedback('success', `Módulo "${deleteTarget.title}" eliminado com sucesso.`);
+        showFeedback('success', `Classe "${deleteTarget.title}" eliminada com sucesso.`);
       } else {
-        showFeedback('error', res.error || 'Erro ao remover módulo.');
+        showFeedback('error', res.error || 'Erro ao remover classe.');
       }
     } else {
       const res = deleteSpecialtyHonor(deleteTarget.id);
       if (res.success) {
-        showFeedback('success', `Medalha "${deleteTarget.title}" eliminada com sucesso.`);
+        showFeedback('success', `Especialidade "${deleteTarget.title}" eliminada com sucesso.`);
       } else {
-        showFeedback('error', res.error || 'Erro ao remover medalha.');
+        showFeedback('error', res.error || 'Erro ao remover especialidade.');
       }
     }
     setDeleteTarget(null);
@@ -280,6 +283,7 @@ export const TrainingModule: React.FC = () => {
   const openNewSpecialtyModal = () => {
     setNewSpecialtyForm({
       title: '',
+      category: 'natureza',
       requirements: [],
       newReqInput: '',
     });
@@ -289,26 +293,26 @@ export const TrainingModule: React.FC = () => {
   const handleCreateSpecialty = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newSpecialtyForm.title.trim()) {
-      showFeedback('error', 'O título da medalha é obrigatório.');
+      showFeedback('error', 'O título da especialidade é obrigatório.');
       return;
     }
     const cleanReqs = newSpecialtyForm.requirements.map((r) => r.trim()).filter(Boolean);
     if (cleanReqs.length === 0) {
-      showFeedback('error', 'A medalha deve conter pelo menos 1 requisito de conclusão.');
+      showFeedback('error', 'A especialidade deve conter pelo menos 1 requisito de conclusão.');
       return;
     }
 
     const res = createSpecialtyHonor({
       title: newSpecialtyForm.title.trim(),
-      category: 'natureza',
+      category: newSpecialtyForm.category,
       requirements: cleanReqs,
     });
 
     if (res.success) {
       setIsNewSpecialtyModalOpen(false);
-      showFeedback('success', `Nova medalha "${newSpecialtyForm.title.trim()}" criada com ${cleanReqs.length} requisitos de conclusão!`);
+      showFeedback('success', `Nova especialidade "${newSpecialtyForm.title.trim()}" criada com ${cleanReqs.length} requisitos de conclusão!`);
     } else {
-      showFeedback('error', res.error || 'Erro ao criar medalha.');
+      showFeedback('error', res.error || 'Erro ao criar especialidade.');
     }
   };
 
@@ -319,7 +323,7 @@ export const TrainingModule: React.FC = () => {
     const count = (esp.requirements && esp.requirements.length > 0) ? esp.requirements.length : (esp.requirementsCount || 6);
     const existingReqs = esp.requirements && esp.requirements.length > 0
       ? [...esp.requirements]
-      : Array.from({ length: count }).map((_, i) => `Requisito da Medalha #${i + 1}: Demonstração prática`);
+      : Array.from({ length: count }).map((_, i) => `Requisito da Especialidade #${i + 1}: Demonstração prática`);
     setSpecialtyRequirementsInput(existingReqs);
     setSpecialtyNewReqInput('');
   };
@@ -328,12 +332,12 @@ export const TrainingModule: React.FC = () => {
     e.preventDefault();
     if (!editingSpecialty) return;
     if (!specialtyTitleInput.trim()) {
-      showFeedback('error', 'O título da medalha é obrigatório.');
+      showFeedback('error', 'O título da especialidade é obrigatório.');
       return;
     }
     const cleanReqs = specialtyRequirementsInput.map((r) => r.trim()).filter(Boolean);
     if (cleanReqs.length === 0) {
-      showFeedback('error', 'A medalha deve possuir pelo menos 1 requisito de conclusão.');
+      showFeedback('error', 'A especialidade deve possuir pelo menos 1 requisito de conclusão.');
       return;
     }
 
@@ -345,9 +349,9 @@ export const TrainingModule: React.FC = () => {
 
     if (res.success) {
       setEditingSpecialty(null);
-      showFeedback('success', `Medalha "${specialtyTitleInput.trim()}" e respetivos requisitos atualizados com sucesso!`);
+      showFeedback('success', `Especialidade "${specialtyTitleInput.trim()}" e respetivos requisitos atualizados com sucesso!`);
     } else {
-      showFeedback('error', res.error || 'Erro ao atualizar medalha.');
+      showFeedback('error', res.error || 'Erro ao atualizar especialidade.');
     }
   };
 
@@ -394,7 +398,7 @@ export const TrainingModule: React.FC = () => {
           <div className="flex items-center gap-2">
             <GraduationCap className="w-5 h-5 text-blue-900" />
             <h1 className="text-xl font-black text-slate-900 tracking-tight">
-              Módulos e Medalhas
+              Classes e Especialidades
             </h1>
           </div>
           <p className="text-xs text-slate-500 mt-1">
@@ -408,19 +412,19 @@ export const TrainingModule: React.FC = () => {
               <button
                 onClick={openNewClassModal}
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg shadow-2xs transition-colors"
-                title="Criar novo módulo oficial com requisitos de conclusão"
+                title="Criar nova classe oficial com requisitos de conclusão"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>Novo Módulo</span>
+                <span>Nova Classe</span>
               </button>
 
               <button
                 onClick={openNewSpecialtyModal}
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg shadow-2xs transition-colors"
-                title="Criar nova medalha com requisitos de conclusão"
+                title="Criar nova especialidade com requisitos de conclusão"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>Nova Medalha</span>
+                <span>Nova Especialidade</span>
               </button>
             </>
           )}
@@ -451,7 +455,7 @@ export const TrainingModule: React.FC = () => {
           }`}
         >
           <BookOpen className="w-4 h-4" />
-          <span>Módulos Oficiais ({state.classes.length})</span>
+          <span>Classes Oficiais ({state.classes.length})</span>
         </button>
         <button
           onClick={() => {
@@ -465,7 +469,7 @@ export const TrainingModule: React.FC = () => {
           }`}
         >
           <Award className="w-4 h-4" />
-          <span>Medalhas ({state.specialties.length})</span>
+          <span>Especialidades ({state.specialties.length})</span>
         </button>
         {canManageTrainingCatalog && (
           <button
@@ -480,7 +484,7 @@ export const TrainingModule: React.FC = () => {
             }`}
           >
             <Settings className="w-4 h-4" />
-            <span>Gerir Nomes, Módulos, Medalhas e Requisitos</span>
+            <span>Gerir Nomes, Classes, Especialidades e Requisitos</span>
           </button>
         )}
       </div>
@@ -492,7 +496,7 @@ export const TrainingModule: React.FC = () => {
             <div>
               <span className="font-bold block text-sm">Painel Curricular do Diretor e Instrutor</span>
               <p className="text-slate-600 mt-0.5">
-                Diretores e Instrutores possuem permissão total para criar e editar novos módulos e medalhas, personalizando inclusive a lista completa de requisitos de conclusão obrigatórios.
+                Diretores e Instrutores possuem permissão total para criar e editar novas classes e especialidades, personalizando inclusive a lista completa de requisitos de conclusão obrigatórios.
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -501,32 +505,32 @@ export const TrainingModule: React.FC = () => {
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded shadow-xs"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>+ Criar Novo Módulo</span>
+                <span>+ Criar Nova Classe</span>
               </button>
               <button
                 onClick={openNewSpecialtyModal}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-800 hover:bg-emerald-700 rounded shadow-xs"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>+ Criar Nova Medalha</span>
+                <span>+ Criar Nova Especialidade</span>
               </button>
             </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Secção de Módulos Oficiais */}
+            {/* Secção de Classes Oficiais */}
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-xs space-y-4">
               <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                 <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-2">
                   <BookOpen className="w-4 h-4 text-blue-900" />
-                  <span>Módulos Oficiais e Requisitos ({state.classes.length})</span>
+                  <span>Classes Oficiais e Requisitos ({state.classes.length})</span>
                 </h2>
                 <button
                   onClick={openNewClassModal}
                   className="text-xs font-bold text-blue-900 hover:underline flex items-center gap-1"
                 >
                   <Plus className="w-3 h-3" />
-                  <span>Novo Módulo</span>
+                  <span>Nova Classe</span>
                 </button>
               </div>
 
@@ -557,7 +561,7 @@ export const TrainingModule: React.FC = () => {
                           <button
                             onClick={() => openEditClassModal(cls)}
                             className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-blue-900 bg-white border border-blue-200 hover:bg-blue-50 rounded shadow-xs"
-                            title="Editar módulo e lista de requisitos de conclusão"
+                            title="Editar classe e lista de requisitos de conclusão"
                           >
                             <Edit2 className="w-3 h-3" />
                             <span>Editar</span>
@@ -565,7 +569,7 @@ export const TrainingModule: React.FC = () => {
                           <button
                             onClick={() => handleDeleteClass(cls.id, cls.title)}
                             className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 rounded shadow-xs transition-colors"
-                            title="Remover módulo"
+                            title="Remover classe"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                             <span>Remover</span>
@@ -599,19 +603,19 @@ export const TrainingModule: React.FC = () => {
               </div>
             </div>
 
-            {/* Secção de Medalhas */}
+            {/* Secção de Especialidades */}
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-xs space-y-4">
               <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                 <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-2">
                   <Award className="w-4 h-4 text-emerald-800" />
-                  <span>Medalhas e Requisitos ({state.specialties.length})</span>
+                  <span>Especialidades e Requisitos ({state.specialties.length})</span>
                 </h2>
                 <button
                   onClick={openNewSpecialtyModal}
                   className="text-xs font-bold text-emerald-800 hover:underline flex items-center gap-1"
                 >
                   <Plus className="w-3 h-3" />
-                  <span>Nova Medalha</span>
+                  <span>Nova Especialidade</span>
                 </button>
               </div>
 
@@ -644,7 +648,7 @@ export const TrainingModule: React.FC = () => {
                           <button
                             onClick={() => openEditSpecialtyModal(esp)}
                             className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-emerald-900 bg-white border border-emerald-200 hover:bg-emerald-50 rounded shadow-xs"
-                            title="Editar medalha e lista de requisitos de conclusão"
+                            title="Editar especialidade e lista de requisitos de conclusão"
                           >
                             <Edit2 className="w-3 h-3" />
                             <span>Editar</span>
@@ -652,7 +656,7 @@ export const TrainingModule: React.FC = () => {
                           <button
                             onClick={() => handleDeleteSpecialty(esp.id, esp.title)}
                             className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 rounded shadow-xs transition-colors"
-                            title="Remover medalha"
+                            title="Remover especialidade"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                             <span>Remover</span>
@@ -810,7 +814,7 @@ export const TrainingModule: React.FC = () => {
                               }
                             }}
                             className="p-2 text-rose-600 hover:text-white hover:bg-rose-700 bg-rose-50 border border-rose-200 rounded-lg transition-colors ml-2"
-                            title="Desmatricular / Retirar membro do Módulo ou Medalha (Apenas Diretor)"
+                            title="Desmatricular / Retirar membro da Classe ou Especialidade (Apenas Diretor)"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -839,7 +843,7 @@ export const TrainingModule: React.FC = () => {
                               if (currentItem.type === 'classe') {
                                 const targetCls: TrainingClass = classObj || state.classes.find(c => c.id === currentItem.targetId || c.title?.toLowerCase() === currentItem.targetTitle?.toLowerCase()) || {
                                   id: currentItem.targetId || `CLS-${Date.now()}`,
-                                  title: currentItem.targetTitle || 'Módulo Oficial',
+                                  title: currentItem.targetTitle || 'Classe Oficial',
                                   code: currentItem.targetId || 'CLS',
                                   minimumAge: 10,
                                   requirementsCount: currentItem.totalRequirements || 8,
@@ -850,18 +854,18 @@ export const TrainingModule: React.FC = () => {
                               } else {
                                 const targetSpec: SpecialtyHonor = specObj || state.specialties.find(s => s.id === currentItem.targetId || s.title?.toLowerCase() === currentItem.targetTitle?.toLowerCase()) || {
                                   id: currentItem.targetId || `ESP-${Date.now()}`,
-                                  title: currentItem.targetTitle || 'Medalha Oficial',
+                                  title: currentItem.targetTitle || 'Especialidade Oficial',
                                   code: currentItem.targetId || 'ESP',
                                   category: 'natureza' as SpecialtyHonor['category'],
                                   requirementsCount: currentItem.totalRequirements || 6,
-                                  requirements: Array.from({ length: currentItem.totalRequirements || 6 }, (_, i) => `Requisito da Medalha #${i + 1}: Demonstração prática e teórica`),
+                                  requirements: Array.from({ length: currentItem.totalRequirements || 6 }, (_, i) => `Requisito da Especialidade #${i + 1}: Demonstração prática e teórica`),
                                   active: true,
                                 };
                                 openEditSpecialtyModal(targetSpec);
                               }
                             }}
                             className="text-[11px] font-semibold text-blue-900 hover:text-blue-700 hover:underline flex items-center gap-1.5 cursor-pointer bg-blue-50 px-2.5 py-1 rounded-md border border-blue-200 transition-colors shadow-2xs"
-                            title="Editar item e lista de requisitos de conclusão"
+                            title="Editar classe e lista de requisitos de conclusão"
                           >
                             <Edit2 className="w-3.5 h-3.5 text-blue-900" />
                             <span>Editar Requisitos Desta Formação</span>
@@ -993,7 +997,7 @@ export const TrainingModule: React.FC = () => {
         isOpen={isEnrollModalOpen}
         onClose={() => setIsEnrollModalOpen(false)}
         title="Inscrever Membro em Formação"
-        description="Associe o membro ao módulo formativo ou medalha de aptidão."
+        description="Associe o membro à classe etária ou especialidade de aptidão."
         maxWidth="md"
       >
         <form onSubmit={handleEnrollSubmit} className="space-y-4 text-xs">
@@ -1027,14 +1031,14 @@ export const TrainingModule: React.FC = () => {
               }
               className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
             >
-              <option value="classe">Módulo</option>
-              <option value="especialidade">Medalha</option>
+              <option value="classe">Classe</option>
+              <option value="especialidade">Especialidade</option>
             </select>
           </div>
 
           <div>
             <label className="block text-slate-700 font-semibold mb-1">
-              {enrollForm.type === 'classe' ? 'Módulo' : 'Medalha'}
+              {enrollForm.type === 'classe' ? 'Classe' : 'Especialidade'}
             </label>
             <select
               value={enrollForm.targetId}
@@ -1073,27 +1077,40 @@ export const TrainingModule: React.FC = () => {
         </form>
       </Modal>
 
-      {/* MODAL 2: Criar Novo Módulo (com Requisitos de Conclusão) */}
+      {/* MODAL 2: Criar Nova Classe (com Requisitos de Conclusão) */}
       <Modal
         isOpen={isNewClassModalOpen}
         onClose={() => setIsNewClassModalOpen(false)}
-        title="Criar Novo Módulo"
+        title="Criar Nova Classe"
         description="O Diretor e o Instrutor podem definir o título, idade mínima e todos os requisitos de conclusão."
         maxWidth="lg"
       >
         <form onSubmit={handleCreateClass} className="space-y-4 text-xs">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="sm:col-span-2">
-              <label className="block text-slate-700 font-semibold mb-1">Título Oficial do Módulo</label>
+              <label className="block text-slate-700 font-semibold mb-1">Título Oficial da Classe</label>
               <input
                 type="text"
-                placeholder="Ex: Módulo de Liderança Master"
+                placeholder="Ex: Classe de Líder Master"
                 value={newClassForm.title}
                 onChange={(e) => setNewClassForm({ ...newClassForm, title: e.target.value })}
                 className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
                 required
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-slate-700 font-semibold mb-1">Idade Mínima Obrigatória (Anos)</label>
+            <input
+              type="number"
+              min="5"
+              max="99"
+              value={newClassForm.minimumAge}
+              onChange={(e) => setNewClassForm({ ...newClassForm, minimumAge: Number(e.target.value) })}
+              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+              required
+            />
           </div>
 
           {/* Gestão Dinâmica dos Requisitos de Conclusão */}
@@ -1104,7 +1121,7 @@ export const TrainingModule: React.FC = () => {
                   Requisitos de Conclusão Obrigatórios ({newClassForm.requirements.length})
                 </label>
                 <p className="text-[11px] text-slate-500">
-                  Adicione e edite os itens que o membro deve concluir para obter a investidura oficial neste módulo.
+                  Adicione e edite os itens que o membro deve concluir para obter a investidura oficial nesta classe.
                 </p>
               </div>
             </div>
@@ -1196,24 +1213,24 @@ export const TrainingModule: React.FC = () => {
               className="px-4 py-1.5 font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded shadow-xs flex items-center gap-1.5"
             >
               <Save className="w-3.5 h-3.5" />
-              <span>Gravar Novo Módulo Oficial</span>
+              <span>Gravar Nova Classe Oficial</span>
             </button>
           </div>
         </form>
       </Modal>
 
-      {/* MODAL 3: Editar Módulo e Requisitos */}
+      {/* MODAL 3: Editar Classe e Requisitos */}
       <Modal
         isOpen={Boolean(editingClass)}
         onClose={() => setEditingClass(null)}
-        title={`Editar ${editingClass?.title || 'Módulo Oficial'}`}
+        title={`Editar ${editingClass?.title || 'Classe Oficial'}`}
         description="Altere a nomenclatura, idade mínima e a lista completa de requisitos de conclusão."
         maxWidth="lg"
       >
         <form onSubmit={handleUpdateClass} className="space-y-4 text-xs">
           <div className="grid grid-cols-1 gap-3">
             <div>
-              <label className="block text-slate-700 font-semibold mb-1">Título do Módulo</label>
+              <label className="block text-slate-700 font-semibold mb-1">Título da Classe</label>
               <input
                 type="text"
                 value={classTitleInput}
@@ -1245,7 +1262,7 @@ export const TrainingModule: React.FC = () => {
                   Requisitos de Conclusão Obrigatórios ({classRequirementsInput.length})
                 </label>
                 <p className="text-[11px] text-slate-500">
-                  Edite, adicione ou remova requisitos de conclusão deste módulo curricular.
+                  Edite, adicione ou remova requisitos de conclusão desta classe curricular.
                 </p>
               </div>
             </div>
@@ -1331,24 +1348,24 @@ export const TrainingModule: React.FC = () => {
               className="px-4 py-1.5 font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded shadow-xs flex items-center gap-1.5"
             >
               <Save className="w-3.5 h-3.5" />
-              <span>Guardar Alterações do Módulo</span>
+              <span>Guardar Alterações da Classe</span>
             </button>
           </div>
         </form>
       </Modal>
 
-      {/* MODAL 4: Criar Nova Medalha (com Requisitos de Conclusão) */}
+      {/* MODAL 4: Criar Nova Especialidade (com Requisitos de Conclusão) */}
       <Modal
         isOpen={isNewSpecialtyModalOpen}
         onClose={() => setIsNewSpecialtyModalOpen(false)}
-        title="Criar Nova Medalha / Formação"
+        title="Criar Nova Especialidade / Formação"
         description="O Diretor e o Instrutor podem definir o título, categoria e todos os requisitos de conclusão."
         maxWidth="lg"
       >
         <form onSubmit={handleCreateSpecialty} className="space-y-4 text-xs">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="sm:col-span-2">
-              <label className="block text-slate-700 font-semibold mb-1">Título da Medalha</label>
+              <label className="block text-slate-700 font-semibold mb-1">Título da Especialidade</label>
               <input
                 type="text"
                 placeholder="Ex: Primeiros Socorros Avançado"
@@ -1360,12 +1377,33 @@ export const TrainingModule: React.FC = () => {
             </div>
           </div>
 
+          <div>
+            <label className="block text-slate-700 font-semibold mb-1">Área / Categoria de Formação</label>
+            <select
+              value={newSpecialtyForm.category}
+              onChange={(e) =>
+                setNewSpecialtyForm({
+                  ...newSpecialtyForm,
+                  category: e.target.value as SpecialtyHonor['category'],
+                })
+              }
+              className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+            >
+              <option value="natureza">Estudos da Natureza</option>
+              <option value="habilidades">Habilidades Manuais e Técnicas</option>
+              <option value="saude">Saúde e Ciência</option>
+              <option value="artes">Artes e Atividades Domésticas</option>
+              <option value="espiritual">Atividades Espirituais e Missionárias</option>
+              <option value="adra">ADRA / Serviço Comunitário</option>
+            </select>
+          </div>
+
           {/* Gestão Dinâmica dos Requisitos de Conclusão */}
           <div className="pt-3 border-t border-slate-100 space-y-3">
             <div className="flex items-center justify-between">
               <div>
                 <label className="block text-slate-800 font-bold">
-                  Requisitos de Conclusão da Medalha ({newSpecialtyForm.requirements.length})
+                  Requisitos de Conclusão da Especialidade ({newSpecialtyForm.requirements.length})
                 </label>
                 <p className="text-[11px] text-slate-500">
                   Defina os critérios e tarefas que o candidato deve executar e comprovar perante o Instrutor.
@@ -1411,7 +1449,7 @@ export const TrainingModule: React.FC = () => {
             <div className="flex items-center gap-2 pt-1">
               <input
                 type="text"
-                placeholder="Digitar novo requisito da medalha..."
+                placeholder="Digitar novo requisito da especialidade..."
                 value={newSpecialtyForm.newReqInput}
                 onChange={(e) => setNewSpecialtyForm({ ...newSpecialtyForm, newReqInput: e.target.value })}
                 onKeyDown={(e) => {
@@ -1460,24 +1498,24 @@ export const TrainingModule: React.FC = () => {
               className="px-4 py-1.5 font-semibold text-white bg-emerald-800 hover:bg-emerald-700 rounded shadow-xs flex items-center gap-1.5"
             >
               <Save className="w-3.5 h-3.5" />
-              <span>Gravar Nova Medalha</span>
+              <span>Gravar Nova Especialidade</span>
             </button>
           </div>
         </form>
       </Modal>
 
-      {/* MODAL 5: Editar Medalha / Formação e Requisitos */}
+      {/* MODAL 5: Editar Especialidade / Formação e Requisitos */}
       <Modal
         isOpen={Boolean(editingSpecialty)}
         onClose={() => setEditingSpecialty(null)}
-        title={`Editar ${editingSpecialty?.title || 'Medalha'}`}
+        title={`Editar ${editingSpecialty?.title || 'Especialidade'}`}
         description="Atualize o nome, categoria e todos os requisitos de conclusão."
         maxWidth="lg"
       >
         <form onSubmit={handleUpdateSpecialty} className="space-y-4 text-xs">
           <div className="grid grid-cols-1 gap-3">
             <div>
-              <label className="block text-slate-700 font-semibold mb-1">Título da Medalha</label>
+              <label className="block text-slate-700 font-semibold mb-1">Título da Especialidade</label>
               <input
                 type="text"
                 value={specialtyTitleInput}
@@ -1512,7 +1550,7 @@ export const TrainingModule: React.FC = () => {
                   Requisitos de Conclusão ({specialtyRequirementsInput.length})
                 </label>
                 <p className="text-[11px] text-slate-500">
-                  Edite, adicione ou remova requisitos para aprovação desta medalha.
+                  Edite, adicione ou remova requisitos para aprovação desta especialidade.
                 </p>
               </div>
             </div>
@@ -1555,7 +1593,7 @@ export const TrainingModule: React.FC = () => {
             <div className="flex items-center gap-2 pt-1">
               <input
                 type="text"
-                placeholder="Digitar novo requisito da medalha..."
+                placeholder="Digitar novo requisito da especialidade..."
                 value={specialtyNewReqInput}
                 onChange={(e) => setSpecialtyNewReqInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -1598,7 +1636,7 @@ export const TrainingModule: React.FC = () => {
               className="px-4 py-1.5 font-semibold text-white bg-emerald-800 hover:bg-emerald-700 rounded shadow-xs flex items-center gap-1.5"
             >
               <Save className="w-3.5 h-3.5" />
-              <span>Guardar Alterações da Medalha</span>
+              <span>Guardar Alterações da Especialidade</span>
             </button>
           </div>
         </form>
@@ -1609,13 +1647,13 @@ export const TrainingModule: React.FC = () => {
         <Modal
           isOpen={!!deleteTarget}
           onClose={() => setDeleteTarget(null)}
-          title={`Eliminar ${deleteTarget.type === 'classe' ? 'Módulo' : 'Medalha'}`}
+          title={`Eliminar ${deleteTarget.type === 'classe' ? 'Classe' : 'Especialidade'}`}
           description={`Tem a certeza que deseja remover "${deleteTarget.title}" do catálogo oficial?`}
           maxWidth="sm"
         >
           <div className="space-y-4 text-xs">
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-800 leading-relaxed">
-              Esta ação eliminará permanentemente {deleteTarget.type === 'classe' ? 'este módulo' : 'esta medalha'} do catálogo e cancelará quaisquer registos de formação associados que ainda não foram homologados.
+              Esta ação eliminará permanentemente esta {deleteTarget.type === 'classe' ? 'classe' : 'especialidade'} do catálogo e cancelará quaisquer registos de formação associados que ainda não foram homologados.
             </div>
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
               <button
