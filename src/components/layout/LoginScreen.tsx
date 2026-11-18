@@ -22,6 +22,7 @@ import {
   reconcileApprovedEnrollmentsWithMembers,
   UnifiedEnrollmentLookupResult,
 } from '../../services/enrollmentService';
+import { isPendingMemberAccountConfirmation } from '../../services/accountSyncService';
 
 interface LoginScreenProps {
   onLogin: () => void;
@@ -42,6 +43,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     refreshFromCloud,
     isCloudLoading,
     submitEnrollmentRequest,
+    createSelfServiceMemberAccount,
   } = useClub();
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -153,14 +155,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         }
       }
 
-      // Utilizadores e membros para pesquisa (prioridade total para os dados lidos da nuvem)
-      const usersToSearch = (cloudData && Array.isArray(cloudData.users) && cloudData.users.length > 0)
-        ? cloudData.users
-        : state.users;
+      // Utilizadores e membros para pesquisa (prioridade total para os dados lidos da nuvem, incluindo listas vazias)
+      const usersToSearch =
+        cloudData && Array.isArray(cloudData.users) ? cloudData.users : state.users;
 
-      const membersToSearch = (cloudData && Array.isArray(cloudData.members) && cloudData.members.length > 0)
-        ? cloudData.members
-        : state.members;
+      const membersToSearch =
+        cloudData && Array.isArray(cloudData.members) ? cloudData.members : state.members;
 
       const cleanLower = cleanId.toLowerCase();
 
@@ -191,15 +191,19 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         return;
       }
 
-      // 6. Verificação de conta ativa na nuvem
-      if (user.active === false) {
+      // 6. Validação de palavra-passe com o registo da nuvem
+      if (user.password && user.password !== password) {
         setErrorMessage(GENERIC_LOGIN_ERROR);
         return;
       }
 
-      // 7. Validação de palavra-passe com o registo da nuvem
-      if (user.password && user.password !== password) {
-        setErrorMessage(GENERIC_LOGIN_ERROR);
+      // 7. Verificação de conta ativa e confirmação do Diretor na nuvem
+      if (user.active === false) {
+        if (isPendingMemberAccountConfirmation(user)) {
+          setErrorMessage('A sua conta de login foi criada e aguarda confirmação do Diretor para ser ativada.');
+        } else {
+          setErrorMessage(GENERIC_LOGIN_ERROR);
+        }
         return;
       }
 
@@ -256,6 +260,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     let members = state.members || [];
     let currentYear = state.settings.currentYear || new Date().getFullYear();
     let deletions = state.deletionRequests || [];
+    let auditLogs = state.auditLogs || [];
 
     if (db && (db as any).app) {
       try {
@@ -274,6 +279,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             if (Array.isArray(cloudData.deletionRequests)) {
               deletions = cloudData.deletionRequests;
             }
+            if (Array.isArray(cloudData.auditLogs)) {
+              auditLogs = cloudData.auditLogs;
+            }
             if (cloudData.settings?.currentYear) {
               currentYear = cloudData.settings.currentYear;
             }
@@ -285,7 +293,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       }
     }
 
-    const reconciled = reconcileApprovedEnrollmentsWithMembers(members, requests, currentYear, deletions);
+    const reconciled = reconcileApprovedEnrollmentsWithMembers(members, requests, currentYear, deletions, auditLogs);
     const match = lookupMemberOrEnrollmentStatus(
       reconciled.members,
       reconciled.enrollmentRequests,
@@ -635,6 +643,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 <EnrollmentStatusCard
                   registeredMember={lookupResult.member}
                   request={lookupResult.request}
+                  selfServiceAccount={{
+                    users: state.users,
+                    onCreateAccount: createSelfServiceMemberAccount,
+                  }}
                 />
               )}
             </div>

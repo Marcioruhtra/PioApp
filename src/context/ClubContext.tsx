@@ -66,6 +66,10 @@ import {
   hasApproveEnrollmentPermission,
   canGrantManageEnrollmentPeriod,
   hasManageEnrollmentPeriodPermission,
+  canGrantApproveMemberAccount,
+  hasApproveMemberAccountPermission,
+  canGrantDeleteMemberUploads,
+  hasDeleteMemberUploadsPermission,
   canExecuteMemberDeletion,
   sanitizeRoleType,
 } from '../services/permissionService';
@@ -77,6 +81,7 @@ import {
   markEnrollmentReviewed,
   startEnrollmentReview,
   generateNextMemberId,
+  removeEnrollmentRequestsForDeletedMember,
   reconcileApprovedEnrollmentsWithMembers,
   validateEnrollmentScheduleInput,
   evaluateEnrollmentAvailability,
@@ -101,6 +106,10 @@ import {
   removeLinkedAccountsForMember,
   isDirectionMember,
   isDirectionRole,
+  buildSelfServiceMemberAccount,
+  confirmPendingMemberAccount as confirmPendingMemberAccountService,
+  rejectPendingMemberAccount as rejectPendingMemberAccountService,
+  isPendingMemberAccountConfirmation,
 } from '../services/accountSyncService';
 import {
   DEFAULT_QUOTA_FEE_ID,
@@ -319,6 +328,18 @@ interface ClubContextValue {
 
   // Utilizadores & Administração
   createUserAccount: (user: Omit<UserAccount, 'id' | 'createdAt'>) => { success: boolean; error?: string };
+  createSelfServiceMemberAccount: (
+    memberId: string,
+    password: string,
+    confirmPassword: string
+  ) => Promise<{ success: boolean; account?: UserAccount; error?: string }>;
+  approvePendingMemberAccount: (
+    userId: string
+  ) => { success: boolean; account?: UserAccount; error?: string };
+  rejectPendingMemberAccount: (
+    userId: string,
+    reason?: string
+  ) => { success: boolean; error?: string };
   toggleUserActive: (userId: string) => void;
   deleteUserAccount: (userId: string) => { success: boolean; error?: string };
   updateSettings: (newSettings: Partial<ClubSettings>) => void;
@@ -524,11 +545,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const sanitizedMembers = verifyAndRepairMembersIntegrity(migratedMembers).sanitizedMembers;
     const rawEnrollments = Array.isArray(remoteData.enrollmentRequests) ? remoteData.enrollmentRequests : [];
     const remoteDeletions = Array.isArray(remoteData.deletionRequests) ? remoteData.deletionRequests : [];
+    const remoteAuditLogs = Array.isArray(remoteData.auditLogs) ? remoteData.auditLogs : [];
     const reconciledEnrollments = reconcileApprovedEnrollmentsWithMembers(
       sanitizedMembers,
       rawEnrollments,
       remoteSettings.currentYear || new Date().getFullYear(),
-      remoteDeletions
+      remoteDeletions,
+      remoteAuditLogs
     );
     const reconciled = reconcileUsersAndMembers(remoteUsers, reconciledEnrollments.members);
 
@@ -566,7 +589,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       documents: Array.isArray(remoteData.documents) ? remoteData.documents : [],
       circulars: Array.isArray(remoteData.circulars) ? remoteData.circulars : [],
       paymentProofs: Array.isArray(remoteData.paymentProofs) ? remoteData.paymentProofs : [],
-      auditLogs: Array.isArray(remoteData.auditLogs) ? remoteData.auditLogs : [],
+      auditLogs: remoteAuditLogs,
       notifications: Array.isArray(remoteData.notifications) ? remoteData.notifications : [],
       deletionRequests: remoteDeletions,
       chaplaincyRequests: Array.isArray(remoteData.chaplaincyRequests) ? remoteData.chaplaincyRequests : [],
@@ -809,6 +832,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const cloudData = snap.data() as ClubDatabaseState;
           if (
             cloudData &&
+            !isPushInFlightRef.current &&
+            !queuedPushStateRef.current &&
             !shouldSkipIncomingSnapshot({
               remoteUpdatedAt: cloudData.updatedAt,
               lastRemoteUpdatedAt: lastRemoteUpdatedAtRef.current,
@@ -872,6 +897,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (!remoteData) return;
 
           if (
+            isPushInFlightRef.current ||
+            Boolean(queuedPushStateRef.current) ||
             shouldSkipIncomingSnapshot({
               remoteUpdatedAt: remoteData.updatedAt,
               lastRemoteUpdatedAt: lastRemoteUpdatedAtRef.current,
@@ -1185,6 +1212,28 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         success: false,
         error: 'Apenas o Administrador Técnico pode conceder ou revogar a permissão de abrir e encerrar inscrições na grelha de permissões.',
       };
+    }
+
+    if (module === 'members' && action === 'APPROVE_MEMBER_ACCOUNT' && !canGrantApproveMemberAccount(currentUser.role)) {
+      return {
+        success: false,
+        error: 'Apenas o Administrador Técnico pode conceder ou revogar a permissão de confirmar contas de login de membros na grelha de permissões.',
+      };
+    }
+
+    if (module === 'members' && action === 'DELETE_MEMBER_UPLOADS') {
+      if (!canGrantDeleteMemberUploads(currentUser.role)) {
+        return {
+          success: false,
+          error: 'Apenas o Administrador Técnico pode conceder ou revogar a permissão de apagar uploads nas fichas dos membros.',
+        };
+      }
+      if (add && role !== 'diretor' && role !== 'secretario') {
+        return {
+          success: false,
+          error: 'Apenas o Diretor e o Secretário podem receber permissão para apagar uploads nas fichas dos membros.',
+        };
+      }
     }
 
     if (!can('audit', 'ADMIN') && !can('settings', 'EDIT') && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'diretor') {
@@ -2014,8 +2063,19 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateMember = (id: string, updates: Partial<Member>) => {
+    const isDocumentOnlyUpdate = Object.keys(updates).every((k) =>
+      [
+        'biDocumentFileName',
+        'biDocumentBase64',
+        'photoDocumentFileName',
+        'photoDocumentBase64',
+        'photoUrl',
+        'attachedDocuments',
+      ].includes(k)
+    );
     const isAllowed =
       can('members', 'EDIT') ||
+      (isDocumentOnlyUpdate && can('members', 'CREATE')) ||
       currentUser.role === 'admin_tecnico' ||
       currentUser.role === 'secretario' ||
       currentUser.role === 'diretor' ||
@@ -2031,6 +2091,55 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const now = getNowISOString();
     let updatedName = '';
     const targetMember = state.members.find((m) => m.id === id);
+
+    if (targetMember) {
+      const isDeletingOrReplacingBi =
+        ('biDocumentBase64' in updates &&
+          Boolean(targetMember.biDocumentBase64) &&
+          updates.biDocumentBase64 !== targetMember.biDocumentBase64) ||
+        (!('biDocumentBase64' in updates) &&
+          'biDocumentFileName' in updates &&
+          Boolean(targetMember.biDocumentFileName) &&
+          !updates.biDocumentFileName);
+
+      const isDeletingOrReplacingPhotoDoc =
+        ('photoDocumentBase64' in updates &&
+          Boolean(targetMember.photoDocumentBase64) &&
+          updates.photoDocumentBase64 !== targetMember.photoDocumentBase64) ||
+        (!('photoDocumentBase64' in updates) &&
+          'photoDocumentFileName' in updates &&
+          Boolean(targetMember.photoDocumentFileName) &&
+          !updates.photoDocumentFileName);
+
+      const isDeletingOrReplacingPhotoUrl =
+        'photoUrl' in updates &&
+        Boolean(targetMember.photoUrl) &&
+        updates.photoUrl !== targetMember.photoUrl;
+
+      const isRemovingAttachedDoc =
+        'attachedDocuments' in updates &&
+        Array.isArray(targetMember.attachedDocuments) &&
+        targetMember.attachedDocuments.some((existingDoc) => {
+          const nextList = updates.attachedDocuments || [];
+          const kept = nextList.find((d) => d.id === existingDoc.id);
+          return !kept || kept.base64 !== existingDoc.base64;
+        });
+
+      if (
+        (isDeletingOrReplacingBi ||
+          isDeletingOrReplacingPhotoDoc ||
+          isDeletingOrReplacingPhotoUrl ||
+          isRemovingAttachedDoc) &&
+        !hasDeleteMemberUploadsPermission(currentUser.role, state.settings.permissionsMatrix)
+      ) {
+        return {
+          success: false,
+          error:
+            'Apenas o Diretor ou Secretário com permissão atribuída pelo Administrador na grelha de permissões pode apagar ou substituir uploads nas fichas dos membros.',
+        };
+      }
+    }
+
     let savedUpdatedMember: Member | undefined;
 
     const updated = state.members.map((m) => {
@@ -2135,15 +2244,17 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Membro não encontrado no sistema.' };
     }
 
-    // Regra estrita do clube: "porém a Direção (diretor e secretário com permissão da matriz de Permissões) tem a função de excluir essa mesma foto"
-    const isLeadershipAllowed =
-      currentUser.role === 'admin_tecnico' ||
-      ((currentUser.role === 'diretor' || currentUser.role === 'secretario') && can('members', 'EDIT'));
+    // Regra estrita: apenas Diretor e Secretário com permissão DELETE_MEMBER_UPLOADS atribuída pelo Administrador na grelha de permissões podem apagar uploads
+    const isLeadershipAllowed = hasDeleteMemberUploadsPermission(
+      currentUser.role,
+      state.settings.permissionsMatrix
+    );
 
     if (!isLeadershipAllowed) {
       return {
         success: false,
-        error: 'Apenas a Direção (Diretor e Secretário com permissão ativa na matriz de Permissões) tem a função de excluir a foto do cartão digital.',
+        error:
+          'Apenas o Diretor ou Secretário com permissão ativa atribuída pelo Administrador na grelha de permissões pode apagar a fotografia da ficha do membro.',
       };
     }
 
@@ -2486,11 +2597,31 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ),
     ];
 
+    const enrollmentRemoval =
+      req.operationType === 'eliminacao'
+        ? removeEnrollmentRequestsForDeletedMember(state.enrollmentRequests, member)
+        : { updatedEnrollmentRequests: state.enrollmentRequests || [], removedRequests: [] };
+
+    if (enrollmentRemoval.removedRequests.length > 0 && extraAuditEntries[0]) {
+      extraAuditEntries[0] = {
+        ...extraAuditEntries[0],
+        details: `${extraAuditEntries[0].details} Ficha(s) de inscrição associada(s) também eliminada(s) (${enrollmentRemoval.removedRequests.map((r) => r.protocolNumber).join(', ')}).`,
+      };
+    }
+
+    const removedReqIds = new Set(enrollmentRemoval.removedRequests.map((r) => r.id));
+    const updatedNotifications =
+      removedReqIds.size > 0
+        ? (state.notifications || []).filter((n) => !n.targetId || !removedReqIds.has(n.targetId))
+        : state.notifications || [];
+
     const newState = {
       ...state,
       members: updatedMembers,
       users: updatedUsers,
       deletionRequests: updatedRequests,
+      enrollmentRequests: enrollmentRemoval.updatedEnrollmentRequests,
+      notifications: updatedNotifications,
       auditLogs: [...extraAuditEntries, ...state.auditLogs],
       updatedAt: now,
     };
@@ -4495,11 +4626,31 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ),
     ];
 
+    const { updatedEnrollmentRequests, removedRequests } = removeEnrollmentRequestsForDeletedMember(
+      state.enrollmentRequests,
+      target
+    );
+
+    if (removedRequests.length > 0 && auditEntries[0]) {
+      auditEntries[0] = {
+        ...auditEntries[0],
+        details: `${auditEntries[0].details} Ficha(s) de inscrição associada(s) também eliminada(s) (${removedRequests.map((r) => r.protocolNumber).join(', ')}).`,
+      };
+    }
+
+    const removedReqIds = new Set(removedRequests.map((r) => r.id));
+    const updatedNotifications =
+      removedReqIds.size > 0
+        ? (state.notifications || []).filter((n) => !n.targetId || !removedReqIds.has(n.targetId))
+        : state.notifications || [];
+
     const newState = {
       ...state,
       members: state.members.filter(m => m.id !== id),
       users: updatedUsers,
       deletionRequests: updatedRequests,
+      enrollmentRequests: updatedEnrollmentRequests,
+      notifications: updatedNotifications,
       auditLogs: [...auditEntries, ...state.auditLogs],
       updatedAt: now,
     };
@@ -5338,13 +5489,26 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const toggleUserActive = (userId: string) => {
     if (!can('audit', 'ADMIN')) return;
+    const nowISO = getNowISOString();
     const updated = state.users.map((u) => {
       if (u.id === userId) {
-        return { ...u, active: !u.active };
+        const nextActive = !u.active;
+        return {
+          ...u,
+          active: nextActive,
+          ...(nextActive && isPendingMemberAccountConfirmation(u)
+            ? {
+                accountApprovalStatus: 'aprovada' as const,
+                accountApprovedByUserId: currentUser.id,
+                accountApprovedByName: currentUser.name,
+                accountApprovedAt: nowISO,
+              }
+            : {}),
+        };
       }
       return u;
     });
-    const newState = { ...state, users: updated };
+    const newState = { ...state, users: updated, updatedAt: nowISO };
     setState(newState);
     saveStateToStorage(newState);
     pushToFirestore(newState);
@@ -5391,6 +5555,196 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     saveStateToStorage(newState);
     pushToFirestore(newState);
     logAction('audit', 'ELIMINACAO_CONTA', `Conta de utilizador eliminada definitivamente pelo administrador: ${user.name} (${user.role})`, userId, user.email);
+    return { success: true };
+  };
+
+  const createSelfServiceMemberAccount = async (
+    memberId: string,
+    password: string,
+    confirmPassword: string
+  ): Promise<{ success: boolean; account?: UserAccount; error?: string }> => {
+    let baseState = state;
+
+    if (db && (db as any).app) {
+      try {
+        let snap: any = null;
+        try {
+          snap = await getDocFromServer(doc(db, 'club_data', 'main_state'));
+        } catch {
+          snap = await getDoc(doc(db, 'club_data', 'main_state')).catch(() => null);
+        }
+        if (snap && snap.exists()) {
+          const cloudData = snap.data() as ClubDatabaseState;
+          if (cloudData) {
+            baseState = normalizeCloudState(cloudData, state);
+          }
+        }
+      } catch {
+        // Segue com baseState local caso esteja offline
+      }
+    }
+
+    const member = baseState.members.find((m) => m.id === memberId);
+    const linkedRequest = (baseState.enrollmentRequests || []).find(
+      (r) =>
+        r.createdMemberId === memberId ||
+        (member?.enrollmentProtocol && r.protocolNumber === member.enrollmentProtocol)
+    );
+
+    const nowISO = getNowISOString();
+    const built = buildSelfServiceMemberAccount({
+      member: member as Member,
+      password,
+      confirmPassword,
+      existingUsers: baseState.users,
+      request: linkedRequest,
+      nowISO,
+    });
+
+    if (!built.success || !built.account) {
+      return { success: false, error: built.error || 'Não foi possível criar a conta de login.' };
+    }
+
+    const activeMatrix = baseState.settings.permissionsMatrix || ROLE_PERMISSIONS_MATRIX;
+    const approverRoles = (Object.keys(ROLE_LABELS) as RoleType[]).filter((r) =>
+      hasApproveMemberAccountPermission(r, activeMatrix)
+    );
+
+    const newNotification: ClubNotification = {
+      id: `NOTIF-ACC-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: 'Nova Conta de Login Aguarda Confirmação',
+      message: `${built.account.name} (Matrícula: ${built.account.manualNumber}) criou as suas credenciais após validação da inscrição e aguarda confirmação do Diretor.`,
+      timestamp: nowISO,
+      read: false,
+      category: 'system',
+      targetModule: 'members',
+      targetId: built.account.id,
+      recipientRoles: approverRoles.length > 0 ? approverRoles : ['diretor', 'admin_tecnico'],
+      priority: 'alta',
+    };
+
+    const auditEntry = createAuditLog(
+      built.account.id,
+      built.account.name,
+      'membro',
+      'audit',
+      'CRIACAO_CONTA_AUTOSERVICO',
+      `Membro ${built.account.name} (Matrícula: ${built.account.manualNumber}, E-mail: ${built.account.email}) criou credenciais de login vinculadas automaticamente à ficha ${member!.id} (aguarda confirmação do Diretor).`,
+      built.account.id,
+      built.account.email
+    );
+
+    const newState: ClubDatabaseState = {
+      ...baseState,
+      users: [...baseState.users, built.account],
+      notifications: [newNotification, ...(baseState.notifications || [])],
+      auditLogs: [auditEntry, ...(baseState.auditLogs || [])],
+      updatedAt: nowISO,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    await pushToFirestore(newState);
+
+    return { success: true, account: built.account };
+  };
+
+  const approvePendingMemberAccount = (
+    userId: string
+  ): { success: boolean; account?: UserAccount; error?: string } => {
+    const nowISO = getNowISOString();
+    const res = confirmPendingMemberAccountService({
+      userId,
+      users: state.users,
+      members: state.members,
+      actor: currentUser,
+      permissionsMatrix: state.settings.permissionsMatrix,
+      nowISO,
+    });
+
+    if (!res.success || !res.confirmedUser || !res.updatedUsers) {
+      return { success: false, error: res.error || 'Erro ao confirmar conta de login.' };
+    }
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'audit',
+      'CONFIRMACAO_CONTA_MEMBRO',
+      `Conta de login de ${res.confirmedUser.name} (Matrícula: ${res.confirmedUser.manualNumber || 'S/N'} · E-mail: ${res.confirmedUser.email}) confirmada e ativada por ${currentUser.name}.`,
+      res.confirmedUser.id,
+      res.confirmedUser.email
+    );
+
+    const memberNotification: ClubNotification = {
+      id: `NOTIF-ACC-OK-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: 'Conta de Login Confirmada e Ativa',
+      message: `A sua conta de login foi confirmada pelo Diretor. Já pode iniciar sessão com o seu e-mail (${res.confirmedUser.email}) ou Nº de Matrícula (${res.confirmedUser.manualNumber || 'S/N'}).`,
+      timestamp: nowISO,
+      read: false,
+      category: 'member',
+      targetModule: 'member_portal',
+      recipientUserId: res.confirmedUser.linkedMemberId || res.confirmedUser.id,
+      isConfidential: true,
+      priority: 'alta',
+    };
+
+    const newState: ClubDatabaseState = {
+      ...state,
+      users: res.updatedUsers,
+      notifications: [memberNotification, ...(state.notifications || [])],
+      auditLogs: [auditEntry, ...state.auditLogs],
+      updatedAt: nowISO,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    pushToFirestore(newState);
+
+    return { success: true, account: res.confirmedUser };
+  };
+
+  const rejectPendingMemberAccount = (
+    userId: string,
+    reason?: string
+  ): { success: boolean; error?: string } => {
+    const nowISO = getNowISOString();
+    const res = rejectPendingMemberAccountService({
+      userId,
+      users: state.users,
+      actor: currentUser,
+      permissionsMatrix: state.settings.permissionsMatrix,
+    });
+
+    if (!res.success || !res.rejectedUser || !res.updatedUsers) {
+      return { success: false, error: res.error || 'Erro ao recusar conta de login.' };
+    }
+
+    const cleanReason = (reason || '').trim() || 'Pedido de ativação recusado pelo responsável autorizado.';
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'audit',
+      'RECUSA_CONTA_MEMBRO',
+      `Solicitação de conta self-service de ${res.rejectedUser.name} (${res.rejectedUser.email}) recusada e removida; a ficha do membro permanece sem conta vinculada.`,
+      res.rejectedUser.id,
+      res.rejectedUser.email,
+      cleanReason
+    );
+
+    const newState: ClubDatabaseState = {
+      ...state,
+      users: res.updatedUsers,
+      auditLogs: [auditEntry, ...state.auditLogs],
+      updatedAt: nowISO,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    pushToFirestore(newState);
+
     return { success: true };
   };
 
@@ -6181,6 +6535,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         createTreasuryAccount,
         deleteTreasuryAccount,
         createUserAccount,
+        createSelfServiceMemberAccount,
+        approvePendingMemberAccount,
+        rejectPendingMemberAccount,
         toggleUserActive,
         deleteUserAccount,
         updateSettings,

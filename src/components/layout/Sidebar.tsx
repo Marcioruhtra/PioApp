@@ -22,8 +22,8 @@ import {
 } from 'lucide-react';
 import { ModuleName } from '../../types';
 import { useClub } from '../../context/ClubContext';
-import { ROLE_LABELS } from '../../services/permissionService';
-import { getStrictLinkedMember, hasMemberPortalAccess } from '../../services/accountSyncService';
+import { ROLE_LABELS, hasApproveMemberAccountPermission } from '../../services/permissionService';
+import { getStrictLinkedMember, hasMemberPortalAccess, isPendingMemberAccountConfirmation } from '../../services/accountSyncService';
 
 interface SidebarProps {
   activeModule: ModuleName;
@@ -73,6 +73,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const openDirectivesCount = (state.associateDirectives || []).filter(
     (d) => d.status === 'pendente' || d.status === 'em_curso'
   ).length;
+
+  const canApproveMemberAccounts = hasApproveMemberAccountPermission(
+    currentUser.role,
+    state.settings.permissionsMatrix
+  );
+  const pendingMemberAccountsCount = canApproveMemberAccounts
+    ? (state.users || []).filter((u) => isPendingMemberAccountConfirmation(u)).length
+    : 0;
 
   const navItems: NavItem[] = [
     {
@@ -170,6 +178,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'audit',
       label: 'Auditoria e Acessos',
       icon: ShieldAlert,
+      badge: pendingMemberAccountsCount > 0 ? pendingMemberAccountsCount : undefined,
       description: 'Contas, permissões e trilha de auditoria',
     },
   ];

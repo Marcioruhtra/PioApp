@@ -58,8 +58,13 @@ export function sanitizeMemberIntegrity(member: Member): { sanitized: Member; ch
     }
   }
 
-  // Se o encarregado não tiver nome mas houver contacto de emergência, sincroniza
-  if (!cleanMember.guardianName && resolvedEmergencyName) {
+  // Se o encarregado não tiver nome mas houver contacto de emergência distinto do titular, sincroniza
+  if (
+    !cleanMember.guardianName &&
+    resolvedEmergencyName &&
+    resolvedEmergencyName !== cleanMember.fullName &&
+    resolvedEmergencyName !== 'Contacto Familiar'
+  ) {
     cleanMember.guardianName = resolvedEmergencyName;
     changes.push(`Encarregado sincronizado a partir do contacto de emergência: "${resolvedEmergencyName}"`);
   }
@@ -77,8 +82,13 @@ export function sanitizeMemberIntegrity(member: Member): { sanitized: Member; ch
     }
   }
 
-  // Se o encarregado não tiver telefone mas houver telefone de emergência, sincroniza
-  if (!cleanMember.guardianPhone && resolvedEmergencyPhone) {
+  // Se o encarregado não tiver telefone mas houver telefone de emergência distinto do telefone do membro, sincroniza
+  if (
+    !cleanMember.guardianPhone &&
+    resolvedEmergencyPhone &&
+    resolvedEmergencyPhone !== cleanMember.phone &&
+    resolvedEmergencyPhone !== '+244 9XX XXX XXX'
+  ) {
     cleanMember.guardianPhone = resolvedEmergencyPhone;
     changes.push(`Telefone do encarregado sincronizado com telefone de emergência: "${resolvedEmergencyPhone}"`);
   }

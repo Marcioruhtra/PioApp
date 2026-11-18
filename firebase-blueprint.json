@@ -103,9 +103,37 @@
         "reviewedByRole": { "type": "string" },
         "reviewedAt": { "type": "string" },
         "decisionReason": { "type": "string" },
-        "createdMemberId": { "type": "string" }
+        "createdMemberId": { "type": "string" },
+        "biDocumentFileName": { "type": "string" },
+        "biDocumentBase64": { "type": "string" },
+        "photoDocumentFileName": { "type": "string" },
+        "photoDocumentBase64": { "type": "string" },
+        "memberDeletedAt": { "type": "string" },
+        "memberDeletedByUserId": { "type": "string" },
+        "memberDeletedByName": { "type": "string" }
       },
       "required": ["id", "protocolNumber", "fullName", "birthDate", "identityCardNumber", "phone", "category", "status", "submittedAt"]
+    },
+    "Member": {
+      "title": "Member",
+      "description": "Official club member profile stored inside ClubState",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "manualNumber": { "type": "string" },
+        "fullName": { "type": "string" },
+        "birthDate": { "type": "string" },
+        "identityCardNumber": { "type": "string" },
+        "guardianName": { "type": "string" },
+        "guardianPhone": { "type": "string" },
+        "biDocumentFileName": { "type": "string" },
+        "biDocumentBase64": { "type": "string" },
+        "photoDocumentFileName": { "type": "string" },
+        "photoDocumentBase64": { "type": "string" },
+        "attachedDocuments": { "type": "array" },
+        "documentationStatus": { "type": "string" }
+      },
+      "required": ["id", "manualNumber", "fullName", "birthDate", "identityCardNumber"]
     }
   },
   "firestore": {

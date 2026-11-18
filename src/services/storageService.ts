@@ -343,8 +343,8 @@ export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): 
  * - Configurações e catálogo formativo (settings, classes, specialties)
  *
  * Elimina integralmente para liberar espaço:
- * - Todos os documentos gerados pelo sistema e seus arquivos
- * - Todos os uploads feitos pelos membros e comprovativos reportados
+ * - Todos os documentos oficiais gerados pelo sistema e seus arquivos
+ * - Comprovativos de pagamento reportados no portal (mantendo 100% intactos os uploads nas fichas dos membros)
  * - Todas as atividades, reuniões, tarefas e atas
  * - Todas as sugestões confidenciais enviadas por membros à Direção
  * - Todos os avisos, editais, publicações e relatórios
@@ -361,11 +361,30 @@ export function cleanSystemStorageSpace(
   const _actor = actorUser || currentState.currentUser;
   const cleanupDateStr = referenceDateStr || getTodayISODate();
 
-  // Consolida a situação exata de quotas de cada membro ativo antes de apagar recibos e logs
+  const approvedEnrollments = (currentState.enrollmentRequests || []).filter(
+    (req) => req && req.status === 'aprovado'
+  );
+
+  // Consolida a situação exata de quotas de cada membro ativo antes de apagar recibos e logs,
+  // preservando integralmente todos os uploads feitos nas fichas dos membros.
   const preQuotaConfig = resolveQuotaConfig(currentState.settings, currentState.fees || []);
   const activeMembersWithCarryOver = currentState.members
     .filter((m) => m.status !== 'arquivado' && m.status !== 'inativo')
     .map((m) => {
+      const matchedApprovedReq = approvedEnrollments.find(
+        (req) =>
+          (req.createdMemberId && req.createdMemberId === m.id) ||
+          (m.enrollmentProtocol && req.protocolNumber === m.enrollmentProtocol)
+      );
+
+      const resolvedBiBase64 = m.biDocumentBase64 || matchedApprovedReq?.biDocumentBase64;
+      const resolvedBiName = m.biDocumentFileName || matchedApprovedReq?.biDocumentFileName;
+      const resolvedPhotoBase64 = m.photoDocumentBase64 || matchedApprovedReq?.photoDocumentBase64;
+      const resolvedPhotoName = m.photoDocumentFileName || matchedApprovedReq?.photoDocumentFileName;
+      const resolvedPhotoUrl =
+        m.photoUrl ||
+        (resolvedPhotoBase64?.startsWith('data:image/') ? resolvedPhotoBase64 : undefined);
+
       const summary = calculateMemberQuotaSummary(
         m,
         preQuotaConfig,
@@ -376,6 +395,12 @@ export function cleanSystemStorageSpace(
       );
       return {
         ...m,
+        ...(resolvedBiBase64 ? { biDocumentBase64: resolvedBiBase64 } : {}),
+        ...(resolvedBiName ? { biDocumentFileName: resolvedBiName } : {}),
+        ...(resolvedPhotoBase64 ? { photoDocumentBase64: resolvedPhotoBase64 } : {}),
+        ...(resolvedPhotoName ? { photoDocumentFileName: resolvedPhotoName } : {}),
+        ...(resolvedPhotoUrl ? { photoUrl: resolvedPhotoUrl } : {}),
+        ...(Array.isArray(m.attachedDocuments) ? { attachedDocuments: m.attachedDocuments } : {}),
         quotaCarryOver: {
           snapshotDate: cleanupDateStr,
           debtInCents: summary.balanceDueInCents,

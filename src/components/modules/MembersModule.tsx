@@ -33,6 +33,11 @@ import {
   FileSearch,
   FileCheck,
   MessageSquare,
+  Download,
+  Upload,
+  Loader2,
+  Paperclip,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import {
@@ -50,6 +55,7 @@ import { EmptyState } from '../common/EmptyState';
 import { isMemberNumberUnique, findPotentialDuplicateMember } from '../../services/storageService';
 import { MemberDigitalCardModal } from '../common/MemberDigitalCardModal';
 import { PrintDocumentModal } from '../common/PrintDocumentModal';
+import { DocumentViewerModal, ViewingDocumentPayload } from '../common/DocumentViewerModal';
 import { MemberDossierModal } from '../members/MemberDossierModal';
 import { MemberRegistrationForm } from '../members/MemberRegistrationForm';
 import { EnrollmentStatusCard } from '../members/EnrollmentStatusCard';
@@ -63,13 +69,20 @@ import {
   getLocalTodayDateString,
   getLocalCurrentTimeString,
 } from '../../services/enrollmentService';
-import { processProfilePhoto } from '../../utils/fileUpload';
+import { downloadDocumentFile, processProfilePhoto, processProofFile } from '../../utils/fileUpload';
 import {
   ROLE_LABELS,
   hasManageEnrollmentPeriodPermission,
+  hasApproveMemberAccountPermission,
+  hasDeleteMemberUploadsPermission,
   canExecuteMemberDeletion,
 } from '../../services/permissionService';
-import { findLinkedUserAccountsForMember, getMemberTeamLabel, isDirectionMember } from '../../services/accountSyncService';
+import {
+  findLinkedUserAccountsForMember,
+  getMemberTeamLabel,
+  isDirectionMember,
+  isPendingMemberAccountConfirmation,
+} from '../../services/accountSyncService';
 
 export const MembersModule: React.FC = () => {
   const {
@@ -99,6 +112,8 @@ export const MembersModule: React.FC = () => {
     updateEnrollmentReviewMessage,
     reopenEnrollments,
     closeEnrollmentsImmediately,
+    approvePendingMemberAccount,
+    rejectPendingMemberAccount,
   } = useClub();
 
   const isAdmin = currentUser.role === 'admin_tecnico' || can('audit', 'ADMIN');
@@ -110,7 +125,15 @@ export const MembersModule: React.FC = () => {
   const canEdit = can('members', 'EDIT') || isSecretary || isAdmin || isDirector || isAssociateDirector;
   const canEditCategory = isAdmin || isSecretary || isDirector || isAssociateDirector;
   const canApproveEnrollments = can('members', 'APPROVE_ENROLLMENT');
+  const canApproveMemberAccounts = hasApproveMemberAccountPermission(
+    currentUser.role,
+    state.settings.permissionsMatrix
+  );
   const canManageEnrollmentPeriod = hasManageEnrollmentPeriodPermission(
+    currentUser.role,
+    state.settings.permissionsMatrix
+  );
+  const canDeleteMemberUploads = hasDeleteMemberUploadsPermission(
     currentUser.role,
     state.settings.permissionsMatrix
   );
@@ -123,7 +146,7 @@ export const MembersModule: React.FC = () => {
 
   // Visualização e Navegação
   const [activeView, setActiveView] = useState<'members' | 'enrollments' | 'authorizations'>('members');
-  const [enrollmentFilter, setEnrollmentFilter] = useState<'todos' | 'pendente' | 'em_analise' | 'aprovado' | 'rejeitado'>('todos');
+  const [enrollmentFilter, setEnrollmentFilter] = useState<'todos' | 'pendente' | 'em_analise' | 'rejeitado'>('todos');
   const [authFilter, setAuthFilter] = useState<'todos' | 'pendente' | 'aprovado' | 'rejeitado' | 'executado'>('todos');
 
   // Filtros e Pesquisa
@@ -164,6 +187,8 @@ export const MembersModule: React.FC = () => {
     missingDocumentsNote: '',
   });
   const [viewingEnrollment, setViewingEnrollment] = useState<MemberEnrollmentRequest | null>(null);
+  const [viewingDocument, setViewingDocument] = useState<ViewingDocumentPayload | null>(null);
+  const [isProcessingEditDoc, setIsProcessingEditDoc] = useState<'bi' | 'photo' | null>(null);
   const [approvingEnrollment, setApprovingEnrollment] = useState<MemberEnrollmentRequest | null>(null);
   const [approveEnrollmentForm, setApproveEnrollmentForm] = useState({
     manualNumber: '',
@@ -269,6 +294,10 @@ export const MembersModule: React.FC = () => {
     allergiesOrMedicalNotes: '',
     investitureDate: '',
     professionalCourse: '',
+    biDocumentFileName: '',
+    biDocumentBase64: '',
+    photoDocumentFileName: '',
+    photoDocumentBase64: '',
   });
   const [editError, setEditError] = useState<string | null>(null);
 
@@ -294,8 +323,43 @@ export const MembersModule: React.FC = () => {
       allergiesOrMedicalNotes: m.allergiesOrMedicalNotes || '',
       investitureDate: m.investitureDate || '',
       professionalCourse: m.professionalCourse || '',
+      biDocumentFileName: m.biDocumentFileName || '',
+      biDocumentBase64: m.biDocumentBase64 || '',
+      photoDocumentFileName: m.photoDocumentFileName || '',
+      photoDocumentBase64: m.photoDocumentBase64 || '',
     });
     setEditError(null);
+  };
+
+  const handleEditAttachmentUpload = async (
+    slot: 'bi' | 'photo',
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setEditError(null);
+    setIsProcessingEditDoc(slot);
+    try {
+      const processed = await processProofFile(file);
+      if (slot === 'bi') {
+        setEditFormData((prev) => ({
+          ...prev,
+          biDocumentFileName: processed.fileName,
+          biDocumentBase64: processed.base64,
+        }));
+      } else {
+        setEditFormData((prev) => ({
+          ...prev,
+          photoDocumentFileName: processed.fileName,
+          photoDocumentBase64: processed.base64,
+        }));
+      }
+    } catch (err: any) {
+      setEditError(err?.message || 'Erro ao processar o documento selecionado.');
+    } finally {
+      setIsProcessingEditDoc(null);
+      e.target.value = '';
+    }
   };
 
   const handleEditSubmit = (e: React.FormEvent) => {
@@ -331,6 +395,13 @@ export const MembersModule: React.FC = () => {
       investitureDate: (editFormData.category === 'embaixador' || editFormData.category === 'lider')
         ? (editFormData.investitureDate.trim() || undefined)
         : undefined,
+      biDocumentFileName: editFormData.biDocumentFileName.trim() || undefined,
+      biDocumentBase64: editFormData.biDocumentBase64.trim() || undefined,
+      photoDocumentFileName: editFormData.photoDocumentFileName.trim() || undefined,
+      photoDocumentBase64: editFormData.photoDocumentBase64.trim() || undefined,
+      ...(editFormData.photoDocumentBase64.startsWith('data:image/') && !editingMember.photoUrl
+        ? { photoUrl: editFormData.photoDocumentBase64 }
+        : {}),
       emergencyContact: {
         name: editFormData.emergencyName.trim() || editingMember.emergencyContact?.name || 'Não especificado',
         relationship: editFormData.emergencyRelationship.trim() || editingMember.emergencyContact?.relationship || 'Familiar',
@@ -385,11 +456,18 @@ export const MembersModule: React.FC = () => {
     ).length;
   }, [state.enrollmentRequests]);
 
+  const pendingMemberAccounts = useMemo(() => {
+    return (state.users || []).filter((u) => isPendingMemberAccountConfirmation(u));
+  }, [state.users]);
+
+  const activeEnrollmentQueue = useMemo(() => {
+    return (state.enrollmentRequests || []).filter((r) => r && r.status !== 'aprovado' && !r.memberDeletedAt);
+  }, [state.enrollmentRequests]);
+
   const filteredEnrollments = useMemo(() => {
-    const list = state.enrollmentRequests || [];
-    if (enrollmentFilter === 'todos') return list;
-    return list.filter((r) => r.status === enrollmentFilter);
-  }, [state.enrollmentRequests, enrollmentFilter]);
+    if (enrollmentFilter === 'todos') return activeEnrollmentQueue;
+    return activeEnrollmentQueue.filter((r) => r.status === enrollmentFilter);
+  }, [activeEnrollmentQueue, enrollmentFilter]);
 
   // Submissão do Registo pela Secretaria (Mesmo formulário oficial da inscrição)
   const handleSecretaryRegisterSubmit = (formData: MemberRegistrationFormData) => {
@@ -462,6 +540,13 @@ export const MembersModule: React.FC = () => {
       joinedDate: formData.category === 'aspirante' ? getTodayISODate() : formData.joinedDate,
       annualRenewalYear: state.settings.currentYear,
       status: 'ativo',
+      biDocumentFileName: (formData.biDocumentFileName || '').trim() || undefined,
+      biDocumentBase64: (formData.biDocumentBase64 || '').trim() || undefined,
+      photoDocumentFileName: (formData.photoDocumentFileName || '').trim() || undefined,
+      photoDocumentBase64: (formData.photoDocumentBase64 || '').trim() || undefined,
+      photoUrl: formData.photoDocumentBase64?.startsWith('data:image/')
+        ? formData.photoDocumentBase64
+        : undefined,
     });
 
     if (result.success) {
@@ -797,6 +882,14 @@ export const MembersModule: React.FC = () => {
               {pendingEnrollmentsCount}
             </span>
           )}
+          {pendingMemberAccounts.length > 0 && (
+            <span
+              className="px-1.5 py-0.5 text-[10px] font-black rounded-full bg-amber-500 text-white"
+              title="Contas de login criadas por membros aguardando confirmação do Diretor"
+            >
+              {pendingMemberAccounts.length} conta(s)
+            </span>
+          )}
         </button>
         <button
           type="button"
@@ -1101,18 +1194,17 @@ export const MembersModule: React.FC = () => {
                 <span>Solicitação de Inscrição de Novos Membros</span>
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Fluxo em 3 fases: <strong>1. Pendente</strong> (aguarda visualização) → <strong>2. Em análise</strong> → <strong>3. Inscrição validada</strong> ou <strong>Inscrição Recusada</strong> conforme a Grelha de Permissões definida pelo Administrador.
+                Fluxo: <strong>1. Pendente</strong> (aguarda visualização) → <strong>2. Em análise</strong> → <strong>3. Validada</strong> (passa automaticamente para Membros Registados e sai desta lista) ou <strong>Inscrição Recusada</strong>.
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-1.5 text-xs w-full md:w-auto">
               {(
                 [
-                  { key: 'todos', label: 'Todas', count: (state.enrollmentRequests || []).length },
-                  { key: 'pendente', label: 'Pendentes', count: (state.enrollmentRequests || []).filter((r) => r.status === 'pendente').length },
-                  { key: 'em_analise', label: 'Em análise', count: (state.enrollmentRequests || []).filter((r) => r.status === 'em_analise').length },
-                  { key: 'aprovado', label: 'Inscrição validada', count: (state.enrollmentRequests || []).filter((r) => r.status === 'aprovado').length },
-                  { key: 'rejeitado', label: 'Inscrição Recusada', count: (state.enrollmentRequests || []).filter((r) => r.status === 'rejeitado').length },
+                  { key: 'todos', label: 'Todas', count: activeEnrollmentQueue.length },
+                  { key: 'pendente', label: 'Pendentes', count: activeEnrollmentQueue.filter((r) => r.status === 'pendente').length },
+                  { key: 'em_analise', label: 'Em análise', count: activeEnrollmentQueue.filter((r) => r.status === 'em_analise').length },
+                  { key: 'rejeitado', label: 'Inscrição Recusada', count: activeEnrollmentQueue.filter((r) => r.status === 'rejeitado').length },
                 ] as const
               ).map((tab) => (
                 <button
@@ -1233,6 +1325,95 @@ export const MembersModule: React.FC = () => {
               )}
             </div>
           </div>
+
+          {pendingMemberAccounts.length > 0 && (
+            <div className="p-4 rounded-xl border border-amber-300 bg-amber-50/90 text-amber-950 space-y-3 shadow-xs w-full max-w-full">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <UserCheck className="w-4 h-4 text-amber-700 shrink-0" />
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wide text-amber-900">
+                      Contas de Login Criadas por Membros · Aguardando Confirmação ({pendingMemberAccounts.length})
+                    </h3>
+                    <p className="text-[11px] text-amber-900/90 mt-0.5">
+                      Membros com inscrição validada que definiram as suas próprias credenciais de acesso. Precisam de confirmação para ficarem ativas.
+                    </p>
+                  </div>
+                </div>
+
+                {!canApproveMemberAccounts && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 bg-amber-100 border border-amber-300 px-2.5 py-1 rounded-lg">
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Restrito via Grelha de Permissões (Definida pelo Administrador)</span>
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                {pendingMemberAccounts.map((acc) => (
+                  <div
+                    key={acc.id}
+                    className="p-3 bg-white rounded-lg border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                  >
+                    <div>
+                      <div className="font-bold text-slate-900">{acc.name}</div>
+                      <div className="text-[11px] text-slate-600 mt-0.5">
+                        Matrícula: <strong className="font-mono text-slate-900">{acc.manualNumber || 'S/N'}</strong>
+                        {' · '}
+                        E-mail: <strong className="font-mono text-slate-900">{acc.email}</strong>
+                        {' · '}
+                        Solicitado em {formatDateTimeAO(acc.createdAt)}
+                      </div>
+                    </div>
+
+                    {canApproveMemberAccounts && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const res = approvePendingMemberAccount(acc.id);
+                            if (res.success) {
+                              showFeedback(
+                                'success',
+                                `Conta de login de "${acc.name}" confirmada e ativada com sucesso!`
+                              );
+                            } else {
+                              showFeedback('error', res.error || 'Erro ao confirmar conta de login.');
+                            }
+                          }}
+                          className="px-3 py-1.5 text-[11px] font-bold bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg shadow-xs inline-flex items-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <CheckCircle className="w-3.5 h-3.5" />
+                          <span>Confirmar e Ativar Conta</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const res = rejectPendingMemberAccount(
+                              acc.id,
+                              'Solicitação de conta recusada na gestão de inscrições.'
+                            );
+                            if (res.success) {
+                              showFeedback(
+                                'success',
+                                `Solicitação de conta de "${acc.name}" recusada e removida.`
+                              );
+                            } else {
+                              showFeedback('error', res.error || 'Erro ao recusar conta.');
+                            }
+                          }}
+                          className="px-3 py-1.5 text-[11px] font-semibold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg inline-flex items-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          <span>Recusar</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {!canApproveEnrollments && (
             <div className="p-3.5 bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-950 dark:text-amber-200 flex items-start gap-2.5 w-full max-w-full">
@@ -1810,49 +1991,107 @@ export const MembersModule: React.FC = () => {
                   </span>
                 </div>
 
-                {viewingEnrollment.documentDeliveryMethod === 'anexar_digital' && (
+                {(viewingEnrollment.documentDeliveryMethod === 'anexar_digital' ||
+                  viewingEnrollment.biDocumentBase64 ||
+                  viewingEnrollment.photoDocumentBase64) && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {viewingEnrollment.biDocumentBase64 && (
-                      <div className="p-2.5 bg-white border border-slate-200 rounded-lg flex items-center justify-between gap-2">
+                      <div className="p-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
                         <div className="min-w-0">
-                          <span className="text-[10px] font-bold text-slate-500 block">B.I. / Documento Anexado</span>
-                          <span className="text-xs font-semibold text-slate-900 truncate block">
+                          <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                            B.I. / Documento Anexado
+                          </span>
+                          <span className="text-xs font-semibold text-slate-900 dark:text-white truncate block">
                             {viewingEnrollment.biDocumentFileName || 'Documento B.I.'}
                           </span>
                         </div>
-                        <a
-                          href={viewingEnrollment.biDocumentBase64}
-                          download={viewingEnrollment.biDocumentFileName || `BI-${viewingEnrollment.protocolNumber}`}
-                          className="px-2.5 py-1.5 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded shrink-0"
-                        >
-                          Descarregar
-                        </a>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setViewingDocument({
+                                title: `Documento B.I. · ${viewingEnrollment.fullName}`,
+                                fileName:
+                                  viewingEnrollment.biDocumentFileName ||
+                                  `BI-${viewingEnrollment.protocolNumber}`,
+                                base64: viewingEnrollment.biDocumentBase64 || '',
+                                subtitle: `Protocolo ${viewingEnrollment.protocolNumber}`,
+                              })
+                            }
+                            className="px-2.5 py-1.5 text-[11px] font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-white rounded inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Visualizar</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              downloadDocumentFile(
+                                viewingEnrollment.biDocumentBase64 || '',
+                                viewingEnrollment.biDocumentFileName ||
+                                  `BI-${viewingEnrollment.protocolNumber}`
+                              )
+                            }
+                            className="px-2.5 py-1.5 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Baixar</span>
+                          </button>
+                        </div>
                       </div>
                     )}
                     {viewingEnrollment.photoDocumentBase64 && (
-                      <div className="p-2.5 bg-white border border-slate-200 rounded-lg flex items-center justify-between gap-2">
+                      <div className="p-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
                         <div className="flex items-center gap-2 min-w-0">
                           {viewingEnrollment.photoDocumentBase64.startsWith('data:image/') && (
                             <img
                               src={viewingEnrollment.photoDocumentBase64}
                               alt="Fotografia"
-                              className="w-8 h-8 rounded object-cover border border-slate-200 shrink-0"
+                              className="w-8 h-8 rounded object-cover border border-slate-200 dark:border-slate-600 shrink-0"
                             />
                           )}
                           <div className="min-w-0">
-                            <span className="text-[10px] font-bold text-slate-500 block">Fotografia Anexada</span>
-                            <span className="text-xs font-semibold text-slate-900 truncate block">
+                            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                              Fotografia Anexada
+                            </span>
+                            <span className="text-xs font-semibold text-slate-900 dark:text-white truncate block">
                               {viewingEnrollment.photoDocumentFileName || 'Fotografia'}
                             </span>
                           </div>
                         </div>
-                        <a
-                          href={viewingEnrollment.photoDocumentBase64}
-                          download={viewingEnrollment.photoDocumentFileName || `Foto-${viewingEnrollment.protocolNumber}`}
-                          className="px-2.5 py-1.5 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded shrink-0"
-                        >
-                          Descarregar
-                        </a>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setViewingDocument({
+                                title: `Fotografia Anexada · ${viewingEnrollment.fullName}`,
+                                fileName:
+                                  viewingEnrollment.photoDocumentFileName ||
+                                  `Foto-${viewingEnrollment.protocolNumber}`,
+                                base64: viewingEnrollment.photoDocumentBase64 || '',
+                                subtitle: `Protocolo ${viewingEnrollment.protocolNumber}`,
+                              })
+                            }
+                            className="px-2.5 py-1.5 text-[11px] font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-white rounded inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Visualizar</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              downloadDocumentFile(
+                                viewingEnrollment.photoDocumentBase64 || '',
+                                viewingEnrollment.photoDocumentFileName ||
+                                  `Foto-${viewingEnrollment.protocolNumber}`
+                              )
+                            }
+                            className="px-2.5 py-1.5 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Baixar</span>
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1952,7 +2191,7 @@ export const MembersModule: React.FC = () => {
         >
           <form onSubmit={handleConfirmApproveEnrollment} className="space-y-4 text-xs">
             <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-950">
-              Ao confirmar, o estado passa para <strong>Inscrição validada</strong> e o candidato torna-se membro ativo no cadastro oficial do clube.
+              Ao confirmar, a inscrição é validada, o candidato passa para <strong>Membros Registados</strong> e o pedido sai automaticamente da fila de Solicitações de Inscrição.
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -3140,6 +3379,179 @@ export const MembersModule: React.FC = () => {
               </div>
             </div>
 
+            {/* Secção 5: Documentos Anexados */}
+            <div className="space-y-3">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 border-b border-slate-100 pb-1 flex items-center gap-1.5">
+                <Paperclip className="w-3.5 h-3.5 text-blue-900" />
+                <span>5. Documentos Anexados (B.I. e Fotografia)</span>
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div className="p-3 rounded-lg border border-slate-200 bg-slate-50/70 space-y-2">
+                  <span className="block font-semibold text-slate-700">Bilhete de Identidade (B.I.)</span>
+                  {editFormData.biDocumentBase64 ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-900 truncate">
+                        <FileText className="w-3.5 h-3.5 text-blue-800 shrink-0" />
+                        <span className="truncate">{editFormData.biDocumentFileName || 'Documento B.I.'}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setViewingDocument({
+                              title: `Documento B.I. · ${editFormData.fullName}`,
+                              fileName: editFormData.biDocumentFileName || `BI-${editFormData.manualNumber}`,
+                              base64: editFormData.biDocumentBase64,
+                            })
+                          }
+                          className="px-2 py-1 text-[11px] font-bold bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 rounded inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <Eye className="w-3 h-3" />
+                          <span>Visualizar</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            downloadDocumentFile(
+                              editFormData.biDocumentBase64,
+                              editFormData.biDocumentFileName || `BI-${editFormData.manualNumber}`
+                            )
+                          }
+                          className="px-2 py-1 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <Download className="w-3 h-3" />
+                          <span>Baixar</span>
+                        </button>
+                        {(!editingMember?.biDocumentBase64 || canDeleteMemberUploads) && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditFormData((prev) => ({
+                                ...prev,
+                                biDocumentFileName: '',
+                                biDocumentBase64: '',
+                              }))
+                            }
+                            className="p-1 text-rose-600 hover:text-rose-800"
+                            title="Remover anexo"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <label className="flex items-center justify-center gap-1.5 p-2.5 border border-dashed border-slate-300 rounded-lg hover:bg-white cursor-pointer text-[11px] font-semibold text-blue-900">
+                      {isProcessingEditDoc === 'bi' ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Upload className="w-3.5 h-3.5" />
+                      )}
+                      <span>{isProcessingEditDoc === 'bi' ? 'A anexar...' : 'Anexar B.I. (PDF, Imagem, DOC)'}</span>
+                      <input
+                        type="file"
+                        accept=".pdf,image/*,.doc,.docx,.odt,.rtf,.txt"
+                        onChange={(e) => handleEditAttachmentUpload('bi', e)}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
+                </div>
+
+                <div className="p-3 rounded-lg border border-slate-200 bg-slate-50/70 space-y-2">
+                  <span className="block font-semibold text-slate-700">Fotografia do Membro</span>
+                  {editFormData.photoDocumentBase64 ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-[11px] font-medium text-slate-900 truncate">
+                        {editFormData.photoDocumentBase64.startsWith('data:image/') ? (
+                          <img
+                            src={editFormData.photoDocumentBase64}
+                            alt="Fotografia"
+                            className="w-6 h-6 rounded object-cover border border-slate-300 shrink-0"
+                          />
+                        ) : (
+                          <ImageIcon className="w-3.5 h-3.5 text-blue-800 shrink-0" />
+                        )}
+                        <span className="truncate">{editFormData.photoDocumentFileName || 'Fotografia'}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setViewingDocument({
+                              title: `Fotografia · ${editFormData.fullName}`,
+                              fileName: editFormData.photoDocumentFileName || `Foto-${editFormData.manualNumber}`,
+                              base64: editFormData.photoDocumentBase64,
+                            })
+                          }
+                          className="px-2 py-1 text-[11px] font-bold bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 rounded inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <Eye className="w-3 h-3" />
+                          <span>Visualizar</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            downloadDocumentFile(
+                              editFormData.photoDocumentBase64,
+                              editFormData.photoDocumentFileName || `Foto-${editFormData.manualNumber}`
+                            )
+                          }
+                          className="px-2 py-1 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <Download className="w-3 h-3" />
+                          <span>Baixar</span>
+                        </button>
+                        {(!editingMember?.photoDocumentBase64 || canDeleteMemberUploads) && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditFormData((prev) => ({
+                                ...prev,
+                                photoDocumentFileName: '',
+                                photoDocumentBase64: '',
+                              }))
+                            }
+                            className="p-1 text-rose-600 hover:text-rose-800"
+                            title="Remover fotografia"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <label className="flex items-center justify-center gap-1.5 p-2.5 border border-dashed border-slate-300 rounded-lg hover:bg-white cursor-pointer text-[11px] font-semibold text-blue-900">
+                      {isProcessingEditDoc === 'photo' ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <ImageIcon className="w-3.5 h-3.5" />
+                      )}
+                      <span>{isProcessingEditDoc === 'photo' ? 'A anexar...' : 'Anexar Fotografia'}</span>
+                      <input
+                        type="file"
+                        accept="image/*,.pdf,.doc,.docx,.odt,.rtf,.txt"
+                        onChange={(e) => handleEditAttachmentUpload('photo', e)}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
+                </div>
+              </div>
+              {!canDeleteMemberUploads &&
+                Boolean(editingMember?.biDocumentBase64 || editingMember?.photoDocumentBase64) && (
+                  <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                    <Lock className="w-3 h-3 shrink-0" />
+                    <span>
+                      A exclusão de uploads já registados na ficha do membro só é permitida ao Diretor ou Secretário com permissão na grelha do Administrador.
+                    </span>
+                  </p>
+                )}
+              <p className="text-[11px] text-slate-500">
+                Para anexar outros documentos adicionais (Autorizações, Comprovativos, Declarações), aceda também ao botão <strong>Ver Ficha</strong> do membro.
+              </p>
+            </div>
+
             <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
               <button
                 type="button"
@@ -3438,6 +3850,12 @@ export const MembersModule: React.FC = () => {
       <PrintDocumentModal
         document={printedDossierDoc}
         onClose={() => setPrintedDossierDoc(null)}
+      />
+
+      {/* MODAL: Visualizador de Documentos Anexados */}
+      <DocumentViewerModal
+        documentItem={viewingDocument}
+        onClose={() => setViewingDocument(null)}
       />
     </div>
   );

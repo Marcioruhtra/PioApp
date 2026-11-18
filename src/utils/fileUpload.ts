@@ -190,3 +190,98 @@ export async function processProfilePhoto(file: File): Promise<string> {
   });
 }
 
+export type DocumentPreviewKind = 'image' | 'pdf' | 'text' | 'other';
+
+export function getDocumentPreviewKind(base64OrUrl: string, fileName?: string): DocumentPreviewKind {
+  const lowerSrc = String(base64OrUrl || '').trim().toLowerCase();
+  const lowerName = String(fileName || '').trim().toLowerCase();
+
+  if (
+    lowerSrc.startsWith('data:image/') ||
+    /\.(jpg|jpeg|png|webp|gif|bmp|svg)$/.test(lowerName)
+  ) {
+    return 'image';
+  }
+
+  if (lowerSrc.startsWith('data:application/pdf') || lowerName.endsWith('.pdf')) {
+    return 'pdf';
+  }
+
+  if (
+    lowerSrc.startsWith('data:text/plain') ||
+    lowerName.endsWith('.txt')
+  ) {
+    return 'text';
+  }
+
+  return 'other';
+}
+
+export function dataUrlToBlob(dataUrl: string): Blob | null {
+  try {
+    const trimmed = String(dataUrl || '').trim();
+    if (!trimmed.startsWith('data:')) return null;
+    const commaIndex = trimmed.indexOf(',');
+    if (commaIndex === -1) return null;
+
+    const header = trimmed.slice(5, commaIndex);
+    const body = trimmed.slice(commaIndex + 1);
+    const mimeMatch = header.match(/^([^;]+)/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+    const isBase64 = header.includes(';base64');
+
+    if (!isBase64) {
+      return new Blob([decodeURIComponent(body)], { type: mimeType });
+    }
+
+    const byteString = atob(body);
+    const byteArray = new Uint8Array(byteString.length);
+    for (let i = 0; i < byteString.length; i++) {
+      byteArray[i] = byteString.charCodeAt(i);
+    }
+    return new Blob([byteArray], { type: mimeType });
+  } catch {
+    return null;
+  }
+}
+
+export function decodeDataUrlText(dataUrl: string): string {
+  try {
+    const commaIndex = dataUrl.indexOf(',');
+    if (commaIndex === -1) return '';
+    const header = dataUrl.slice(5, commaIndex);
+    const body = dataUrl.slice(commaIndex + 1);
+    if (!header.includes(';base64')) {
+      return decodeURIComponent(body);
+    }
+    const bytes = Uint8Array.from(atob(body), (c) => c.charCodeAt(0));
+    return new TextDecoder('utf-8').decode(bytes);
+  } catch {
+    return '';
+  }
+}
+
+export function downloadDocumentFile(base64OrUrl: string, fileName: string): boolean {
+  if (!base64OrUrl) return false;
+  const safeName = (fileName || 'documento').trim();
+  const blob = dataUrlToBlob(base64OrUrl);
+  const link = document.createElement('a');
+
+  if (blob) {
+    const blobUrl = URL.createObjectURL(blob);
+    link.href = blobUrl;
+    link.download = safeName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 2500);
+    return true;
+  }
+
+  link.href = base64OrUrl;
+  link.download = safeName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  return true;
+}

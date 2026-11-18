@@ -32,7 +32,9 @@ export type PermissionAction =
   | 'WAIVE_QUOTA_DEBT'
   | 'VIEW_DOSSIER_360'
   | 'APPROVE_ENROLLMENT'
-  | 'MANAGE_ENROLLMENT_PERIOD';
+  | 'MANAGE_ENROLLMENT_PERIOD'
+  | 'APPROVE_MEMBER_ACCOUNT'
+  | 'DELETE_MEMBER_UPLOADS';
 
 export type ModuleName =
   | 'dashboard'
@@ -69,6 +71,11 @@ export interface UserAccount {
   passwordResetRequested?: boolean;
   lastPasswordChangedAt?: string;
   lastAdminPasswordResetAt?: string;
+  accountApprovalStatus?: 'aprovada' | 'pendente_confirmacao' | 'rejeitada';
+  accountCreatedViaSelfService?: boolean;
+  accountApprovedByUserId?: string;
+  accountApprovedByName?: string;
+  accountApprovedAt?: string;
 }
 
 export type MemberCategory = 
@@ -98,6 +105,15 @@ export interface MemberQuotaCarryOver {
   waivedInCents: number; // Total de dívidas zeradas preservado para exibição
 }
 
+export interface MemberAttachedDocument {
+  id: string;
+  title: string;
+  fileName: string;
+  base64: string;
+  uploadedAt: string;
+  uploadedByName?: string;
+}
+
 export interface Member {
   id: string; // ID interno auto-gerado (ex: PioApp-MEM-001)
   manualNumber: string; // Número de membro manual exclusivo (ex: 2026/012)
@@ -122,6 +138,11 @@ export interface Member {
   archiveReason?: string;
   archivedAt?: string;
   photoUrl?: string;
+  biDocumentFileName?: string;
+  biDocumentBase64?: string;
+  photoDocumentFileName?: string;
+  photoDocumentBase64?: string;
+  attachedDocuments?: MemberAttachedDocument[];
   investitureDate?: string; // Data oficial de investidura (AAAA-MM-DD) para Embaixador ou Líder
   professionalCourse?: string; // Curso profissional que o membro está fazendo ou fez
   quotaCarryOver?: MemberQuotaCarryOver; // Saldo consolidado após limpeza da nuvem
@@ -760,6 +781,9 @@ export interface MemberEnrollmentRequest {
   decisionReason?: string;
   reviewMessage?: string;
   createdMemberId?: string;
+  memberDeletedAt?: string;
+  memberDeletedByUserId?: string;
+  memberDeletedByName?: string;
 }
 
 

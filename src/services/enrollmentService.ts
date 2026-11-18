@@ -5,6 +5,7 @@
  */
 
 import {
+  AuditLogEntry,
   DeletionRequest,
   EnrollmentDocumentDeliveryMethod,
   EnrollmentScheduleConfig,
@@ -150,11 +151,13 @@ export function validateRegistrationFields(
     };
   }
 
-  if (!cleanGuardianName) {
-    return { valid: false, error: 'O Nome do Encarregado de Educação é obrigatório.' };
-  }
-  if (!cleanGuardianPhone) {
-    return { valid: false, error: 'O Telefone do Encarregado de Educação é obrigatório.' };
+  if (mode === 'secretary') {
+    if (!cleanGuardianName) {
+      return { valid: false, error: 'O Nome do Encarregado de Educação é obrigatório.' };
+    }
+    if (!cleanGuardianPhone) {
+      return { valid: false, error: 'O Telefone do Encarregado de Educação é obrigatório.' };
+    }
   }
   if (!cleanMedical) {
     return {
@@ -227,9 +230,10 @@ export function findDuplicateEnrollmentByBI(
     };
   }
 
-  // 2. Comparar com todos os inscritos / solicitações submetidas ou validadas (exclui apenas recusadas para permitir correção documental)
+  // 2. Comparar com todos os inscritos / solicitações submetidas ou validadas (exclui recusadas e fichas já eliminadas)
   const existingRequestWithBI = existingRequests.find(
     (r) =>
+      !r.memberDeletedAt &&
       (r.status === 'pendente' || r.status === 'em_analise' || r.status === 'aprovado') &&
       normalizeIdentityCardNumber(r.identityCardNumber) === cleanBI
   );
@@ -300,7 +304,9 @@ export function validateEnrollmentSubmission(
   }
 
   const enrolledOrPendingRequests = existingRequests.filter(
-    (r) => r.status === 'pendente' || r.status === 'em_analise' || r.status === 'aprovado'
+    (r) =>
+      !r.memberDeletedAt &&
+      (r.status === 'pendente' || r.status === 'em_analise' || r.status === 'aprovado')
   );
   const dupRequest = enrolledOrPendingRequests.find((r) => {
     const rBI = normalizeIdentityCardNumber(r.identityCardNumber);
@@ -396,8 +402,8 @@ export function buildEnrollmentRequest(
 ): MemberEnrollmentRequest {
   const protocol = generateNextEnrollmentProtocol(currentYear, existingRequests);
   const now = getNowISOString();
-  const guardianName = data.guardianName.trim();
-  const guardianPhone = data.guardianPhone.trim();
+  const guardianName = (data.guardianName || '').trim();
+  const guardianPhone = (data.guardianPhone || '').trim();
   const cleanName = data.fullName.trim();
   const cleanPhone = data.phone.trim();
 
@@ -415,12 +421,14 @@ export function buildEnrollmentRequest(
     category: data.category,
     // Na inscrição direta no clube, candidatos não escolhem equipa (definida na autorização pela Secretaria)
     unitOrTeam: undefined,
-    guardianName,
-    guardianPhone,
+    guardianName: guardianName || undefined,
+    guardianPhone: guardianPhone || undefined,
     emergencyContact: {
-      name: (data.emergencyName || '').trim() || guardianName,
-      relationship: (data.emergencyRelationship || '').trim() || 'Encarregado de Educação',
-      phone: (data.emergencyPhone || '').trim() || guardianPhone,
+      name: (data.emergencyName || '').trim() || guardianName || cleanName,
+      relationship:
+        (data.emergencyRelationship || '').trim() ||
+        (guardianName ? 'Encarregado de Educação' : 'Contacto Próprio'),
+      phone: (data.emergencyPhone || '').trim() || guardianPhone || cleanPhone,
       phoneVerified: false,
     },
     bloodType: (data.bloodType || '').trim() || undefined,
@@ -530,9 +538,9 @@ export function buildApprovedMemberFromEnrollment(
     address: req.address,
     category: finalCategory,
     unitOrTeam: finalUnit,
-    guardianName: req.guardianName,
-    guardianPhone: req.guardianPhone,
-    guardianValidated: Boolean(req.guardianName),
+    guardianName: (req.guardianName || '').trim() || undefined,
+    guardianPhone: (req.guardianPhone || '').trim() || undefined,
+    guardianValidated: Boolean((req.guardianName || '').trim()),
     emergencyContact: req.emergencyContact,
     bloodType: (req.bloodType || '').trim() || undefined,
     allergiesOrMedicalNotes: req.allergiesOrMedicalNotes,
@@ -543,6 +551,10 @@ export function buildApprovedMemberFromEnrollment(
       finalCategory === 'embaixador' || finalCategory === 'lider' ? req.investitureDate : undefined,
     professionalCourse: req.professionalCourse,
     photoUrl: req.photoDocumentBase64?.startsWith('data:image/') ? req.photoDocumentBase64 : undefined,
+    biDocumentFileName: req.biDocumentFileName,
+    biDocumentBase64: req.biDocumentBase64,
+    photoDocumentFileName: req.photoDocumentFileName,
+    photoDocumentBase64: req.photoDocumentBase64,
     documentationStatus: defaultDocStatus,
     missingDocumentsNote: resolvedMissingNote,
     documentationUpdatedAt: overrides?.updatedByName ? now : req.reviewedAt || now,
@@ -558,14 +570,125 @@ export function buildApprovedMemberFromEnrollment(
 }
 
 /**
+ * Elimina definitivamente as fichas/solicitações de inscrição associadas a um membro eliminado,
+ * garantindo que não permaneçam no histórico de inscrições nem impeçam uma nova inscrição ou registo futuro.
+ */
+export function removeEnrollmentRequestsForDeletedMember(
+  enrollmentRequests: MemberEnrollmentRequest[] | undefined,
+  deletedMember: Pick<
+    Member,
+    'id' | 'manualNumber' | 'identityCardNumber' | 'enrollmentProtocol' | 'email' | 'fullName' | 'birthDate'
+  >
+): {
+  updatedEnrollmentRequests: MemberEnrollmentRequest[];
+  removedRequests: MemberEnrollmentRequest[];
+} {
+  if (!Array.isArray(enrollmentRequests) || enrollmentRequests.length === 0) {
+    return { updatedEnrollmentRequests: [], removedRequests: [] };
+  }
+
+  const cleanDeletedId = String(deletedMember.id || '').trim();
+  const cleanDeletedProtocol = String(deletedMember.enrollmentProtocol || '').trim();
+  const cleanDeletedBI = normalizeIdentityCardNumber(deletedMember.identityCardNumber);
+  const cleanDeletedManual = String(deletedMember.manualNumber || '').trim().toLowerCase();
+  const cleanDeletedEmail = String(deletedMember.email || '').trim().toLowerCase();
+  const cleanDeletedName = String(deletedMember.fullName || '').trim().toLowerCase();
+  const cleanDeletedBirth = String(deletedMember.birthDate || '').trim();
+
+  const updatedEnrollmentRequests: MemberEnrollmentRequest[] = [];
+  const removedRequests: MemberEnrollmentRequest[] = [];
+
+  for (const req of enrollmentRequests) {
+    if (!req) continue;
+
+    const matchesCreatedId = Boolean(cleanDeletedId && req.createdMemberId === cleanDeletedId);
+    const matchesProtocol = Boolean(cleanDeletedProtocol && req.protocolNumber === cleanDeletedProtocol);
+    const matchesBI = Boolean(
+      cleanDeletedBI && normalizeIdentityCardNumber(req.identityCardNumber) === cleanDeletedBI
+    );
+    const matchesManual = Boolean(
+      cleanDeletedManual && String(req.manualNumber || '').trim().toLowerCase() === cleanDeletedManual
+    );
+    const matchesEmail = Boolean(
+      cleanDeletedEmail && String(req.email || '').trim().toLowerCase() === cleanDeletedEmail
+    );
+    const matchesNameAndBirth = Boolean(
+      cleanDeletedName &&
+        cleanDeletedBirth &&
+        String(req.fullName || '').trim().toLowerCase() === cleanDeletedName &&
+        String(req.birthDate || '').trim() === cleanDeletedBirth
+    );
+
+    if (
+      matchesCreatedId ||
+      matchesProtocol ||
+      matchesBI ||
+      matchesManual ||
+      matchesEmail ||
+      matchesNameAndBirth
+    ) {
+      removedRequests.push(req);
+    } else {
+      updatedEnrollmentRequests.push(req);
+    }
+  }
+
+  return { updatedEnrollmentRequests, removedRequests };
+}
+
+/**
+ * Assinala nas solicitações de inscrição associadas que a respetiva ficha de membro
+ * foi definitivamente eliminada, impedindo que futuras reconciliações na nuvem a recriem.
+ */
+export function markDeletedMemberInEnrollments(
+  enrollmentRequests: MemberEnrollmentRequest[] | undefined,
+  deletedMember: Pick<Member, 'id' | 'manualNumber' | 'identityCardNumber' | 'enrollmentProtocol'>,
+  actor: Pick<UserAccount, 'id' | 'name'>,
+  deletedAt: string = getNowISOString()
+): MemberEnrollmentRequest[] {
+  if (!Array.isArray(enrollmentRequests) || enrollmentRequests.length === 0) {
+    return [];
+  }
+
+  const cleanDeletedId = String(deletedMember.id || '').trim();
+  const cleanDeletedProtocol = String(deletedMember.enrollmentProtocol || '').trim();
+  const cleanDeletedBI = normalizeIdentityCardNumber(deletedMember.identityCardNumber);
+  const cleanDeletedManual = String(deletedMember.manualNumber || '').trim().toLowerCase();
+
+  return enrollmentRequests.map((req) => {
+    if (!req) return req;
+    const matchesCreatedId = Boolean(cleanDeletedId && req.createdMemberId === cleanDeletedId);
+    const matchesProtocol = Boolean(cleanDeletedProtocol && req.protocolNumber === cleanDeletedProtocol);
+    const matchesApprovedIdentity =
+      req.status === 'aprovado' &&
+      !req.memberDeletedAt &&
+      ((Boolean(cleanDeletedBI) && normalizeIdentityCardNumber(req.identityCardNumber) === cleanDeletedBI) ||
+        (Boolean(cleanDeletedManual) && String(req.manualNumber || '').trim().toLowerCase() === cleanDeletedManual));
+
+    if (!matchesCreatedId && !matchesProtocol && !matchesApprovedIdentity) {
+      return req;
+    }
+
+    return {
+      ...req,
+      memberDeletedAt: deletedAt,
+      memberDeletedByUserId: actor.id,
+      memberDeletedByName: actor.name,
+    };
+  });
+}
+
+/**
  * Reconcilia automaticamente todas as inscrições já validadas/aceites ("aprovado")
- * garantindo que estejam registadas na Secretaria ("Fichas de Membros") sem duplicação.
+ * garantindo que estejam registadas na Secretaria ("Fichas de Membros") sem duplicação
+ * e NUNCA ressuscitando fichas que já foram eliminadas (diretamente ou por autorização).
  */
 export function reconcileApprovedEnrollmentsWithMembers(
   members: Member[],
   enrollmentRequests: MemberEnrollmentRequest[],
   currentYear: number,
-  deletionRequests: DeletionRequest[] = []
+  deletionRequests: DeletionRequest[] = [],
+  auditLogs: AuditLogEntry[] = []
 ): {
   members: Member[];
   enrollmentRequests: MemberEnrollmentRequest[];
@@ -581,10 +704,12 @@ export function reconcileApprovedEnrollmentsWithMembers(
     };
   }
 
-  const deletedMemberIds = new Set(
-    (deletionRequests || [])
-      .filter((d) => d.status === 'executado' && d.operationType === 'eliminacao')
-      .map((d) => d.targetId)
+  const executedDeletions = (deletionRequests || []).filter(
+    (d) => d.status === 'executado' && d.operationType === 'eliminacao'
+  );
+
+  const deletionAuditEntries = (auditLogs || []).filter(
+    (a) => a && (a.action === 'ELIMINACAO_MEMBRO' || a.action === 'ELIMINACAO_MEMBRO_EXECUTADA')
   );
 
   let nextMembers = [...members];
@@ -594,10 +719,12 @@ export function reconcileApprovedEnrollmentsWithMembers(
   const nextRequests = enrollmentRequests.map((req) => {
     if (!req || req.status !== 'aprovado') return req;
 
-    if (req.createdMemberId && deletedMemberIds.has(req.createdMemberId)) {
+    // Nunca ressuscita uma inscrição cuja ficha de membro já foi assinalada como eliminada
+    if (req.memberDeletedAt) {
       return req;
     }
 
+    const reqRefTime = String(req.reviewedAt || req.submittedAt || '');
     const cleanReqBI = normalizeIdentityCardNumber(req.identityCardNumber);
     const cleanReqManual = String(req.manualNumber || '').trim().toLowerCase();
 
@@ -613,6 +740,38 @@ export function reconcileApprovedEnrollmentsWithMembers(
         hasChanges = true;
         return { ...req, createdMemberId: matchedMember.id };
       }
+      return req;
+    }
+
+    // Se a inscrição já tinha criado previamente uma ficha (createdMemberId preenchido)
+    // e essa ficha deixou de existir em `members`, significa que o membro foi eliminado — nunca recriar.
+    if (req.createdMemberId && req.createdMemberId.trim()) {
+      return req;
+    }
+
+    // Verifica pedidos formais de eliminação executados após esta aprovação
+    const deletedInDeletionRequests = executedDeletions.some((d) => {
+      const delTime = String(d.executedAt || d.decidedAt || d.requestedAt || '');
+      if (reqRefTime && delTime && delTime < reqRefTime) {
+        return false;
+      }
+      const delManual = String(d.targetMemberManualNumber || '').trim().toLowerCase();
+      return Boolean(cleanReqManual && delManual && delManual === cleanReqManual);
+    });
+    if (deletedInDeletionRequests) {
+      return req;
+    }
+
+    // Salvaguarda adicional para dados legados: verifica auditoria de eliminação posterior à aprovação
+    const reqNameLower = String(req.fullName || '').trim().toLowerCase();
+    const deletedInAuditAfterApproval = deletionAuditEntries.some((entry) => {
+      if (reqRefTime && entry.timestamp && entry.timestamp < reqRefTime) {
+        return false;
+      }
+      const entityNameLower = String(entry.entityName || '').trim().toLowerCase();
+      return Boolean(reqNameLower && entityNameLower && entityNameLower === reqNameLower);
+    });
+    if (deletedInAuditAfterApproval) {
       return req;
     }
 

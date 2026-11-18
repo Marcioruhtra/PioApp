@@ -10,6 +10,7 @@ import {
 import {
   MemberEnrollmentRequest,
 } from '../src/types';
+import { createAuditLog } from '../src/services/auditService';
 import {
   hasPermission,
   ROLE_PERMISSIONS_MATRIX,
@@ -28,6 +29,10 @@ import {
   hasApproveEnrollmentPermission,
   canGrantManageEnrollmentPeriod,
   hasManageEnrollmentPeriodPermission,
+  canGrantApproveMemberAccount,
+  hasApproveMemberAccountPermission,
+  canGrantDeleteMemberUploads,
+  hasDeleteMemberUploadsPermission,
   canExecuteMemberDeletion,
   ACTION_LABELS,
   sanitizeRoleType,
@@ -46,6 +51,8 @@ import {
   startEnrollmentReview,
   getEnrollmentPhaseInfo,
   lookupEnrollmentStatusByIdentity,
+  removeEnrollmentRequestsForDeletedMember,
+  reconcileApprovedEnrollmentsWithMembers,
   validateEnrollmentScheduleInput,
   evaluateEnrollmentAvailability,
 } from '../src/services/enrollmentService';
@@ -53,6 +60,8 @@ import { formatKz } from '../src/utils/currency';
 import { formatDateAO, calculateAgeYears } from '../src/utils/date';
 import { INACTIVITY_TIMEOUT_MS, isSessionInactive, getRemainingInactivityMs } from '../src/utils/inactivity';
 import { buildMemberDossierData } from '../src/utils/memberDossier';
+import { getDocumentPreviewKind, dataUrlToBlob } from '../src/utils/fileUpload';
+import { sanitizeMemberIntegrity } from '../src/services/memberIntegrityService';
 import {
   syncMemberChangesToUsers,
   syncUserWithLinkedMember,
@@ -64,6 +73,11 @@ import {
   isDirectionRole,
   isDirectionMember,
   getMemberTeamLabel,
+  isPendingMemberAccountConfirmation,
+  canMemberCreateSelfServiceAccount,
+  buildSelfServiceMemberAccount,
+  confirmPendingMemberAccount,
+  rejectPendingMemberAccount,
 } from '../src/services/accountSyncService';
 import {
   countChargeableSundays,
@@ -1793,19 +1807,20 @@ function runTests() {
     "Inscrição como Embaixador exige Data Oficial de Investidura obrigatória"
   );
 
-  // 32.3 Campos agora estritamente obrigatórios rejeitam quando vazios
+  // 32.3 Campos estritamente obrigatórios rejeitam quando vazios; Nome e Telefone do Encarregado são opcionais no ato da inscrição
   const missingEmail = validateRegistrationFields({ ...minimalValidSelfAspirant, email: '' }, 'self_enrollment');
   const missingAddress = validateRegistrationFields({ ...minimalValidSelfAspirant, address: '' }, 'self_enrollment');
-  const missingGuardian = validateRegistrationFields({ ...minimalValidSelfAspirant, guardianName: '' }, 'self_enrollment');
-  const missingGuardianPhone = validateRegistrationFields({ ...minimalValidSelfAspirant, guardianPhone: '' }, 'self_enrollment');
+  const optionalGuardianInSelfEnrollment = validateRegistrationFields(
+    { ...minimalValidSelfAspirant, guardianName: '', guardianPhone: '' },
+    'self_enrollment'
+  );
   const missingMedical = validateRegistrationFields({ ...minimalValidSelfAspirant, allergiesOrMedicalNotes: '' }, 'self_enrollment');
   assert(
     !missingEmail.valid &&
       !missingAddress.valid &&
-      !missingGuardian.valid &&
-      !missingGuardianPhone.valid &&
+      optionalGuardianInSelfEnrollment.valid &&
       !missingMedical.valid,
-    "Formulário rejeita ausência de E-mail, Município/Bairro, Nome do Encarregado, Telefone do Encarregado e Alergias/Cuidados Médicos"
+    "Formulário rejeita ausência de E-mail, Município/Bairro e Alergias, e permite Encarregado opcional no ato da inscrição"
   );
 
   // 32.4 Modo Secretaria: Aspirante dispensa Data de Admissão, mas Embaixador/Líder exigem Data de Admissão e todos exigem Equipa
@@ -2731,6 +2746,664 @@ function runTests() {
       migratedLegacy.users.find((u) => u.id === 'USR-LEG-CONS')?.role === 'membro' &&
       migratedLegacy.users.find((u) => u.id === 'USR-LEG-MUS')?.role === 'membro',
     "reconcileUsersAndMembers migra contas legadas com cargos 'conselheiro' ou 'musica' para 'membro'"
+  );
+
+  // =========================================================================
+  // TESTE 44: Criação de Credenciais Self-Service pós-Inscrição Validada e Confirmação do Diretor (RBAC)
+  // =========================================================================
+  console.log("\n=== TESTE 44: CREDENCIAIS SELF-SERVICE & CONFIRMAÇÃO DO DIRETOR (RBAC) ===");
+
+  const approveAccountPermDef = PERMISSION_CATALOG.find(
+    (p) => p.module === 'members' && p.action === 'APPROVE_MEMBER_ACCOUNT'
+  );
+  assert(
+    Boolean(approveAccountPermDef) &&
+      ACTION_LABELS.APPROVE_MEMBER_ACCOUNT === 'Confirmar Contas de Login (Membros)',
+    "Catálogo RBAC e ACTION_LABELS contêm a permissão APPROVE_MEMBER_ACCOUNT"
+  );
+
+  assert(
+    canGrantApproveMemberAccount('admin_tecnico') === true &&
+      canGrantApproveMemberAccount('diretor') === false &&
+      canGrantApproveMemberAccount('secretario') === false,
+    "Apenas o Administrador Técnico pode conceder/revogar a permissão APPROVE_MEMBER_ACCOUNT na grelha"
+  );
+
+  assert(
+    hasApproveMemberAccountPermission('diretor', ROLE_PERMISSIONS_MATRIX) === true &&
+      hasApproveMemberAccountPermission('admin_tecnico', ROLE_PERMISSIONS_MATRIX) === true &&
+      hasApproveMemberAccountPermission('secretario', ROLE_PERMISSIONS_MATRIX) === false &&
+      hasApproveMemberAccountPermission('membro', ROLE_PERMISSIONS_MATRIX) === false,
+    "Por padrão, Diretor e Administrador Técnico possuem permissão para confirmar contas de login; outros cargos não"
+  );
+
+  const customRevokedMatrix = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  customRevokedMatrix.diretor.members = customRevokedMatrix.diretor.members.filter(
+    (a: string) => a !== 'APPROVE_MEMBER_ACCOUNT'
+  );
+  customRevokedMatrix.secretario.members.push('APPROVE_MEMBER_ACCOUNT');
+  const syncedCustomAccountMatrix = syncPermissionsMatrix(customRevokedMatrix);
+  assert(
+    hasApproveMemberAccountPermission('diretor', syncedCustomAccountMatrix) === false &&
+      hasApproveMemberAccountPermission('secretario', syncedCustomAccountMatrix) === true,
+    "Revogação/concessão de APPROVE_MEMBER_ACCOUNT pelo Administrador persiste após syncPermissionsMatrix"
+  );
+
+  const pendingReq: MemberEnrollmentRequest = {
+    id: 'INS-SELF-001',
+    protocolNumber: 'INS-2026-0901',
+    manualNumber: 'EBX-2026-901',
+    fullName: 'Candidato Pendente Teste',
+    birthDate: '2007-04-12',
+    gender: 'M',
+    identityCardNumber: '009876543LA091',
+    phone: '923000901',
+    email: 'candidato901@clubedalvorada.ao',
+    address: 'Luanda',
+    category: 'aspirante',
+    emergencyContact: { name: 'Encarregado', relationship: 'Pai', phone: '923000900' },
+    status: 'pendente',
+    submittedAt: '2026-05-01T10:00:00Z',
+  };
+
+  const pendingCheck = canMemberCreateSelfServiceAccount(undefined, [], pendingReq);
+  assert(
+    pendingCheck.allowed === false,
+    "Candidato cuja inscrição ainda não foi validada (sem ficha oficial) NÃO pode criar conta de login"
+  );
+
+  const validatedMemberNoAccount: Member = {
+    ...state.members[0],
+    id: 'CDA-MEM-901',
+    manualNumber: 'EBX-2026-901',
+    fullName: 'Candidato Validado Sem Conta',
+    email: 'validado901@clubedalvorada.ao',
+    phone: '923000901',
+    status: 'ativo',
+  };
+  const approvedReq: MemberEnrollmentRequest = {
+    ...pendingReq,
+    status: 'aprovado',
+    createdMemberId: validatedMemberNoAccount.id,
+  };
+
+  const memberWithoutEmail: Member = { ...validatedMemberNoAccount, email: '' };
+  assert(
+    canMemberCreateSelfServiceAccount(memberWithoutEmail, [], approvedReq).missingEmail === true,
+    "Membro sem e-mail registado na ficha não pode criar credenciais até atualização pela Secretaria"
+  );
+
+  assert(
+    canMemberCreateSelfServiceAccount(validatedMemberNoAccount, [], approvedReq).allowed === true,
+    "Membro com inscrição validada, e-mail, Nº de Matrícula e sem conta vinculada está elegível para criar conta"
+  );
+
+  const badShortPwd = buildSelfServiceMemberAccount({
+    member: validatedMemberNoAccount,
+    password: '123',
+    confirmPassword: '123',
+    existingUsers: [],
+    request: approvedReq,
+  });
+  assert(
+    badShortPwd.success === false,
+    "Criação de conta self-service rejeita senha com menos de 6 caracteres"
+  );
+
+  const badMismatchPwd = buildSelfServiceMemberAccount({
+    member: validatedMemberNoAccount,
+    password: 'senhaSegura1',
+    confirmPassword: 'outraSenha2',
+    existingUsers: [],
+    request: approvedReq,
+  });
+  assert(
+    badMismatchPwd.success === false,
+    "Criação de conta self-service rejeita confirmação de senha divergente"
+  );
+
+  const builtSelfService = buildSelfServiceMemberAccount({
+    member: validatedMemberNoAccount,
+    password: 'MinhaSenha2026',
+    confirmPassword: 'MinhaSenha2026',
+    existingUsers: state.users,
+    request: approvedReq,
+    nowISO: '2026-05-02T12:00:00Z',
+  });
+  assert(
+    builtSelfService.success === true &&
+      Boolean(builtSelfService.account) &&
+      builtSelfService.account!.active === false &&
+      builtSelfService.account!.accountApprovalStatus === 'pendente_confirmacao' &&
+      builtSelfService.account!.accountCreatedViaSelfService === true &&
+      builtSelfService.account!.linkedMemberId === validatedMemberNoAccount.id &&
+      builtSelfService.account!.manualNumber === validatedMemberNoAccount.manualNumber &&
+      builtSelfService.account!.email === validatedMemberNoAccount.email &&
+      builtSelfService.account!.role === 'membro' &&
+      isPendingMemberAccountConfirmation(builtSelfService.account!) === true,
+    "Conta self-service é criada apenas com a senha, vinculada automaticamente ao membro, com Matrícula/E-mail sincronizados e aguardando confirmação do Diretor (active: false)"
+  );
+
+  const usersWithPendingSelf = [...state.users, builtSelfService.account!];
+  const duplicatePendingEligibility = canMemberCreateSelfServiceAccount(
+    validatedMemberNoAccount,
+    usersWithPendingSelf,
+    approvedReq
+  );
+  assert(
+    duplicatePendingEligibility.allowed === false && duplicatePendingEligibility.pendingConfirmation === true,
+    "Registo com conta pendente de confirmação não permite criar segunda conta duplicada"
+  );
+
+  // Sincronização automática quando o Secretário atualiza e-mail/matrícula da ficha mesmo antes da confirmação
+  const updatedMemberSynced: Member = {
+    ...validatedMemberNoAccount,
+    email: 'novo.email901@clubedalvorada.ao',
+    manualNumber: 'EBX-2026-999',
+  };
+  const syncedPendingUsers = syncMemberChangesToUsers(
+    updatedMemberSynced,
+    usersWithPendingSelf,
+    validatedMemberNoAccount
+  );
+  const syncedPendingAcc = syncedPendingUsers.find((u) => u.id === builtSelfService.account!.id);
+  assert(
+    syncedPendingAcc?.email === 'novo.email901@clubedalvorada.ao' &&
+      syncedPendingAcc?.manualNumber === 'EBX-2026-999',
+    "Nº de Matrícula e E-mail na conta self-service permanecem sincronizados automaticamente com alterações na ficha do membro"
+  );
+
+  // Tentativa de confirmação por utilizador sem permissão na grelha falha
+  const unauthConfirm = confirmPendingMemberAccount({
+    userId: builtSelfService.account!.id,
+    users: syncedPendingUsers,
+    members: [updatedMemberSynced],
+    actor: { id: 'USR-SEC', name: 'Secretário', role: 'secretario' },
+    permissionsMatrix: ROLE_PERMISSIONS_MATRIX,
+  });
+  assert(
+    unauthConfirm.success === false,
+    "Cargo sem permissão APPROVE_MEMBER_ACCOUNT na grelha não pode confirmar conta de login"
+  );
+
+  // Confirmação autorizada pelo Diretor ativa a conta e vincula corretamente
+  const directorConfirm = confirmPendingMemberAccount({
+    userId: builtSelfService.account!.id,
+    users: syncedPendingUsers,
+    members: [updatedMemberSynced],
+    actor: { id: 'USR-DIR', name: 'Diretor Clube', role: 'diretor' },
+    permissionsMatrix: ROLE_PERMISSIONS_MATRIX,
+    nowISO: '2026-05-02T14:00:00Z',
+  });
+  assert(
+    directorConfirm.success === true &&
+      directorConfirm.confirmedUser?.active === true &&
+      directorConfirm.confirmedUser?.accountApprovalStatus === 'aprovada' &&
+      directorConfirm.confirmedUser?.accountApprovedByName === 'Diretor Clube' &&
+      isPendingMemberAccountConfirmation(directorConfirm.confirmedUser!) === false,
+    "Confirmação pelo Diretor ativa a conta (active: true), marca como aprovada e desbloqueia o login do membro"
+  );
+
+  // Após ativação, registo vinculado não pode criar outra conta
+  const alreadyLinkedCheck = canMemberCreateSelfServiceAccount(
+    updatedMemberSynced,
+    directorConfirm.updatedUsers!,
+    approvedReq
+  );
+  assert(
+    alreadyLinkedCheck.allowed === false && alreadyLinkedCheck.alreadyLinkedActive === true,
+    "Registo já vinculado a conta de login ativa não exibe nem permite nova criação de credenciais"
+  );
+
+  // Teste de recusa de conta pendente remove a conta pendente e deixa o registo desvinculado novamente
+  const rejectedRes = rejectPendingMemberAccount({
+    userId: builtSelfService.account!.id,
+    users: usersWithPendingSelf,
+    actor: { id: 'USR-DIR', name: 'Diretor Clube', role: 'diretor' },
+    permissionsMatrix: ROLE_PERMISSIONS_MATRIX,
+  });
+  assert(
+    rejectedRes.success === true &&
+      !rejectedRes.updatedUsers!.some((u) => u.id === builtSelfService.account!.id) &&
+      canMemberCreateSelfServiceAccount(validatedMemberNoAccount, rejectedRes.updatedUsers!, approvedReq).allowed === true,
+    "Recusa de conta pendente pelo Diretor remove a solicitação pendente e mantém o registo desvinculado"
+  );
+
+  // 45. ELIMINAÇÃO DE MEMBRO ELIMINA A FICHA DE INSCRIÇÃO ASSOCIADA E PERMITE NOVA INSCRIÇÃO/REGISTO SEM IMPEDIMENTOS
+  console.log("\n45. Teste de Eliminação da Ficha de Inscrição ao Eliminar Membro e Re-inscrição Livre:");
+
+  const resurrectedMemberCandidate: Member = {
+    ...validatedMemberNoAccount,
+    id: 'CDA-MEM-001',
+    manualNumber: 'EBX-2026-888',
+    fullName: 'Lucas Eliminado Persistente',
+    identityCardNumber: '008877665LA041',
+    email: 'lucas.eliminado@clubedalvorada.ao',
+    phone: '+244 923 888 777',
+    enrollmentProtocol: 'INS-2026-0888',
+  };
+
+  const approvedReqToDelete: MemberEnrollmentRequest = {
+    ...approvedReq,
+    id: 'INS-2026-0888',
+    protocolNumber: 'INS-2026-0888',
+    manualNumber: 'EBX-2026-888',
+    fullName: 'Lucas Eliminado Persistente',
+    identityCardNumber: '008877665LA041',
+    email: 'lucas.eliminado@clubedalvorada.ao',
+    phone: '+244 923 888 777',
+    status: 'aprovado',
+    reviewedAt: '2026-04-01T10:00:00Z',
+    createdMemberId: resurrectedMemberCandidate.id,
+  };
+
+  const unrelatedApprovedReq: MemberEnrollmentRequest = {
+    ...approvedReq,
+    id: 'INS-2026-0899',
+    protocolNumber: 'INS-2026-0899',
+    manualNumber: 'EBX-2026-899',
+    fullName: 'Maria Ativa Sem Relação',
+    identityCardNumber: '001199887LA040',
+    email: 'maria.ativa@clubedalvorada.ao',
+    phone: '+244 923 999 000',
+    status: 'aprovado',
+    reviewedAt: '2026-04-01T10:00:00Z',
+    createdMemberId: 'CDA-MEM-002',
+  };
+
+  // Quando a inscrição é apenas validada, a ficha de inscrição permanece registada (não é eliminada na validação)
+  assert(
+    approvedReqToDelete.status === 'aprovado' && Boolean(approvedReqToDelete.createdMemberId),
+    "Quando a ficha de inscrição é validada, permanece registada no sistema (não é eliminada na validação)"
+  );
+
+  const linkedLoginAccountToDelete: UserAccount = {
+    id: 'USR-LUCAS-888',
+    name: resurrectedMemberCandidate.fullName,
+    email: resurrectedMemberCandidate.email!,
+    role: 'membro',
+    linkedMemberId: resurrectedMemberCandidate.id,
+    manualNumber: resurrectedMemberCandidate.manualNumber,
+    active: true,
+    createdAt: '2026-04-02T10:00:00Z',
+  };
+
+  // Eliminação do membro remove: ficha do membro, conta de login vinculada E a ficha de inscrição associada
+  const remainingMembersAfterDirectDelete: Member[] = [
+    {
+      ...validatedMemberNoAccount,
+      id: 'CDA-MEM-002',
+      manualNumber: 'EBX-2026-899',
+      fullName: 'Maria Ativa Sem Relação',
+      identityCardNumber: '001199887LA040',
+      email: 'maria.ativa@clubedalvorada.ao',
+      phone: '+244 923 999 000',
+      enrollmentProtocol: 'INS-2026-0899',
+    },
+  ];
+  const afterAccountRemoval = removeLinkedAccountsForMember(
+    [linkedLoginAccountToDelete],
+    resurrectedMemberCandidate
+  );
+  const enrollmentRemovalResult = removeEnrollmentRequestsForDeletedMember(
+    [approvedReqToDelete, unrelatedApprovedReq],
+    resurrectedMemberCandidate
+  );
+
+  assert(
+    afterAccountRemoval.updatedUsers.length === 0 &&
+      enrollmentRemovalResult.removedRequests.length === 1 &&
+      enrollmentRemovalResult.removedRequests[0].id === 'INS-2026-0888' &&
+      enrollmentRemovalResult.updatedEnrollmentRequests.length === 1 &&
+      enrollmentRemovalResult.updatedEnrollmentRequests[0].id === 'INS-2026-0899',
+    "Ao eliminar um membro que fez inscrição, a sua conta de login e a sua ficha de inscrição são também eliminadas (mantendo as dos restantes membros)"
+  );
+
+  // Ao fechar a app e voltar a iniciar sessão, o membro eliminado não volta a aparecer
+  const reloadAfterFullRemoval = reconcileApprovedEnrollmentsWithMembers(
+    remainingMembersAfterDirectDelete,
+    enrollmentRemovalResult.updatedEnrollmentRequests,
+    2026,
+    [],
+    []
+  );
+  assert(
+    reloadAfterFullRemoval.members.length === 1 &&
+      !reloadAfterFullRemoval.members.some((m) => m.id === resurrectedMemberCandidate.id),
+    "Após recarregar da nuvem e voltar a iniciar sessão, o membro eliminado NÃO volta a aparecer"
+  );
+
+  // Membro eliminado pode voltar a inscrever-se com exatamente os mesmos dados (B.I., e-mail, telefone, matrícula) sem impedimentos
+  const reEnrollmentForm: MemberRegistrationFormData = {
+    manualNumber: 'EBX-2026-888',
+    fullName: 'Lucas Eliminado Persistente',
+    birthDate: resurrectedMemberCandidate.birthDate,
+    gender: resurrectedMemberCandidate.gender,
+    identityCardNumber: '008877665LA041',
+    phone: '+244 923 888 777',
+    email: 'lucas.eliminado@clubedalvorada.ao',
+    address: 'Luanda, Angola',
+    category: 'embaixador',
+    unitOrTeam: '',
+    guardianName: 'Pai do Lucas',
+    guardianPhone: '+244 923 000 111',
+    bloodType: 'O+',
+    allergiesOrMedicalNotes: 'Nenhuma',
+    investitureDate: '2024-06-01',
+    professionalCourse: '',
+    joinedDate: '',
+    documentDeliveryMethod: 'presencial',
+  };
+
+  const reEnrollBiCheck = findDuplicateEnrollmentByBI(
+    '008877665LA041',
+    remainingMembersAfterDirectDelete,
+    enrollmentRemovalResult.updatedEnrollmentRequests
+  );
+  const reEnrollSubmissionCheck = validateEnrollmentSubmission(
+    reEnrollmentForm,
+    remainingMembersAfterDirectDelete,
+    enrollmentRemovalResult.updatedEnrollmentRequests
+  );
+  const secretaryReRegisterNumberUnique = isMemberNumberUnique(
+    'EBX-2026-888',
+    remainingMembersAfterDirectDelete
+  );
+  const secretaryReRegisterDup = findPotentialDuplicateMember(
+    '008877665LA041',
+    'Lucas Eliminado Persistente',
+    resurrectedMemberCandidate.birthDate,
+    remainingMembersAfterDirectDelete,
+    'lucas.eliminado@clubedalvorada.ao',
+    '+244 923 888 777'
+  );
+
+  assert(
+    reEnrollBiCheck.duplicate === false &&
+      reEnrollSubmissionCheck.valid === true &&
+      secretaryReRegisterNumberUnique === true &&
+      secretaryReRegisterDup === undefined,
+    "Membro eliminado pode fazer nova inscrição ou ser novamente registado pela Secretaria com os mesmos dados sem qualquer impedimento"
+  );
+
+  // Após nova inscrição validada posteriormente (mesmo que o histórico de auditoria contenha a eliminação anterior e o ID seja reutilizado), permanece ativo ao recarregar
+  const oldDeleteAudit = createAuditLog(
+    'USR-DIR',
+    'Diretor Clube',
+    'diretor',
+    'members',
+    'ELIMINACAO_MEMBRO',
+    'Eliminação anterior',
+    'CDA-MEM-001',
+    'Lucas Eliminado Persistente'
+  );
+  oldDeleteAudit.timestamp = '2026-05-03T12:00:00Z';
+
+  const newReEnrolledMember: Member = {
+    ...resurrectedMemberCandidate,
+    id: 'CDA-MEM-001',
+    enrollmentProtocol: 'INS-2026-0905',
+  };
+  const newReEnrolledApprovedReq: MemberEnrollmentRequest = {
+    ...approvedReqToDelete,
+    id: 'INS-2026-0905',
+    protocolNumber: 'INS-2026-0905',
+    submittedAt: '2026-05-10T09:00:00Z',
+    reviewedAt: '2026-05-11T10:00:00Z',
+    createdMemberId: newReEnrolledMember.id,
+  };
+  const reloadAfterReEnrollment = reconcileApprovedEnrollmentsWithMembers(
+    [newReEnrolledMember, ...remainingMembersAfterDirectDelete],
+    [newReEnrolledApprovedReq, ...enrollmentRemovalResult.updatedEnrollmentRequests],
+    2026,
+    [],
+    [oldDeleteAudit]
+  );
+  assert(
+    reloadAfterReEnrollment.members.some((m) => m.id === 'CDA-MEM-001' && m.enrollmentProtocol === 'INS-2026-0905') &&
+      reloadAfterReEnrollment.enrollmentRequests.some((r) => r.id === 'INS-2026-0905' && r.status === 'aprovado'),
+    "Nova inscrição validada do membro re-inscrito permanece ativa e intacta mesmo existindo auditoria da eliminação anterior"
+  );
+
+  // Salvaguarda para dados legados sem remoção prévia da inscrição
+  const legacyReqNoCreatedId: MemberEnrollmentRequest = {
+    ...approvedReqToDelete,
+    createdMemberId: undefined,
+    reviewedAt: '2026-04-01T10:00:00Z',
+  };
+  const reloadReconcileLegacyByAudit = reconcileApprovedEnrollmentsWithMembers(
+    [],
+    [legacyReqNoCreatedId],
+    2026,
+    [],
+    [oldDeleteAudit]
+  );
+  assert(
+    reloadReconcileLegacyByAudit.members.length === 0,
+    "Salvaguarda legada impede ressurreição automática se existir auditoria de eliminação posterior à aprovação"
+  );
+
+  // 46. ENCARREGADO OPCIONAL NA INSCRIÇÃO + DOCUMENTOS ANEXADOS (INSCRIÇÃO & FICHA DO MEMBRO)
+  console.log("\n46. Teste de Encarregado Opcional na Inscrição e Transferência/Visualização de Documentos Anexados:");
+
+  const enrollmentWithoutGuardianAndWithDocs: MemberRegistrationFormData = {
+    manualNumber: '',
+    fullName: 'Beatriz Ndala Kaputo',
+    birthDate: '2004-08-22',
+    gender: 'F',
+    identityCardNumber: '004455667LA049',
+    phone: '+244 927 654 321',
+    email: 'beatriz.kaputo@clubedalvorada.ao',
+    address: 'Maianga, Luanda',
+    category: 'embaixador',
+    unitOrTeam: '',
+    guardianName: '',
+    guardianPhone: '',
+    bloodType: '',
+    allergiesOrMedicalNotes: 'Nenhuma alergia conhecida',
+    investitureDate: '2024-06-15',
+    professionalCourse: 'Contabilidade',
+    joinedDate: '',
+    documentDeliveryMethod: 'anexar_digital',
+    biDocumentFileName: 'bi-beatriz.pdf',
+    biDocumentBase64: 'data:application/pdf;base64,JVBERi0xLjQK',
+    photoDocumentFileName: 'foto-beatriz.jpg',
+    photoDocumentBase64: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/',
+  };
+
+  const selfNoGuardianValidation = validateEnrollmentSubmission(
+    enrollmentWithoutGuardianAndWithDocs,
+    [],
+    []
+  );
+  assert(
+    selfNoGuardianValidation.valid && Boolean(selfNoGuardianValidation.resolvedManualNumber),
+    "Inscrição no clube é aceite sem preencher Nome do Encarregado nem Contacto do Encarregado"
+  );
+
+  const reqNoGuardianWithDocs = buildEnrollmentRequest(
+    enrollmentWithoutGuardianAndWithDocs,
+    selfNoGuardianValidation.resolvedManualNumber!,
+    2026,
+    []
+  );
+  assert(
+    reqNoGuardianWithDocs.guardianName === undefined &&
+      reqNoGuardianWithDocs.guardianPhone === undefined &&
+      reqNoGuardianWithDocs.biDocumentFileName === 'bi-beatriz.pdf' &&
+      reqNoGuardianWithDocs.photoDocumentFileName === 'foto-beatriz.jpg',
+    "Solicitação preserva encarregado como indefinido quando omitido e guarda os documentos anexados"
+  );
+
+  const approvedMemberWithDocs = buildApprovedMemberFromEnrollment(
+    reqNoGuardianWithDocs,
+    [],
+    2026,
+    { unitOrTeam: 'Unidade Águia' }
+  );
+  const integrityOnOptionalGuardian = sanitizeMemberIntegrity(approvedMemberWithDocs.member!);
+  assert(
+    approvedMemberWithDocs.success &&
+      !!approvedMemberWithDocs.member &&
+      approvedMemberWithDocs.member.guardianName === undefined &&
+      approvedMemberWithDocs.member.guardianPhone === undefined &&
+      integrityOnOptionalGuardian.sanitized.guardianName === undefined &&
+      integrityOnOptionalGuardian.sanitized.guardianPhone === undefined &&
+      approvedMemberWithDocs.member.biDocumentFileName === 'bi-beatriz.pdf' &&
+      approvedMemberWithDocs.member.biDocumentBase64 === 'data:application/pdf;base64,JVBERi0xLjQK' &&
+      approvedMemberWithDocs.member.photoDocumentFileName === 'foto-beatriz.jpg' &&
+      approvedMemberWithDocs.member.photoUrl === 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/',
+    "Membro validado herda documentos anexados (B.I. e Fotografia) e não polui Encarregado quando omitido"
+  );
+
+  const pdfBlob = dataUrlToBlob('data:application/pdf;base64,JVBERi0xLjQK');
+  assert(
+    getDocumentPreviewKind('data:application/pdf;base64,JVBERi0xLjQK', 'bi.pdf') === 'pdf' &&
+      getDocumentPreviewKind('data:image/jpeg;base64,/9j/', 'foto.jpg') === 'image' &&
+      getDocumentPreviewKind('data:text/plain;base64,SGVsbG8=', 'nota.txt') === 'text' &&
+      getDocumentPreviewKind('data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,UEs=', 'ficha.docx') === 'other' &&
+      pdfBlob !== null &&
+      pdfBlob.type === 'application/pdf',
+    "Utilitários de visualização/download reconhecem PDF, Imagem, Texto e Outros documentos e convertem Data URL em Blob válido"
+  );
+
+  // 47. PRESERVAÇÃO DE UPLOADS DAS FICHAS NO LIMPAR NUVEM + RBAC EXCLUSIVO DIRETOR E SECRETÁRIO
+  console.log("\n47. Teste de Preservação de Uploads das Fichas na Limpeza da Nuvem e Permissão Exclusiva Diretor/Secretário:");
+
+  assert(
+    PERMISSION_CATALOG.some((p) => p.module === 'members' && p.action === 'DELETE_MEMBER_UPLOADS') &&
+      Boolean(ACTION_LABELS.DELETE_MEMBER_UPLOADS),
+    "Catálogo RBAC e rótulos incluem a permissão DELETE_MEMBER_UPLOADS"
+  );
+
+  assert(
+    canGrantDeleteMemberUploads('admin_tecnico') === true &&
+      canGrantDeleteMemberUploads('diretor') === false &&
+      canGrantDeleteMemberUploads('secretario') === false &&
+      canGrantDeleteMemberUploads('diretor_associado') === false,
+    "Apenas o Administrador Técnico pode conceder ou revogar DELETE_MEMBER_UPLOADS na grelha de permissões"
+  );
+
+  const syncedDeleteUploadsMatrix = syncPermissionsMatrix();
+  assert(
+    hasDeleteMemberUploadsPermission('diretor', syncedDeleteUploadsMatrix) === true &&
+      hasDeleteMemberUploadsPermission('secretario', syncedDeleteUploadsMatrix) === false &&
+      hasDeleteMemberUploadsPermission('admin_tecnico', syncedDeleteUploadsMatrix) === false &&
+      hasDeleteMemberUploadsPermission('diretor_associado', syncedDeleteUploadsMatrix) === false &&
+      hasDeleteMemberUploadsPermission('tesoureiro', syncedDeleteUploadsMatrix) === false &&
+      hasDeleteMemberUploadsPermission('membro', syncedDeleteUploadsMatrix) === false,
+    "Apenas Diretor (ativo por padrão) e Secretário (quando autorizado) podem apagar uploads; nenhum outro cargo tem essa permissão"
+  );
+
+  // Admin concede DELETE_MEMBER_UPLOADS ao Secretário
+  const matrixWithSecretaryUploadDel = JSON.parse(JSON.stringify(syncedDeleteUploadsMatrix));
+  matrixWithSecretaryUploadDel.secretario.members.push('DELETE_MEMBER_UPLOADS');
+  const resyncedSecretaryUploadDel = syncPermissionsMatrix(matrixWithSecretaryUploadDel);
+  assert(
+    hasDeleteMemberUploadsPermission('secretario', resyncedSecretaryUploadDel) === true &&
+      hasDeleteMemberUploadsPermission('diretor', resyncedSecretaryUploadDel) === true,
+    "Secretário passa a poder apagar uploads quando o Administrador lhe atribui a permissão na grelha"
+  );
+
+  // Mesmo se alguém injectar DELETE_MEMBER_UPLOADS em outro papel na matriz, o guard rejeita
+  const forgedMatrix = JSON.parse(JSON.stringify(syncedDeleteUploadsMatrix));
+  forgedMatrix.diretor_associado.members.push('DELETE_MEMBER_UPLOADS');
+  const cleanedForgedMatrix = syncPermissionsMatrix(forgedMatrix);
+  assert(
+    hasDeleteMemberUploadsPermission('diretor_associado', forgedMatrix) === false &&
+      !cleanedForgedMatrix.diretor_associado.members.includes('DELETE_MEMBER_UPLOADS'),
+    "Permissão DELETE_MEMBER_UPLOADS é estritamente rejeitada e removida de cargos que não sejam Diretor ou Secretário"
+  );
+
+  // Admin revoga DELETE_MEMBER_UPLOADS do Diretor
+  const revokedDirUploadDel = JSON.parse(JSON.stringify(syncedDeleteUploadsMatrix));
+  revokedDirUploadDel.diretor.members = revokedDirUploadDel.diretor.members.filter(
+    (a: string) => a !== 'DELETE_MEMBER_UPLOADS'
+  );
+  const resyncedDirRevoked = syncPermissionsMatrix(revokedDirUploadDel);
+  assert(
+    hasDeleteMemberUploadsPermission('diretor', resyncedDirRevoked) === false,
+    "Quando o Administrador revoga DELETE_MEMBER_UPLOADS do Diretor, a revogação persiste após sincronização"
+  );
+
+  // Limpar Nuvem preserva 100% os uploads das fichas (inclusive backfill de inscrição aprovada antes de limpar)
+  const memberWithFichaUploads = {
+    ...state.members[0],
+    id: 'MEM-UPLOADS-KEEP-1',
+    manualNumber: '9911',
+    fullName: 'Helena Mateus Uploads',
+    status: 'ativo' as const,
+    biDocumentFileName: 'bi-helena.pdf',
+    biDocumentBase64: 'data:application/pdf;base64,JVBERi0xLjQK_HELENA_BI',
+    photoDocumentFileName: 'foto-helena.jpg',
+    photoDocumentBase64: 'data:image/jpeg;base64,FOTO_HELENA',
+    photoUrl: 'data:image/jpeg;base64,FOTO_HELENA',
+    attachedDocuments: [
+      {
+        id: 'DOC-KEEP-1',
+        title: 'Declaração Escolar',
+        fileName: 'declaracao.pdf',
+        base64: 'data:application/pdf;base64,DECLARACAO_HELENA',
+        uploadedAt: '2026-11-18T10:00:00.000Z',
+        uploadedByName: 'Secretaria',
+      },
+    ],
+  };
+
+  const memberNeedingBackfillFromApprovedEnrollment = {
+    ...state.members[0],
+    id: 'MEM-BACKFILL-2',
+    manualNumber: '9912',
+    fullName: 'Paulo Backfill Uploads',
+    status: 'ativo' as const,
+    enrollmentProtocol: 'INS-2026-9912',
+    biDocumentFileName: undefined,
+    biDocumentBase64: undefined,
+    photoDocumentFileName: undefined,
+    photoDocumentBase64: undefined,
+    photoUrl: undefined,
+    attachedDocuments: undefined,
+  };
+
+  const stateWithMemberUploads: ClubDatabaseState = {
+    ...state,
+    members: [memberWithFichaUploads, memberNeedingBackfillFromApprovedEnrollment],
+    enrollmentRequests: [
+      {
+        ...phase1Req,
+        id: 'INS-APPROVED-BACKFILL',
+        protocolNumber: 'INS-2026-9912',
+        status: 'aprovado',
+        createdMemberId: 'MEM-BACKFILL-2',
+        biDocumentFileName: 'bi-paulo.pdf',
+        biDocumentBase64: 'data:application/pdf;base64,PAULO_BI',
+        photoDocumentFileName: 'foto-paulo.jpg',
+        photoDocumentBase64: 'data:image/jpeg;base64,PAULO_FOTO',
+      },
+    ],
+  };
+
+  const afterCloudCleanWithUploads = cleanSystemStorageSpace(stateWithMemberUploads, testActor);
+  const keptMember1 = afterCloudCleanWithUploads.members.find((m) => m.id === 'MEM-UPLOADS-KEEP-1');
+  const keptMember2 = afterCloudCleanWithUploads.members.find((m) => m.id === 'MEM-BACKFILL-2');
+
+  assert(
+    keptMember1?.biDocumentBase64 === 'data:application/pdf;base64,JVBERi0xLjQK_HELENA_BI' &&
+      keptMember1?.biDocumentFileName === 'bi-helena.pdf' &&
+      keptMember1?.photoDocumentBase64 === 'data:image/jpeg;base64,FOTO_HELENA' &&
+      keptMember1?.photoUrl === 'data:image/jpeg;base64,FOTO_HELENA' &&
+      keptMember1?.attachedDocuments?.length === 1 &&
+      keptMember1?.attachedDocuments?.[0]?.base64 === 'data:application/pdf;base64,DECLARACAO_HELENA',
+    "Limpar dados da nuvem mantém intactos B.I., fotografia, cartão e outros documentos anexados nas fichas dos membros"
+  );
+
+  assert(
+    (afterCloudCleanWithUploads.enrollmentRequests || []).length === 0 &&
+      keptMember2?.biDocumentBase64 === 'data:application/pdf;base64,PAULO_BI' &&
+      keptMember2?.biDocumentFileName === 'bi-paulo.pdf' &&
+      keptMember2?.photoDocumentBase64 === 'data:image/jpeg;base64,PAULO_FOTO' &&
+      keptMember2?.photoUrl === 'data:image/jpeg;base64,PAULO_FOTO',
+    "Ao limpar inscrições já aprovadas, uploads correspondentes em falta são preservados/copiados para a ficha do membro ativo"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");

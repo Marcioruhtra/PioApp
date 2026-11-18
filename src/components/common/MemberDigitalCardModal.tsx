@@ -23,6 +23,7 @@ import { useClub } from '../../context/ClubContext';
 import { processProfilePhoto } from '../../utils/fileUpload';
 import { formatDateAO } from '../../utils/date';
 import { getMemberTeamLabel } from '../../services/accountSyncService';
+import { hasDeleteMemberUploadsPermission } from '../../services/permissionService';
 
 interface MemberDigitalCardModalProps {
   member: Member | null;
@@ -97,10 +98,11 @@ export const MemberDigitalCardModal: React.FC<MemberDigitalCardModalProps> = ({
 
   if (!liveMember) return null;
 
-  // Regra de exclusão: estritamente Direção (Diretor e Secretário com permissão da matriz de Permissões, além de Admin Técnico)
-  const isLeadershipAllowedToDelete =
-    currentUser.role === 'admin_tecnico' ||
-    ((currentUser.role === 'diretor' || currentUser.role === 'secretario') && can('members', 'EDIT'));
+  // Regra de exclusão: estritamente Diretor e Secretário com permissão atribuída pelo Administrador na grelha de permissões
+  const isLeadershipAllowedToDelete = hasDeleteMemberUploadsPermission(
+    currentUser.role,
+    state.settings.permissionsMatrix
+  );
 
   // Regra de upload: cada usuário pode fazer upload da foto para o seu próprio cartão
   const isOwnCard =

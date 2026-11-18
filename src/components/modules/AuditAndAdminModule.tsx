@@ -26,7 +26,14 @@ import {
 import { useClub } from '../../context/ClubContext';
 import { UserAccount, RoleType, ModuleName } from '../../types';
 import { formatDateAO, formatDateTimeAO } from '../../utils/date';
-import { ROLE_LABELS, PERMISSION_CATALOG, ROLE_PERMISSIONS_MATRIX, filterVisibleAccessAccounts } from '../../services/permissionService';
+import {
+  ROLE_LABELS,
+  PERMISSION_CATALOG,
+  ROLE_PERMISSIONS_MATRIX,
+  filterVisibleAccessAccounts,
+  hasApproveMemberAccountPermission,
+} from '../../services/permissionService';
+import { isPendingMemberAccountConfirmation } from '../../services/accountSyncService';
 import { firebaseStatus } from '../../services/firebaseConfig';
 import { Modal } from '../common/Modal';
 import { IntegrityCheckResult } from '../../services/memberIntegrityService';
@@ -37,6 +44,8 @@ export const AuditAndAdminModule: React.FC = () => {
     can,
     currentUser,
     createUserAccount,
+    approvePendingMemberAccount,
+    rejectPendingMemberAccount,
     updateUserAccount,
     toggleUserActive,
     deleteUserAccount,
@@ -52,6 +61,13 @@ export const AuditAndAdminModule: React.FC = () => {
   } = useClub();
 
   const visibleAccessAccounts = filterVisibleAccessAccounts(state.users, currentUser.role);
+  const canApproveMemberAccounts = hasApproveMemberAccountPermission(
+    currentUser.role,
+    state.settings.permissionsMatrix
+  );
+  const pendingSelfServiceAccounts = visibleAccessAccounts.filter((u) =>
+    isPendingMemberAccountConfirmation(u)
+  );
 
   const [isVerifyingIntegrity, setIsVerifyingIntegrity] = useState(false);
   const [isTestingCloudSync, setIsTestingCloudSync] = useState(false);
@@ -326,7 +342,7 @@ export const AuditAndAdminModule: React.FC = () => {
                   setIsCleanStorageModalOpen(true);
                 }}
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition-colors shadow-xs"
-                title="Limpar documentos gerados, comprovativos e publicações para liberar espaço na nuvem (mantém saldos bancários, membros e contas de login)"
+                title="Limpar documentos oficiais gerados, comprovativos do portal e publicações para liberar espaço na nuvem (mantém saldos bancários, membros, uploads das fichas e contas de login)"
               >
                 <Database className="w-3.5 h-3.5 text-amber-600" />
                 <span>Limpar Armazenamento (Nuvem)</span>
@@ -395,6 +411,11 @@ export const AuditAndAdminModule: React.FC = () => {
         >
           <Users className="w-4 h-4" />
           <span>Contas de Acesso ({visibleAccessAccounts.length})</span>
+          {pendingSelfServiceAccounts.length > 0 && (
+            <span className="px-1.5 py-0.5 text-[10px] font-black rounded-full bg-amber-500 text-white">
+              {pendingSelfServiceAccounts.length}
+            </span>
+          )}
         </button>
         {currentUser.role === 'admin_tecnico' && (
           <>
@@ -459,8 +480,81 @@ export const AuditAndAdminModule: React.FC = () => {
 
       {/* CONTEÚDO 1: Contas de Acesso */}
       {activeTab === 'accounts' && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden w-full max-w-full min-w-0">
-          <div className="overflow-x-auto w-full max-w-full min-w-0">
+        <div className="space-y-4 w-full max-w-full min-w-0">
+          {pendingSelfServiceAccounts.length > 0 && (
+            <div className="p-4 rounded-xl border border-amber-300 bg-amber-50/90 text-amber-950 space-y-3 shadow-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <UserCheck className="w-4 h-4 text-amber-700 shrink-0" />
+                  <h3 className="text-xs font-black uppercase tracking-wide text-amber-900">
+                    Contas de Login Criadas por Membros · Aguardam Confirmação ({pendingSelfServiceAccounts.length})
+                  </h3>
+                </div>
+                {!canApproveMemberAccounts && (
+                  <span className="text-[11px] font-semibold text-amber-800 bg-amber-100 border border-amber-300 px-2.5 py-1 rounded-lg">
+                    Confirmação restrita via Grelha de Permissões (Definida pelo Administrador)
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                {pendingSelfServiceAccounts.map((pendingAcc) => (
+                  <div
+                    key={pendingAcc.id}
+                    className="p-3 bg-white rounded-lg border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                  >
+                    <div>
+                      <div className="font-bold text-slate-900">{pendingAcc.name}</div>
+                      <div className="text-[11px] text-slate-600 mt-0.5">
+                        Matrícula: <strong className="font-mono text-slate-900">{pendingAcc.manualNumber || 'S/N'}</strong>
+                        {' · '}
+                        E-mail: <strong className="font-mono text-slate-900">{pendingAcc.email}</strong>
+                        {' · '}
+                        Criada em {formatDateTimeAO(pendingAcc.createdAt)}
+                      </div>
+                    </div>
+                    {canApproveMemberAccounts && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const res = approvePendingMemberAccount(pendingAcc.id);
+                            if (res.success) {
+                              showFeedback('success', `Conta de login de "${pendingAcc.name}" confirmada e ativada com sucesso!`);
+                            } else {
+                              showFeedback('error', res.error || 'Erro ao confirmar conta de login.');
+                            }
+                          }}
+                          className="px-3 py-1.5 text-[11px] font-bold bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg shadow-xs inline-flex items-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Confirmar e Ativar</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const res = rejectPendingMemberAccount(pendingAcc.id, 'Pedido recusado na gestão de contas.');
+                            if (res.success) {
+                              showFeedback('success', `Solicitação de conta de "${pendingAcc.name}" recusada e removida.`);
+                            } else {
+                              showFeedback('error', res.error || 'Erro ao recusar conta de login.');
+                            }
+                          }}
+                          className="px-3 py-1.5 text-[11px] font-semibold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg inline-flex items-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          <span>Recusar</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden w-full max-w-full min-w-0">
+            <div className="overflow-x-auto w-full max-w-full min-w-0">
             <table className="w-full min-w-[750px] text-left text-xs border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
@@ -552,16 +646,23 @@ export const AuditAndAdminModule: React.FC = () => {
                         {formatDateTimeAO(u.lastLogin)}
                       </td>
                       <td className="py-3 px-4">
-                        <span className={`text-[10px] font-bold uppercase tracking-wider ${
-                          u.active ? 'text-emerald-700' : 'text-slate-400'
-                        }`}>
-                          {u.active ? 'Ativa' : 'Desativada'}
-                        </span>
+                        {isPendingMemberAccountConfirmation(u) ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-bold uppercase tracking-wider">
+                            Aguarda Confirmação do Diretor
+                          </span>
+                        ) : (
+                          <span className={`text-[10px] font-bold uppercase tracking-wider ${
+                            u.active ? 'text-emerald-700' : 'text-slate-400'
+                          }`}>
+                            {u.active ? 'Ativa' : 'Desativada'}
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-right">
                         {(() => {
                           const isAdmin = currentUser.role === 'admin_tecnico' || can('audit', 'ADMIN');
                           const isDirector = currentUser.role === 'diretor';
+                          const isPendingConfirmation = isPendingMemberAccountConfirmation(u);
 
                           if (isAdmin) {
                             if (u.role === 'admin_tecnico') {
@@ -574,6 +675,40 @@ export const AuditAndAdminModule: React.FC = () => {
 
                             return (
                               <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                {isPendingConfirmation && canApproveMemberAccounts && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const res = approvePendingMemberAccount(u.id);
+                                        if (res.success) {
+                                          showFeedback('success', `Conta de "${u.name}" confirmada e ativada com sucesso.`);
+                                        } else {
+                                          showFeedback('error', res.error || 'Erro ao confirmar conta.');
+                                        }
+                                      }}
+                                      className="px-2.5 py-1 text-[11px] font-bold bg-emerald-700 text-white rounded hover:bg-emerald-800 transition-colors shadow-xs"
+                                      title="Confirmar e ativar conta criada pelo membro"
+                                    >
+                                      Confirmar Conta
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const res = rejectPendingMemberAccount(u.id, 'Pedido recusado pelo Administrador.');
+                                        if (res.success) {
+                                          showFeedback('success', `Solicitação de conta de "${u.name}" recusada.`);
+                                        } else {
+                                          showFeedback('error', res.error || 'Erro ao recusar conta.');
+                                        }
+                                      }}
+                                      className="px-2 py-1 text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200 rounded hover:bg-rose-100 transition-colors"
+                                      title="Recusar solicitação de conta"
+                                    >
+                                      Recusar
+                                    </button>
+                                  </>
+                                )}
                                 {u.passwordResetRequested && (
                                   <>
                                     <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-800 rounded-full">
@@ -679,6 +814,48 @@ export const AuditAndAdminModule: React.FC = () => {
                             );
                           }
 
+                          if (isPendingConfirmation) {
+                            if (canApproveMemberAccounts) {
+                              return (
+                                <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const res = approvePendingMemberAccount(u.id);
+                                      if (res.success) {
+                                        showFeedback('success', `Conta de login de "${u.name}" confirmada e ativada com sucesso!`);
+                                      } else {
+                                        showFeedback('error', res.error || 'Erro ao confirmar conta de login.');
+                                      }
+                                    }}
+                                    className="px-2.5 py-1 text-[11px] font-bold bg-emerald-700 text-white rounded hover:bg-emerald-800 transition-colors shadow-xs"
+                                  >
+                                    Confirmar Conta
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const res = rejectPendingMemberAccount(u.id, 'Pedido recusado na gestão de contas.');
+                                      if (res.success) {
+                                        showFeedback('success', `Solicitação de conta de "${u.name}" recusada e removida.`);
+                                      } else {
+                                        showFeedback('error', res.error || 'Erro ao recusar conta.');
+                                      }
+                                    }}
+                                    className="px-2 py-1 text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200 rounded hover:bg-rose-100 transition-colors"
+                                  >
+                                    Recusar
+                                  </button>
+                                </div>
+                              );
+                            }
+                            return (
+                              <span className="text-[10px] text-amber-700 italic">
+                                Sem permissão na grelha (Confirmar Contas)
+                              </span>
+                            );
+                          }
+
                           if (isDirector) {
                             if (u.role === 'admin_tecnico') {
                               return (
@@ -726,6 +903,7 @@ export const AuditAndAdminModule: React.FC = () => {
                 })}
               </tbody>
             </table>
+          </div>
           </div>
         </div>
       )}
@@ -857,19 +1035,29 @@ export const AuditAndAdminModule: React.FC = () => {
                         const activeMatrix = state.settings.permissionsMatrix || ROLE_PERMISSIONS_MATRIX;
                         const roleModules = activeMatrix[selectedRoleForRBAC] || ROLE_PERMISSIONS_MATRIX[selectedRoleForRBAC];
                         const hasThisPerm = (roleModules?.[p.module as ModuleName] || ROLE_PERMISSIONS_MATRIX[selectedRoleForRBAC]?.[p.module as ModuleName] || []).includes(p.action);
+                        const isDeleteUploadsExclusive = p.module === 'members' && p.action === 'DELETE_MEMBER_UPLOADS';
+                        const isRoleEligibleForDeleteUploads =
+                          !isDeleteUploadsExclusive ||
+                          selectedRoleForRBAC === 'diretor' ||
+                          selectedRoleForRBAC === 'secretario';
                         const isAdminOnlyPerm =
                           isAssociateExclusive ||
                           p.action === 'WAIVE_QUOTA_DEBT' ||
                           p.action === 'APPROVE_ENROLLMENT' ||
-                          p.action === 'MANAGE_ENROLLMENT_PERIOD';
-                        const canToggleThisPerm = isAdminOnlyPerm
-                          ? currentUser.role === 'admin_tecnico'
-                          : canToggleModulePerm;
+                          p.action === 'MANAGE_ENROLLMENT_PERIOD' ||
+                          p.action === 'APPROVE_MEMBER_ACCOUNT' ||
+                          p.action === 'DELETE_MEMBER_UPLOADS';
+                        const isDisplayedChecked = isDeleteUploadsExclusive
+                          ? (selectedRoleForRBAC === 'diretor' || selectedRoleForRBAC === 'secretario') && hasThisPerm
+                          : hasThisPerm;
+                        const canToggleThisPerm =
+                          (isAdminOnlyPerm ? currentUser.role === 'admin_tecnico' : canToggleModulePerm) &&
+                          isRoleEligibleForDeleteUploads;
                         return (
                           <label key={`${p.module}-${p.action}`} className={`flex items-center gap-2 text-xs ${canToggleThisPerm ? 'text-slate-700 cursor-pointer hover:text-blue-900' : 'text-slate-400 cursor-not-allowed'}`}>
                             <input 
                               type="checkbox" 
-                              checked={hasThisPerm}
+                              checked={isDisplayedChecked}
                               disabled={!canToggleThisPerm}
                               onChange={(e) => {
                                 const res = updateRolePermission(selectedRoleForRBAC, p.module as any, p.action, e.target.checked);
@@ -879,9 +1067,14 @@ export const AuditAndAdminModule: React.FC = () => {
                               className="w-3.5 h-3.5 text-blue-900 rounded focus:ring-blue-900 cursor-pointer disabled:cursor-not-allowed"
                             />
                             <span>{p.description}</span>
-                            {(p.action === 'WAIVE_QUOTA_DEBT' || p.action === 'APPROVE_ENROLLMENT' || p.action === 'MANAGE_ENROLLMENT_PERIOD') && currentUser.role !== 'admin_tecnico' && (
-                              <span className="text-[10px] text-slate-400">(Apenas Admin)</span>
+                            {isDeleteUploadsExclusive && !isRoleEligibleForDeleteUploads && (
+                              <span className="text-[10px] text-slate-400">(Exclusivo Diretor e Secretário)</span>
                             )}
+                            {(!isDeleteUploadsExclusive || isRoleEligibleForDeleteUploads) &&
+                              (p.action === 'WAIVE_QUOTA_DEBT' || p.action === 'APPROVE_ENROLLMENT' || p.action === 'MANAGE_ENROLLMENT_PERIOD' || p.action === 'APPROVE_MEMBER_ACCOUNT' || p.action === 'DELETE_MEMBER_UPLOADS') &&
+                              currentUser.role !== 'admin_tecnico' && (
+                                <span className="text-[10px] text-slate-400">(Apenas Admin)</span>
+                              )}
                           </label>
                         );
                       })}
@@ -988,10 +1181,10 @@ export const AuditAndAdminModule: React.FC = () => {
                     <span>Limpeza do Sistema: Liberar Espaço no Armazenamento da Nuvem</span>
                   </h2>
                   <p className="text-xs text-amber-950 mt-1 max-w-2xl leading-relaxed">
-                    Executa a eliminação de ficheiros e dados volumosos (todos os documentos oficiais gerados, uploads de ficheiros e comprovativos dos membros, todas as atividades, reuniões, atas, avisos, editais, solicitações, todas as sugestões de membros para a Direção, recibos, despesas e todos os registos de auditoria), reduzindo drasticamente o consumo de espaço no banco de dados na nuvem.
+                    Executa a eliminação de registos e publicações volumosas (documentos oficiais gerados, comprovativos de pagamento reportados no portal, atividades, reuniões, atas, avisos, editais, solicitações, sugestões para a Direção, recibos, despesas e registos de auditoria), reduzindo o consumo de espaço no banco de dados na nuvem.
                     <br />
                     <span className="font-semibold text-emerald-800 mt-1 inline-block">
-                      ✓ Mantém 100% intactos: Saldo de todas as contas bancárias, Membros registados e Contas de login no sistema.
+                      ✓ Mantém 100% intactos: Saldo das contas bancárias, Membros registados, Uploads e Documentos anexados nas fichas dos membros e Contas de login no sistema.
                     </span>
                   </p>
                 </div>
@@ -1003,7 +1196,7 @@ export const AuditAndAdminModule: React.FC = () => {
                     setIsCleanStorageModalOpen(true);
                   }}
                   className="px-4 py-2.5 text-xs font-bold text-white bg-amber-700 hover:bg-amber-800 rounded-lg shadow-xs flex items-center gap-2 shrink-0 transition-colors self-start sm:self-auto cursor-pointer"
-                  title="Limpar Nuvem: apagar dados pesados, uploads e sugestões de membros para a Direção"
+                  title="Limpar Nuvem: apagar registos pesados e comprovativos do portal (mantém uploads das fichas dos membros)"
                 >
                   <Database className="w-4 h-4" />
                   <span>Limpar Nuvem (Liberar Espaço)</span>
@@ -1517,6 +1710,7 @@ export const AuditAndAdminModule: React.FC = () => {
                 <ul className="list-disc list-inside space-y-1 text-[11px] text-emerald-900/90 pl-1">
                   <li><strong>Saldo das Contas Bancárias</strong>: Valores em Caixa e Bancos inalterados.</li>
                   <li><strong>Membros Registados e Situação de Quotas</strong>: Contas zeradas recomeçam regularizadas a 0,00 Kz (sem exibir o valor zerado), adiantamentos mantêm o crédito e quotas em atraso mantêm a dívida.</li>
+                  <li><strong>Uploads e Documentos nas Fichas dos Membros</strong>: Todos os ficheiros anexados nas fichas (B.I., fotografia, cartão e outros documentos) permanecem intactos e só podem ser apagados pelo Diretor e Secretário com permissão na grelha do Administrador.</li>
                   <li><strong>Inscrições Pendentes e Em Análise</strong>: Todas as solicitações que ainda não foram concluídas pela Secretaria mantêm-se intactas, incluindo os seus ficheiros e comprovativos anexados (B.I. e fotografia).</li>
                   <li><strong>Contas de Login de Utilizadores</strong>: Todas as credenciais de acesso ao sistema.</li>
                   <li><strong>Configurações do Clube</strong>: Unidades, parâmetros e módulos/medalhas.</li>
@@ -1530,9 +1724,9 @@ export const AuditAndAdminModule: React.FC = () => {
                   <span>O que será ELIMINADO (Espaço):</span>
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-[11px] text-amber-900/90 pl-1">
-                  <li><strong>Solicitações de Inscrição Já Analisadas</strong>: Todas as inscrições validadas ou recusadas são limpas para libertar espaço na nuvem.</li>
+                  <li><strong>Solicitações de Inscrição Já Analisadas</strong>: Todas as inscrições validadas ou recusadas são limpas para libertar espaço na nuvem (os uploads já transferidos para a ficha do membro continuam preservados).</li>
                   <li><strong>Todos os Documentos Oficiais</strong> gerados e ficheiros de arquivo.</li>
-                  <li><strong>Todos os Uploads de Membros</strong> e comprovativos reportados.</li>
+                  <li><strong>Comprovativos de Pagamento Reportados no Portal</strong> (uploads anexados nas fichas dos membros não são apagados).</li>
                   <li><strong>Todas as Atividades e Reuniões</strong>, atas oficiais e tarefas.</li>
                   <li><strong>Todas as Sugestões Confidenciais</strong> de membros para a Direção.</li>
                   <li><strong>Todos os Avisos, Editais</strong> e publicações institucionais.</li>
@@ -1582,7 +1776,7 @@ export const AuditAndAdminModule: React.FC = () => {
                   setIsCleaningStorage(false);
                   setIsCleanStorageModalOpen(false);
                   if (res.success) {
-                    showFeedback('success', 'Limpeza da nuvem concluída! Solicitações já analisadas, histórico, valores zerados anteriores, documentos e registos de auditoria foram apagados; inscrições pendentes/em análise com anexos, contas regularizadas a 0,00 Kz e saldos foram preservados.');
+                    showFeedback('success', 'Limpeza da nuvem concluída! Registos antigos e comprovativos do portal foram limpos; uploads e documentos das fichas dos membros, inscrições pendentes/em análise e saldos bancários foram preservados intactos.');
                   } else {
                     showFeedback('error', res.error || 'Erro ao efetuar limpeza do sistema.');
                   }

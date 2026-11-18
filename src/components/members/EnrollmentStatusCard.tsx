@@ -1,26 +1,40 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  Eye,
+  EyeOff,
   FileSearch,
+  KeyRound,
+  Lock,
   MessageSquare,
   ShieldCheck,
   UserCheck,
+  UserPlus,
   XCircle,
 } from 'lucide-react';
-import { Member, MemberEnrollmentRequest } from '../../types';
+import { Member, MemberEnrollmentRequest, UserAccount } from '../../types';
 import { formatDateAO, formatDateTimeAO } from '../../utils/date';
 import {
   getEnrollmentPhaseInfo,
   resolveMemberDocumentationStatus,
 } from '../../services/enrollmentService';
 import { ROLE_LABELS } from '../../services/permissionService';
+import { canMemberCreateSelfServiceAccount } from '../../services/accountSyncService';
 
 interface EnrollmentStatusCardProps {
   request?: MemberEnrollmentRequest;
   registeredMember?: Member;
   compact?: boolean;
+  selfServiceAccount?: {
+    users: UserAccount[];
+    onCreateAccount: (
+      memberId: string,
+      password: string,
+      confirmPassword: string
+    ) => Promise<{ success: boolean; account?: UserAccount; error?: string }>;
+  };
 }
 
 const CATEGORY_LABELS: Record<Member['category'], string> = {
@@ -33,7 +47,16 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
   request,
   registeredMember,
   compact = false,
+  selfServiceAccount,
 }) => {
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPasswords, setShowPasswords] = useState(false);
+  const [isSubmittingAccount, setIsSubmittingAccount] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [justCreatedAccount, setJustCreatedAccount] = useState<UserAccount | null>(null);
+
   const docStatus = registeredMember ? resolveMemberDocumentationStatus(registeredMember) : null;
   const docUpdaterRole = registeredMember?.documentationUpdatedByRole
     ? ROLE_LABELS[registeredMember.documentationUpdatedByRole]?.label ||
@@ -48,6 +71,35 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
   const underReviewRoleLabel = request?.underReviewStartedByRole
     ? ROLE_LABELS[request.underReviewStartedByRole]?.label || request.underReviewStartedByRole
     : undefined;
+
+  const accountEligibility =
+    selfServiceAccount && registeredMember
+      ? canMemberCreateSelfServiceAccount(registeredMember, selfServiceAccount.users, request)
+      : null;
+
+  const handleSelfServiceSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selfServiceAccount || !registeredMember) return;
+    setAccountError(null);
+    setIsSubmittingAccount(true);
+    try {
+      const res = await selfServiceAccount.onCreateAccount(
+        registeredMember.id,
+        password,
+        confirmPassword
+      );
+      if (res.success && res.account) {
+        setJustCreatedAccount(res.account);
+        setShowCreateForm(false);
+        setPassword('');
+        setConfirmPassword('');
+      } else {
+        setAccountError(res.error || 'Não foi possível criar a sua conta de login.');
+      }
+    } finally {
+      setIsSubmittingAccount(false);
+    }
+  };
 
   return (
     <div className="space-y-3 text-xs">
@@ -150,6 +202,218 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* BLOCO DE CRIAÇÃO E ESTADO DE CONTA DE LOGIN DO MEMBRO (AUTO-SERVIÇO PÓS-VALIDAÇÃO) */}
+      {registeredMember && selfServiceAccount && accountEligibility && (
+        <div className="p-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/30 space-y-3">
+          {justCreatedAccount || accountEligibility.pendingConfirmation ? (
+            <div className="space-y-2">
+              <div className="flex items-start gap-2.5">
+                <Clock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <h5 className="font-bold text-slate-900 dark:text-white text-xs">
+                    {justCreatedAccount
+                      ? 'Credenciais de Login Criadas com Sucesso!'
+                      : 'Conta de Login Criada · Aguardando Confirmação do Diretor'}
+                  </h5>
+                  <p className="text-[11px] text-slate-700 dark:text-slate-300 leading-relaxed">
+                    A sua conta foi automaticamente vinculada à sua ficha de membro (Matrícula:{' '}
+                    <strong className="font-mono text-slate-900 dark:text-white">
+                      {justCreatedAccount?.manualNumber ||
+                        accountEligibility.existingAccount?.manualNumber ||
+                        registeredMember.manualNumber}
+                    </strong>{' '}
+                    · E-mail:{' '}
+                    <strong className="text-slate-900 dark:text-white">
+                      {justCreatedAccount?.email ||
+                        accountEligibility.existingAccount?.email ||
+                        registeredMember.email}
+                    </strong>
+                    ).
+                  </p>
+                  <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-[11px] text-amber-950 dark:text-amber-200 font-medium">
+                    A conta encontra-se <strong>pendente de confirmação pelo Diretor</strong>. Assim que for confirmada, poderá iniciar sessão normalmente com o seu Nº de Matrícula ou E-mail e a senha definida.
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : accountEligibility.alreadyLinkedActive ? (
+            <div className="flex items-start gap-2.5">
+              <ShieldCheck className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <h5 className="font-bold text-emerald-950 dark:text-emerald-200 text-xs">
+                  Conta de Login já vinculada e ativa
+                </h5>
+                <p className="text-[11px] text-emerald-900/90 dark:text-emerald-300">
+                  Este registo já possui uma conta de acesso vinculada (
+                  <strong className="font-mono">
+                    {accountEligibility.existingAccount?.manualNumber || registeredMember.manualNumber}
+                  </strong>{' '}
+                  · <strong>{accountEligibility.existingAccount?.email}</strong>). Utilize o ecrã principal para iniciar sessão.
+                </p>
+              </div>
+            </div>
+          ) : accountEligibility.alreadyLinkedInactive ? (
+            <div className="flex items-start gap-2.5">
+              <Lock className="w-4 h-4 text-slate-600 dark:text-slate-400 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <h5 className="font-bold text-slate-900 dark:text-white text-xs">
+                  Conta de Login vinculada (Desativada)
+                </h5>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                  {accountEligibility.reason}
+                </p>
+              </div>
+            </div>
+          ) : accountEligibility.missingEmail ? (
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-700 dark:text-amber-400 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <h5 className="font-bold text-amber-950 dark:text-amber-200 text-xs">
+                  E-mail em falta para criação de conta
+                </h5>
+                <p className="text-[11px] text-amber-900 dark:text-amber-300">
+                  {accountEligibility.reason}
+                </p>
+              </div>
+            </div>
+          ) : accountEligibility.allowed ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-start gap-2">
+                  <KeyRound className="w-4 h-4 text-blue-900 dark:text-blue-300 shrink-0 mt-0.5" />
+                  <div>
+                    <h5 className="font-bold text-blue-950 dark:text-blue-200 text-xs">
+                      Acesso ao Sistema · Sem Conta de Login Vinculada
+                    </h5>
+                    <p className="text-[11px] text-blue-900/90 dark:text-blue-300 mt-0.5">
+                      A sua inscrição já foi validada. Pode criar agora as suas credenciais definindo apenas a sua senha (requer confirmação posterior do Diretor).
+                    </p>
+                  </div>
+                </div>
+
+                {!showCreateForm && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAccountError(null);
+                      setShowCreateForm(true);
+                    }}
+                    className="px-3.5 py-2 bg-blue-900 hover:bg-blue-800 text-white font-bold rounded-lg text-[11px] inline-flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Criar Conta de Login</span>
+                  </button>
+                )}
+              </div>
+
+              {showCreateForm && (
+                <form
+                  onSubmit={handleSelfServiceSubmit}
+                  className="bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg p-3.5 space-y-3"
+                >
+                  {accountError && (
+                    <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-[11px] font-semibold">
+                      {accountError}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 p-2.5 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-lg">
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">
+                        Nº de Matrícula (Sincronizado)
+                      </span>
+                      <span className="font-mono font-bold text-slate-900 dark:text-white text-xs">
+                        {registeredMember.manualNumber}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">
+                        E-mail Registado (Sincronizado)
+                      </span>
+                      <span className="font-semibold text-slate-900 dark:text-white text-xs break-all">
+                        {registeredMember.email}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
+                        Definir Senha (mín. 6 caracteres)
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showPasswords ? 'text' : 'password'}
+                          value={password}
+                          onChange={(e) => {
+                            setPassword(e.target.value);
+                            setAccountError(null);
+                          }}
+                          minLength={6}
+                          required
+                          placeholder="Introduza a sua senha"
+                          className="w-full p-2 pr-8 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPasswords((v) => !v)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                          title={showPasswords ? 'Ocultar senha' : 'Mostrar senha'}
+                        >
+                          {showPasswords ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
+                        Confirmar Senha
+                      </label>
+                      <input
+                        type={showPasswords ? 'text' : 'password'}
+                        value={confirmPassword}
+                        onChange={(e) => {
+                          setConfirmPassword(e.target.value);
+                          setAccountError(null);
+                        }}
+                        minLength={6}
+                        required
+                        placeholder="Repita a senha"
+                        className="w-full p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
+                      />
+                    </div>
+                  </div>
+
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    A vinculação à sua ficha ({registeredMember.id}) é automática. Após a criação, a conta aguardará a confirmação do Diretor para ser ativada.
+                  </p>
+
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCreateForm(false);
+                        setAccountError(null);
+                      }}
+                      className="px-3 py-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSubmittingAccount}
+                      className="px-4 py-1.5 text-[11px] font-bold text-white bg-blue-900 hover:bg-blue-800 rounded-lg transition-colors disabled:opacity-50 cursor-pointer shadow-xs"
+                    >
+                      {isSubmittingAccount ? 'A registar credenciais...' : 'Confirmar e Criar Conta'}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -303,7 +567,21 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
             </div>
           )}
 
-          {request.status === 'aprovado' && (
+          {request.status === 'aprovado' && request.memberDeletedAt && !registeredMember && (
+            <div className="p-3 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/80 text-slate-800 dark:text-slate-200 space-y-1">
+              <p className="font-bold flex items-center gap-1.5 text-slate-900 dark:text-white">
+                <XCircle className="w-4 h-4 text-slate-600 dark:text-slate-400 shrink-0" />
+                <span>Ficha de membro posteriormente eliminada do clube</span>
+              </p>
+              <p>
+                Esta inscrição foi validada anteriormente, mas o registo de membro foi eliminado em{' '}
+                <strong>{formatDateTimeAO(request.memberDeletedAt)}</strong>
+                {request.memberDeletedByName ? ` por ${request.memberDeletedByName}` : ''}.
+              </p>
+            </div>
+          )}
+
+          {request.status === 'aprovado' && (!request.memberDeletedAt || Boolean(registeredMember)) && (
             <div className="p-3 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-950 dark:text-emerald-200 space-y-1">
               <p className="font-bold flex items-center gap-1.5 text-emerald-900 dark:text-emerald-200">
                 <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
@@ -354,3 +632,4 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
     </div>
   );
 };
+

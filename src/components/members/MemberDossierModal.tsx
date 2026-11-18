@@ -17,14 +17,27 @@ import {
   Printer,
   Briefcase,
   Award,
+  Eye,
+  Download,
+  Upload,
+  Paperclip,
+  Trash2,
+  Loader2,
+  Image as ImageIcon,
 } from 'lucide-react';
-import { Member, MemberCategory, OfficialDocument } from '../../types';
+import { Member, MemberAttachedDocument, MemberCategory, OfficialDocument } from '../../types';
 import { useClub } from '../../context/ClubContext';
 import { Modal } from '../common/Modal';
-import { formatDateAO, formatDateTimeAO, getTodayISODate } from '../../utils/date';
+import { DocumentViewerModal, ViewingDocumentPayload } from '../common/DocumentViewerModal';
+import { formatDateAO, formatDateTimeAO, getNowISOString, getTodayISODate } from '../../utils/date';
 import { formatKz } from '../../utils/currency';
+import { downloadDocumentFile, processProofFile } from '../../utils/fileUpload';
 import { buildMemberDossierData } from '../../utils/memberDossier';
 import { getMemberTeamLabel, isDirectionMember } from '../../services/accountSyncService';
+import {
+  hasApproveMemberAccountPermission,
+  hasDeleteMemberUploadsPermission,
+} from '../../services/permissionService';
 
 interface MemberDossierModalProps {
   member: Member | null;
@@ -68,12 +81,17 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
     state,
     can,
     currentUser,
+    approvePendingMemberAccount,
     updateMemberCategory,
     assignMemberToUnit,
     unarchiveMember,
+    updateMember,
   } = useClub();
 
   const [activeTab, setActiveTab] = useState<DossierTab>('dados_saude');
+  const [viewingDoc, setViewingDoc] = useState<ViewingDocumentPayload | null>(null);
+  const [isUploadingDoc, setIsUploadingDoc] = useState<'bi' | 'photo' | 'extra' | null>(null);
+  const [extraDocTitle, setExtraDocTitle] = useState('');
 
   const dossier = useMemo(() => {
     if (!member) return null;
@@ -93,9 +111,124 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
   const effectiveTab: DossierTab = canViewDossier360 ? activeTab : 'dados_saude';
 
   const canViewSensitiveMemberData = can('members', 'VIEW') || isOwnMemberProfile;
+  const canManageMemberDocuments = canEdit || can('members', 'CREATE');
+  const canDeleteMemberUploads = hasDeleteMemberUploadsPermission(
+    currentUser.role,
+    state.settings.permissionsMatrix
+  );
   const canViewTrainingData = can('training', 'VIEW') || isOwnMemberProfile;
   const canViewFinancialData = can('treasury', 'VIEW') || isOwnMemberProfile;
   const canViewDocumentsData = can('documents', 'VIEW') || isOwnMemberProfile;
+
+  const handleAttachSlotDocument = async (
+    slot: 'bi' | 'photo',
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploadingDoc(slot);
+    try {
+      const processed = await processProofFile(file);
+      const updates: Partial<Member> =
+        slot === 'bi'
+          ? {
+              biDocumentFileName: processed.fileName,
+              biDocumentBase64: processed.base64,
+            }
+          : {
+              photoDocumentFileName: processed.fileName,
+              photoDocumentBase64: processed.base64,
+              ...(processed.base64.startsWith('data:image/') && !member.photoUrl
+                ? { photoUrl: processed.base64 }
+                : {}),
+            };
+      const res = updateMember(member.id, updates);
+      if (res.success) {
+        onFeedback(
+          'success',
+          slot === 'bi'
+            ? `Documento de B.I. "${processed.fileName}" anexado à ficha de ${member.fullName}.`
+            : `Fotografia "${processed.fileName}" anexada à ficha de ${member.fullName}.`
+        );
+      } else {
+        onFeedback('error', res.error || 'Erro ao guardar documento na ficha.');
+      }
+    } catch (err: any) {
+      onFeedback('error', err?.message || 'Erro ao processar o ficheiro selecionado.');
+    } finally {
+      setIsUploadingDoc(null);
+      e.target.value = '';
+    }
+  };
+
+  const handleAttachExtraDocument = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploadingDoc('extra');
+    try {
+      const processed = await processProofFile(file);
+      const docTitle =
+        extraDocTitle.trim() ||
+        processed.fileName.replace(/\.[^/.]+$/, '') ||
+        'Documento Anexado';
+      const newDoc: MemberAttachedDocument = {
+        id: `DOC-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+        title: docTitle,
+        fileName: processed.fileName,
+        base64: processed.base64,
+        uploadedAt: getNowISOString(),
+        uploadedByName: currentUser.name,
+      };
+      const nextDocs = [...(member.attachedDocuments || []), newDoc];
+      const res = updateMember(member.id, { attachedDocuments: nextDocs });
+      if (res.success) {
+        setExtraDocTitle('');
+        onFeedback('success', `Documento "${docTitle}" anexado com sucesso à ficha do membro.`);
+      } else {
+        onFeedback('error', res.error || 'Erro ao anexar documento na ficha.');
+      }
+    } catch (err: any) {
+      onFeedback('error', err?.message || 'Erro ao processar o ficheiro selecionado.');
+    } finally {
+      setIsUploadingDoc(null);
+      e.target.value = '';
+    }
+  };
+
+  const handleRemoveMemberDocument = (target: 'bi' | 'photo' | string) => {
+    if (!canDeleteMemberUploads) {
+      onFeedback(
+        'error',
+        'Apenas o Diretor ou Secretário com permissão atribuída pelo Administrador na grelha de permissões pode apagar uploads das fichas dos membros.'
+      );
+      return;
+    }
+    if (target === 'bi') {
+      const res = updateMember(member.id, {
+        biDocumentFileName: undefined,
+        biDocumentBase64: undefined,
+      });
+      if (res.success) onFeedback('success', 'Anexo do B.I. removido da ficha.');
+      else onFeedback('error', res.error || 'Erro ao remover anexo.');
+      return;
+    }
+    if (target === 'photo') {
+      const shouldClearPhotoUrl =
+        member.photoUrl && member.photoDocumentBase64 && member.photoUrl === member.photoDocumentBase64;
+      const res = updateMember(member.id, {
+        photoDocumentFileName: undefined,
+        photoDocumentBase64: undefined,
+        ...(shouldClearPhotoUrl ? { photoUrl: undefined } : {}),
+      });
+      if (res.success) onFeedback('success', 'Anexo de fotografia removido da ficha.');
+      else onFeedback('error', res.error || 'Erro ao remover anexo.');
+      return;
+    }
+    const nextDocs = (member.attachedDocuments || []).filter((d) => d.id !== target);
+    const res = updateMember(member.id, { attachedDocuments: nextDocs });
+    if (res.success) onFeedback('success', 'Documento removido da ficha do membro.');
+    else onFeedback('error', res.error || 'Erro ao remover documento.');
+  };
 
   const quotaStatusLabel =
     dossier.quotas.summary.status === 'regularizado'
@@ -112,6 +245,7 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
       : 'text-rose-700 dark:text-rose-400';
 
   return (
+    <>
     <Modal
       isOpen={Boolean(member)}
       onClose={onClose}
@@ -410,6 +544,358 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
               )}
             </div>
 
+            {/* Documentos Anexados na Ficha do Membro */}
+            {canViewSensitiveMemberData && (
+              <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 font-bold">
+                    <Paperclip className="w-3.5 h-3.5 text-blue-900 dark:text-blue-400" />
+                    <span>Documentos Anexados na Ficha (B.I., Fotografia e Comprovativos)</span>
+                  </div>
+                  <span
+                    className={`px-2 py-0.5 rounded font-bold text-[10px] border ${
+                      member.documentationStatus === 'falta_documento'
+                        ? 'bg-amber-50 text-amber-900 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800'
+                        : 'bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                    }`}
+                  >
+                    {member.documentationStatus === 'falta_documento' ? 'Falta de Documento' : 'Regularizado'}
+                  </span>
+                </div>
+
+                {member.documentationStatus === 'falta_documento' && member.missingDocumentsNote && (
+                  <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-[11px]">
+                    <strong>Observação documental:</strong> {member.missingDocumentsNote}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Slot 1: B.I. */}
+                  <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200">
+                        Bilhete de Identidade (B.I.)
+                      </span>
+                      {member.biDocumentBase64 ? (
+                        <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
+                          Anexado
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-400">Não anexado</span>
+                      )}
+                    </div>
+
+                    {member.biDocumentBase64 ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-900 dark:text-slate-100 truncate">
+                          <FileText className="w-3.5 h-3.5 text-blue-800 dark:text-blue-400 shrink-0" />
+                          <span className="truncate">{member.biDocumentFileName || 'Documento B.I.'}</span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setViewingDoc({
+                                title: `Documento B.I. · ${member.fullName}`,
+                                fileName: member.biDocumentFileName || `BI-${member.manualNumber}`,
+                                base64: member.biDocumentBase64 || '',
+                                subtitle: `Matrícula ${member.manualNumber}`,
+                              })
+                            }
+                            className="px-2.5 py-1 text-[11px] font-bold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 rounded inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Eye className="w-3 h-3" />
+                            <span>Visualizar</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              downloadDocumentFile(
+                                member.biDocumentBase64 || '',
+                                member.biDocumentFileName || `BI-${member.manualNumber}`
+                              )
+                            }
+                            className="px-2.5 py-1 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Baixar</span>
+                          </button>
+                          {canDeleteMemberUploads && (
+                            <>
+                              <label className="px-2 py-1 text-[11px] font-semibold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded cursor-pointer inline-flex items-center gap-1">
+                                <Upload className="w-3 h-3" />
+                                <span>Substituir</span>
+                                <input
+                                  type="file"
+                                  accept=".pdf,image/*,.doc,.docx,.odt,.rtf,.txt"
+                                  onChange={(e) => handleAttachSlotDocument('bi', e)}
+                                  className="hidden"
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveMemberDocument('bi')}
+                                className="p-1 text-rose-600 hover:text-rose-800 dark:text-rose-400 rounded"
+                                title="Remover B.I. anexado"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ) : canManageMemberDocuments ? (
+                      <label className="flex items-center justify-center gap-1.5 p-2.5 border border-dashed border-slate-300 dark:border-slate-700 rounded-lg hover:bg-white dark:hover:bg-slate-800 cursor-pointer text-[11px] font-semibold text-blue-900 dark:text-blue-300">
+                        {isUploadingDoc === 'bi' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Upload className="w-3.5 h-3.5" />
+                        )}
+                        <span>{isUploadingDoc === 'bi' ? 'A anexar...' : 'Anexar B.I. (PDF, Imagem, DOC)'}</span>
+                        <input
+                          type="file"
+                          accept=".pdf,image/*,.doc,.docx,.odt,.rtf,.txt"
+                          onChange={(e) => handleAttachSlotDocument('bi', e)}
+                          className="hidden"
+                        />
+                      </label>
+                    ) : (
+                      <p className="text-[11px] text-slate-500 italic">Nenhum documento B.I. anexado.</p>
+                    )}
+                  </div>
+
+                  {/* Slot 2: Fotografia */}
+                  <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200">
+                        Fotografia do Membro
+                      </span>
+                      {member.photoDocumentBase64 || member.photoUrl ? (
+                        <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
+                          Anexada
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-400">Não anexada</span>
+                      )}
+                    </div>
+
+                    {member.photoDocumentBase64 || member.photoUrl ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 text-[11px] font-medium text-slate-900 dark:text-slate-100 truncate">
+                          {(member.photoDocumentBase64 || member.photoUrl || '').startsWith('data:image/') ? (
+                            <img
+                              src={member.photoDocumentBase64 || member.photoUrl}
+                              alt={member.fullName}
+                              className="w-7 h-7 rounded object-cover border border-slate-300 dark:border-slate-700 shrink-0"
+                            />
+                          ) : (
+                            <ImageIcon className="w-3.5 h-3.5 text-blue-800 dark:text-blue-400 shrink-0" />
+                          )}
+                          <span className="truncate">
+                            {member.photoDocumentFileName || `Fotografia-${member.manualNumber}.jpg`}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setViewingDoc({
+                                title: `Fotografia · ${member.fullName}`,
+                                fileName: member.photoDocumentFileName || `Foto-${member.manualNumber}.jpg`,
+                                base64: member.photoDocumentBase64 || member.photoUrl || '',
+                                subtitle: `Matrícula ${member.manualNumber}`,
+                              })
+                            }
+                            className="px-2.5 py-1 text-[11px] font-bold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 rounded inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Eye className="w-3 h-3" />
+                            <span>Visualizar</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              downloadDocumentFile(
+                                member.photoDocumentBase64 || member.photoUrl || '',
+                                member.photoDocumentFileName || `Foto-${member.manualNumber}.jpg`
+                              )
+                            }
+                            className="px-2.5 py-1 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Baixar</span>
+                          </button>
+                          {canDeleteMemberUploads && (
+                            <>
+                              <label className="px-2 py-1 text-[11px] font-semibold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded cursor-pointer inline-flex items-center gap-1">
+                                <Upload className="w-3 h-3" />
+                                <span>Substituir</span>
+                                <input
+                                  type="file"
+                                  accept="image/*,.pdf,.doc,.docx,.odt,.rtf,.txt"
+                                  onChange={(e) => handleAttachSlotDocument('photo', e)}
+                                  className="hidden"
+                                />
+                              </label>
+                              {member.photoDocumentBase64 && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveMemberDocument('photo')}
+                                  className="p-1 text-rose-600 hover:text-rose-800 dark:text-rose-400 rounded"
+                                  title="Remover anexo de fotografia"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ) : canManageMemberDocuments ? (
+                      <label className="flex items-center justify-center gap-1.5 p-2.5 border border-dashed border-slate-300 dark:border-slate-700 rounded-lg hover:bg-white dark:hover:bg-slate-800 cursor-pointer text-[11px] font-semibold text-blue-900 dark:text-blue-300">
+                        {isUploadingDoc === 'photo' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <ImageIcon className="w-3.5 h-3.5" />
+                        )}
+                        <span>{isUploadingDoc === 'photo' ? 'A anexar...' : 'Anexar Fotografia (Imagem / PDF)'}</span>
+                        <input
+                          type="file"
+                          accept="image/*,.pdf,.doc,.docx,.odt,.rtf,.txt"
+                          onChange={(e) => handleAttachSlotDocument('photo', e)}
+                          className="hidden"
+                        />
+                      </label>
+                    ) : (
+                      <p className="text-[11px] text-slate-500 italic">Nenhuma fotografia anexada.</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Lista de Outros Documentos Anexados na Ficha */}
+                {(member.attachedDocuments || []).length > 0 && (
+                  <div className="space-y-1.5">
+                    <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 block">
+                      Outros Documentos Anexados ({member.attachedDocuments!.length})
+                    </span>
+                    <div className="divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-white dark:bg-slate-900">
+                      {member.attachedDocuments!.map((docItem) => (
+                        <div
+                          key={docItem.id}
+                          className="p-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 dark:text-white truncate">{docItem.title}</p>
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                              {docItem.fileName} · Anexado em {formatDateAO(docItem.uploadedAt)}
+                              {docItem.uploadedByName ? ` por ${docItem.uploadedByName}` : ''}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setViewingDoc({
+                                  title: `${docItem.title} · ${member.fullName}`,
+                                  fileName: docItem.fileName,
+                                  base64: docItem.base64,
+                                  subtitle: `Matrícula ${member.manualNumber}`,
+                                })
+                              }
+                              className="px-2.5 py-1 text-[11px] font-bold bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 rounded inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <Eye className="w-3 h-3" />
+                              <span>Visualizar</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => downloadDocumentFile(docItem.base64, docItem.fileName)}
+                              className="px-2.5 py-1 text-[11px] font-bold bg-blue-900 hover:bg-blue-800 text-white rounded inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <Download className="w-3 h-3" />
+                              <span>Baixar</span>
+                            </button>
+                            {canDeleteMemberUploads && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveMemberDocument(docItem.id)}
+                                className="p-1 text-rose-600 hover:text-rose-800 dark:text-rose-400 rounded"
+                                title="Remover documento"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Adicionar Outro Documento Diretamente na Ficha */}
+                {canManageMemberDocuments && (
+                  <div className="p-3 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/40 space-y-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                        Anexar documento adicional:
+                      </span>
+                      {['Autorização do Encarregado', 'Comprovativo de Residência', 'Declaração / Certificado'].map(
+                        (preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => setExtraDocTitle(preset)}
+                            className="px-2 py-0.5 text-[10px] font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded hover:border-blue-400 text-slate-700 dark:text-slate-300 cursor-pointer"
+                          >
+                            + {preset}
+                          </button>
+                        )
+                      )}
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="text"
+                        placeholder="Título do documento (ex: Declaração Escolar)"
+                        value={extraDocTitle}
+                        onChange={(e) => setExtraDocTitle(e.target.value)}
+                        className="flex-1 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs"
+                      />
+                      <label className="px-3.5 py-2 bg-blue-900 hover:bg-blue-800 text-white font-bold rounded-lg inline-flex items-center justify-center gap-1.5 cursor-pointer shrink-0">
+                        {isUploadingDoc === 'extra' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Upload className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {isUploadingDoc === 'extra' ? 'A anexar...' : 'Anexar Documento'}
+                        </span>
+                        <input
+                          type="file"
+                          accept=".pdf,image/*,.doc,.docx,.odt,.rtf,.txt"
+                          onChange={handleAttachExtraDocument}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+                {!canDeleteMemberUploads &&
+                  canManageMemberDocuments &&
+                  Boolean(
+                    member.biDocumentBase64 ||
+                      member.photoDocumentBase64 ||
+                      member.photoUrl ||
+                      (member.attachedDocuments || []).length > 0
+                  ) && (
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                      <Lock className="w-3 h-3 shrink-0" />
+                      <span>
+                        A exclusão de uploads anexados na ficha está reservada apenas ao Diretor e Secretário com permissão na grelha do Administrador.
+                      </span>
+                    </p>
+                  )}
+              </div>
+            )}
+
             {/* Enquadramento Rápido (Categoria e Equipa) */}
             {canEditCategory && (
               <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
@@ -485,13 +971,38 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
                 <p className="font-bold text-slate-900 dark:text-white">Conta de Acesso ao Sistema</p>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
                   {dossier.linkedUser
-                    ? `Vinculada a ${dossier.linkedUser.email} · Estado: ${dossier.linkedUser.active ? 'Ativa' : 'Inativa'}`
-                    : 'Sem conta de login associada. A criação de acesso é gerida pelo Administrador Técnico.'}
+                    ? `Vinculada a ${dossier.linkedUser.email} · Estado: ${
+                        dossier.linkedUser.active ? 'Ativa' : 'Aguardando Confirmação do Diretor'
+                      }`
+                    : 'Sem conta de login associada. Pode ser criada após validação da inscrição ou pela administração.'}
                 </p>
               </div>
-              <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 tabular-nums shrink-0">
-                {dossier.linkedUser ? 'Conta Sincronizada' : 'Sem Conta'}
-              </span>
+              <div className="flex items-center gap-2">
+                {dossier.linkedUser && !dossier.linkedUser.active && hasApproveMemberAccountPermission(currentUser.role, state.settings.permissionsMatrix) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const res = approvePendingMemberAccount(dossier.linkedUser!.id);
+                      if (res.success) {
+                        onFeedback('success', `Conta de acesso de ${member.fullName} confirmada e ativada com sucesso!`);
+                      } else {
+                        onFeedback('error', res.error || 'Erro ao validar conta.');
+                      }
+                    }}
+                    className="px-2.5 py-1 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md transition-colors flex items-center gap-1 cursor-pointer"
+                  >
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    <span>Confirmar Conta</span>
+                  </button>
+                )}
+                <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 tabular-nums shrink-0">
+                  {dossier.linkedUser
+                    ? dossier.linkedUser.active
+                      ? 'Conta Ativa'
+                      : 'Aguardando Diretor'
+                    : 'Sem Conta'}
+                </span>
+              </div>
             </div>
             {!canViewDossier360 && (
               <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 text-[11px] text-slate-500 dark:text-slate-400">
@@ -900,5 +1411,11 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
         </div>
       </div>
     </Modal>
+
+    <DocumentViewerModal
+      documentItem={viewingDoc}
+      onClose={() => setViewingDoc(null)}
+    />
+    </>
   );
 };
