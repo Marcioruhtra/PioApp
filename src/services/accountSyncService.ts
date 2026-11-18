@@ -104,6 +104,71 @@ export const removeLinkedAccountsForMember = (
 };
 
 /**
+ * Desativa automaticamente todas as contas de acesso vinculadas a um membro arquivado,
+ * preservando os registos e credenciais da conta enquanto impede o início de sessão.
+ */
+export const deactivateLinkedAccountsForMember = (
+  users: UserAccount[],
+  member: Pick<Member, 'id' | 'manualNumber' | 'email'>
+): { updatedUsers: UserAccount[]; deactivatedUsers: UserAccount[] } => {
+  const linkedActive = findLinkedUserAccountsForMember(users, member).filter(
+    (u) => u.active !== false
+  );
+  if (linkedActive.length === 0) {
+    return { updatedUsers: users, deactivatedUsers: [] };
+  }
+  const targetIds = new Set(linkedActive.map((u) => u.id));
+  const deactivatedUsers: UserAccount[] = [];
+  const updatedUsers = users.map((u) => {
+    if (!targetIds.has(u.id)) return u;
+    const nextUser: UserAccount = {
+      ...u,
+      active: false,
+      deactivatedByArchive: true,
+    };
+    deactivatedUsers.push(nextUser);
+    return nextUser;
+  });
+  return { updatedUsers, deactivatedUsers };
+};
+
+/**
+ * Reativa automaticamente contas que haviam sido desativadas especificamente por arquivamento
+ * quando a ficha do membro regressa ao estado ativo.
+ */
+export const reactivateLinkedAccountsForMember = (
+  users: UserAccount[],
+  member: Pick<Member, 'id' | 'manualNumber' | 'email'>
+): { updatedUsers: UserAccount[]; reactivatedUsers: UserAccount[] } => {
+  const linkedArchivedDisabled = findLinkedUserAccountsForMember(users, member).filter(
+    (u) =>
+      u.active === false &&
+      u.deactivatedByArchive === true &&
+      u.accountApprovalStatus !== 'rejeitada'
+  );
+  if (linkedArchivedDisabled.length === 0) {
+    return { updatedUsers: users, reactivatedUsers: [] };
+  }
+  const targetIds = new Set(linkedArchivedDisabled.map((u) => u.id));
+  const reactivatedUsers: UserAccount[] = [];
+  const updatedUsers = users.map((u) => {
+    if (!targetIds.has(u.id)) return u;
+    const { deactivatedByArchive: _removedFlag, ...rest } = u;
+    const nextUser: UserAccount = {
+      ...rest,
+      active: true,
+      accountApprovalStatus:
+        u.accountApprovalStatus === 'pendente_confirmacao'
+          ? 'aprovada'
+          : u.accountApprovalStatus,
+    };
+    reactivatedUsers.push(nextUser);
+    return nextUser;
+  });
+  return { updatedUsers, reactivatedUsers };
+};
+
+/**
  * Indica se o membro pertence à Direção (Diretor, Diretor-associado ou Secretário)
  * pela sua conta vinculada. Por definição, membros da Direção não pertencem a equipas.
  */
@@ -374,13 +439,19 @@ export const reconcileUsersAndMembers = (
     const expectedEmail = currentMember.email?.trim() || u.email;
     const expectedPhone = currentMember.phone?.trim() || u.phone;
     const expectedManualNumber = currentMember.manualNumber || u.manualNumber;
+    const isInstitutional = isInstitutionalAccountRecord(u);
+    const shouldDeactivateForArchivedMember =
+      !isInstitutional &&
+      currentMember.status === 'arquivado' &&
+      (u.active !== false || !u.deactivatedByArchive);
 
     if (
       u.linkedMemberId !== currentMember.id ||
       u.name !== expectedName ||
       u.email !== expectedEmail ||
       (expectedPhone && u.phone !== expectedPhone) ||
-      (expectedManualNumber && u.manualNumber !== expectedManualNumber)
+      (expectedManualNumber && u.manualNumber !== expectedManualNumber) ||
+      shouldDeactivateForArchivedMember
     ) {
       changed = true;
       return {
@@ -390,6 +461,9 @@ export const reconcileUsersAndMembers = (
         email: expectedEmail,
         ...(expectedPhone ? { phone: expectedPhone } : {}),
         ...(expectedManualNumber ? { manualNumber: expectedManualNumber } : {}),
+        ...(shouldDeactivateForArchivedMember
+          ? { active: false, deactivatedByArchive: true }
+          : {}),
       };
     }
 

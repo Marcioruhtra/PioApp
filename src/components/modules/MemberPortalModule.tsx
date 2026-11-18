@@ -29,10 +29,11 @@ import {
   CreditCard,
   QrCode,
   Bell,
+  RefreshCw,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import { formatKz, parseKzToCents } from '../../utils/currency';
-import { formatDateAO } from '../../utils/date';
+import { formatDateAO, formatDateTimeAO } from '../../utils/date';
 import { Modal } from '../common/Modal';
 import {
   PaymentMethod,
@@ -47,6 +48,8 @@ import { ProofDocumentViewerModal } from '../common/ProofDocumentViewerModal';
 import { MemberDigitalCardModal } from '../common/MemberDigitalCardModal';
 import { processProofFile } from '../../utils/fileUpload';
 import { EnrollmentStatusCard } from '../members/EnrollmentStatusCard';
+import { MemberReconfirmationForm } from '../members/MemberReconfirmationForm';
+import { evaluateEnrollmentAvailability } from '../../services/enrollmentService';
 import {
   calculateMemberQuotaSummary,
   getTodayISODate,
@@ -80,10 +83,13 @@ export const MemberPortalModule: React.FC = () => {
     deleteSuggestion,
     markMessageAsRead,
     replyToMessage,
+    submitMemberReconfirmation,
   } = useClub();
 
   const [isProofModalOpen, setIsProofModalOpen] = useState(false);
   const [isDigitalCardOpen, setIsDigitalCardOpen] = useState(false);
+  const [isReconfirmationModalOpen, setIsReconfirmationModalOpen] = useState(false);
+  const enrollmentAvailability = evaluateEnrollmentAvailability(state.settings.enrollmentConfig);
   const [printedReceipt, setPrintedReceipt] = useState<OfficialDocument | null>(null);
   const [selectedProofToView, setSelectedProofToView] = useState<PaymentProofReport | null>(null);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
@@ -539,13 +545,39 @@ export const MemberPortalModule: React.FC = () => {
 
       {activePortalTab === 'geral' && (
         <div className="space-y-6">
-          {/* Situação Documental na Secretaria */}
+          {/* Situação Documental e Reconfirmação na Secretaria */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-5 space-y-3">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
-              <UserCheck className="w-4 h-4 text-blue-900" />
-              <span>Situação Documental na Secretaria</span>
-            </h2>
-            <EnrollmentStatusCard registeredMember={member} />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+                <UserCheck className="w-4 h-4 text-blue-900" />
+                <span>Situação Cadastral e Documental na Secretaria</span>
+              </h2>
+              {enrollmentAvailability.isReconfirmationOpen &&
+                member.status !== 'arquivado' &&
+                member.status !== 'transferido' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsReconfirmationModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-blue-900 hover:bg-blue-800 rounded-lg shadow-xs transition-colors cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>
+                      {enrollmentAvailability.periodId &&
+                      member.lastReconfirmedPeriodId === enrollmentAvailability.periodId
+                        ? 'Atualizar Reconfirmação'
+                        : 'Fazer Reconfirmação de Dados'}
+                    </span>
+                  </button>
+                )}
+            </div>
+            <EnrollmentStatusCard
+              registeredMember={member}
+              reconfirmationInfo={{
+                isReconfirmationOpen: enrollmentAvailability.isReconfirmationOpen,
+                periodId: enrollmentAvailability.periodId,
+                onStartReconfirmation: () => setIsReconfirmationModalOpen(true),
+              }}
+            />
           </div>
 
           {/* Alerta Institucional de Pagamentos */}
@@ -2138,6 +2170,34 @@ export const MemberPortalModule: React.FC = () => {
         member={isDigitalCardOpen ? member : null}
         onClose={() => setIsDigitalCardOpen(false)}
       />
+
+      {/* Modal: Reconfirmação de Dados e Documentos do Membro */}
+      {isReconfirmationModalOpen && enrollmentAvailability.isReconfirmationOpen && (
+        <Modal
+          isOpen={isReconfirmationModalOpen}
+          onClose={() => setIsReconfirmationModalOpen(false)}
+          title="Reconfirmação de Dados e Documentos"
+          description="Atualize os seus dados cadastrais e documentos anexados para confirmar a sua permanência ativa no clube."
+          maxWidth="3xl"
+        >
+          <MemberReconfirmationForm
+            member={member}
+            currentPeriodId={enrollmentAvailability.periodId}
+            onSubmit={async (formData) => {
+              const res = await submitMemberReconfirmation(member.id, formData);
+              if (res.success) {
+                setIsReconfirmationModalOpen(false);
+                setPortalActionSuccess(
+                  `Reconfirmação de dados concluída com sucesso (${formatDateTimeAO(new Date().toISOString())})! O seu estado encontra-se Ativo.`
+                );
+                setTimeout(() => setPortalActionSuccess(null), 5000);
+              }
+              return res;
+            }}
+            onCancel={() => setIsReconfirmationModalOpen(false)}
+          />
+        </Modal>
+      )}
     </div>
   );
 };

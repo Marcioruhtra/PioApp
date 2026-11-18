@@ -650,6 +650,10 @@ export const AuditAndAdminModule: React.FC = () => {
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-bold uppercase tracking-wider">
                             Aguarda Confirmação do Diretor
                           </span>
+                        ) : !u.active && u.deactivatedByArchive ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200 text-[10px] font-bold uppercase tracking-wider">
+                            Desativada (Ficha Arquivada)
+                          </span>
                         ) : (
                           <span className={`text-[10px] font-bold uppercase tracking-wider ${
                             u.active ? 'text-emerald-700' : 'text-slate-400'
@@ -728,7 +732,14 @@ export const AuditAndAdminModule: React.FC = () => {
                                 )}
 
                                 <button
-                                  onClick={() => toggleUserActive(u.id)}
+                                  onClick={() => {
+                                    const res = toggleUserActive(u.id);
+                                    if (!res.success) {
+                                      showFeedback('error', res.error || 'Não foi possível alterar o estado da conta.');
+                                    } else {
+                                      showFeedback('success', `Conta de "${u.name}" ${u.active ? 'desativada' : 'reativada'} com sucesso.`);
+                                    }
+                                  }}
                                   className="px-2 py-1 text-[11px] font-semibold border border-slate-200 rounded hover:bg-slate-100 transition-colors"
                                   title={u.active ? 'Desativar acesso da conta' : 'Reativar conta de acesso'}
                                 >

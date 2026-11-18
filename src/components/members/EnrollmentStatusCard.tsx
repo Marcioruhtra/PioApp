@@ -9,11 +9,15 @@ import {
   KeyRound,
   Lock,
   MessageSquare,
+  RefreshCw,
   ShieldCheck,
   UserCheck,
   UserPlus,
   XCircle,
 } from 'lucide-react';
+import { useClub } from '../../context/ClubContext';
+import { Modal } from '../common/Modal';
+import { MemberRegistrationForm } from './MemberRegistrationForm';
 import { Member, MemberEnrollmentRequest, UserAccount } from '../../types';
 import { formatDateAO, formatDateTimeAO } from '../../utils/date';
 import {
@@ -27,6 +31,11 @@ interface EnrollmentStatusCardProps {
   request?: MemberEnrollmentRequest;
   registeredMember?: Member;
   compact?: boolean;
+  reconfirmationInfo?: {
+    isReconfirmationOpen: boolean;
+    periodId?: string;
+    onStartReconfirmation?: (member: Member) => void;
+  };
   selfServiceAccount?: {
     users: UserAccount[];
     onCreateAccount: (
@@ -47,8 +56,10 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
   request,
   registeredMember,
   compact = false,
+  reconfirmationInfo,
   selfServiceAccount,
 }) => {
+  const { resubmitEnrollmentRequest } = useClub();
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -56,6 +67,7 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
   const [isSubmittingAccount, setIsSubmittingAccount] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [justCreatedAccount, setJustCreatedAccount] = useState<UserAccount | null>(null);
+  const [isResubmitModalOpen, setIsResubmitModalOpen] = useState(false);
 
   const docStatus = registeredMember ? resolveMemberDocumentationStatus(registeredMember) : null;
   const docUpdaterRole = registeredMember?.documentationUpdatedByRole
@@ -195,6 +207,34 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
             <div>
               Data de Admissão: <strong className="text-slate-900 dark:text-white">{formatDateAO(registeredMember.joinedDate)}</strong>
             </div>
+            <div>
+              Estado Cadastral:{' '}
+              <strong
+                className={
+                  registeredMember.status === 'ativo'
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : registeredMember.status === 'inativo'
+                    ? 'text-rose-700 dark:text-rose-400'
+                    : 'text-slate-700 dark:text-slate-300'
+                }
+              >
+                {registeredMember.status === 'ativo'
+                  ? 'Ativo'
+                  : registeredMember.status === 'inativo'
+                  ? 'Inativo (Sem Reconfirmação)'
+                  : registeredMember.status === 'arquivado'
+                  ? 'Arquivado'
+                  : 'Transferido'}
+              </strong>
+            </div>
+            {registeredMember.lastReconfirmedAt && (
+              <div>
+                Última Reconfirmação:{' '}
+                <strong className="text-slate-900 dark:text-white">
+                  {formatDateTimeAO(registeredMember.lastReconfirmedAt)}
+                </strong>
+              </div>
+            )}
             {registeredMember.enrollmentProtocol && (
               <div className="sm:col-span-2">
                 Origem: Registo automático da inscrição{' '}
@@ -202,6 +242,45 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
               </div>
             )}
           </div>
+
+          {reconfirmationInfo?.isReconfirmationOpen &&
+            registeredMember.status !== 'arquivado' &&
+            registeredMember.status !== 'transferido' && (
+              <div className="p-3 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/80 dark:bg-blue-950/40 flex flex-wrap items-center justify-between gap-2">
+                <div className="space-y-0.5">
+                  <div className="font-bold text-blue-950 dark:text-blue-200 flex items-center gap-1.5">
+                    <RefreshCw className="w-3.5 h-3.5 text-blue-800 dark:text-blue-400" />
+                    <span>
+                      {reconfirmationInfo.periodId &&
+                      registeredMember.lastReconfirmedPeriodId === reconfirmationInfo.periodId
+                        ? 'Reconfirmação já concluída neste período'
+                        : 'Reconfirmação de Dados Aberta'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-blue-900/90 dark:text-blue-300">
+                    {reconfirmationInfo.periodId &&
+                    registeredMember.lastReconfirmedPeriodId === reconfirmationInfo.periodId
+                      ? 'Pode atualizar novamente os seus dados e documentos enquanto o período estiver aberto.'
+                      : 'Confirme e atualize os seus dados e documentos para manter o seu estado Ativo após o encerramento.'}
+                  </p>
+                </div>
+                {reconfirmationInfo.onStartReconfirmation && (
+                  <button
+                    type="button"
+                    onClick={() => reconfirmationInfo.onStartReconfirmation?.(registeredMember)}
+                    className="px-3 py-1.5 bg-blue-900 hover:bg-blue-800 text-white font-bold rounded-lg text-[11px] inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>
+                      {reconfirmationInfo.periodId &&
+                      registeredMember.lastReconfirmedPeriodId === reconfirmationInfo.periodId
+                        ? 'Atualizar Dados'
+                        : 'Fazer Reconfirmação'}
+                    </span>
+                  </button>
+                )}
+              </div>
+            )}
         </div>
       )}
 
@@ -549,21 +628,90 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
           )}
 
           {request.status === 'rejeitado' && (
-            <div className="p-3.5 rounded-lg border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-950 dark:text-rose-200 space-y-1.5">
-              <div className="font-bold text-rose-900 dark:text-rose-200 flex items-center gap-1.5">
-                <XCircle className="w-4 h-4 text-rose-700 dark:text-rose-400 shrink-0" />
-                <span>Inscrição Recusada</span>
+            <div className="p-3.5 rounded-lg border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-950 dark:text-rose-200 space-y-3">
+              <div className="space-y-1">
+                <div className="font-bold text-rose-900 dark:text-rose-200 flex items-center gap-1.5">
+                  <XCircle className="w-4 h-4 text-rose-700 dark:text-rose-400 shrink-0" />
+                  <span>Inscrição Recusada</span>
+                </div>
+                <p>
+                  <strong>Motivo da recusa:</strong>{' '}
+                  {request.decisionReason || 'Não especificado pela Secretaria.'}
+                </p>
+                <p>
+                  <strong>Recusada por:</strong>{' '}
+                  {request.reviewedByName || 'Secretaria do Clube'}
+                  {reviewerRoleLabel ? ` (${reviewerRoleLabel})` : ''}
+                  {request.reviewedAt ? ` em ${formatDateTimeAO(request.reviewedAt)}` : ''}
+                </p>
               </div>
-              <p>
-                <strong>Motivo da recusa:</strong>{' '}
-                {request.decisionReason || 'Não especificado pela Secretaria.'}
-              </p>
-              <p>
-                <strong>Recusada por:</strong>{' '}
-                {request.reviewedByName || 'Secretaria do Clube'}
-                {reviewerRoleLabel ? ` (${reviewerRoleLabel})` : ''}
-                {request.reviewedAt ? ` em ${formatDateTimeAO(request.reviewedAt)}` : ''}
-              </p>
+
+              <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h5 className="font-bold text-slate-900 dark:text-white text-xs">
+                    Pretende refazer a sua inscrição?
+                  </h5>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
+                    Pode reutilizar os seus dados atuais, editar o que for necessário e substituir ou manter os seus documentos anexados.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsResubmitModalOpen(true)}
+                  className="px-3.5 py-2 bg-blue-900 hover:bg-blue-800 text-white font-bold rounded-lg text-[11px] inline-flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Refazer Inscrição</span>
+                </button>
+              </div>
+
+              {isResubmitModalOpen && (
+                <Modal
+                  isOpen={isResubmitModalOpen}
+                  onClose={() => setIsResubmitModalOpen(false)}
+                  title="Refazer Inscrição · Reutilizar Dados"
+                  maxWidth="2xl"
+                >
+                  <MemberRegistrationForm
+                    mode="self_enrollment"
+                    units={[]}
+                    isResubmission={true}
+                    initialData={{
+                      fullName: request.fullName,
+                      birthDate: request.birthDate,
+                      gender: request.gender,
+                      identityCardNumber: request.identityCardNumber,
+                      phone: request.phone,
+                      email: request.email,
+                      address: request.address,
+                      category: request.category,
+                      guardianName: request.guardianName,
+                      guardianPhone: request.guardianPhone,
+                      emergencyName: request.emergencyContact?.name,
+                      emergencyRelationship: request.emergencyContact?.relationship,
+                      emergencyPhone: request.emergencyContact?.phone,
+                      bloodType: request.bloodType,
+                      allergiesOrMedicalNotes: request.allergiesOrMedicalNotes,
+                      investitureDate: request.investitureDate,
+                      professionalCourse: request.professionalCourse,
+                      documentDeliveryMethod: request.documentDeliveryMethod || 'anexar_digital',
+                      biDocumentFileName: request.biDocumentFileName,
+                      biDocumentBase64: request.biDocumentBase64,
+                      photoDocumentFileName: request.photoDocumentFileName,
+                      photoDocumentBase64: request.photoDocumentBase64,
+                    }}
+                    onSubmit={async (data) => {
+                      const res = await resubmitEnrollmentRequest(request.protocolNumber, data);
+                      if (res.success) {
+                        setIsResubmitModalOpen(false);
+                        return { success: true };
+                      }
+                      return { success: false, error: res.error || 'Erro ao refazer inscrição.' };
+                    }}
+                    onCancel={() => setIsResubmitModalOpen(false)}
+                  />
+                </Modal>
+              )}
             </div>
           )}
 

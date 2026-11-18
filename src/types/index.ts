@@ -76,6 +76,7 @@ export interface UserAccount {
   accountApprovedByUserId?: string;
   accountApprovedByName?: string;
   accountApprovedAt?: string;
+  deactivatedByArchive?: boolean;
 }
 
 export type MemberCategory = 
@@ -152,6 +153,10 @@ export interface Member {
   documentationUpdatedByName?: string;
   documentationUpdatedByRole?: RoleType;
   enrollmentProtocol?: string; // Protocolo de inscrição que originou o registo automático na Secretaria
+  enrolledPeriodId?: string; // Identificador do período em que o membro foi admitido/aprovado
+  lastReconfirmedPeriodId?: string; // Último período de inscrições em que o membro reconfirmou os dados
+  lastReconfirmedAt?: string; // Data/hora da última reconfirmação de dados e documentos
+  reconfirmationCount?: number; // Quantidade de reconfirmações realizadas
   createdAt: string;
   updatedAt: string;
 }
@@ -549,11 +554,22 @@ export interface QuotaDebtWaiver {
 
 export interface EnrollmentScheduleConfig {
   isOpen: boolean;
+  periodId?: string; // Identificador único do período de inscrições
+  enableReconfirmation?: boolean; // Permite que membros registados/inscritos façam reconfirmação de dados e documentos
+  openedAt?: string; // Timestamp da abertura deste período
   openDate?: string; // AAAA-MM-DD
   openTime?: string; // HH:mm
   closeDate?: string; // AAAA-MM-DD
   closeTime?: string; // HH:mm
   closedImmediatelyAt?: string;
+  finalizedPeriodId?: string; // PeriodId já processado após encerramento (evita reprocessamento)
+  finalizedAt?: string; // Timestamp da definição automática de ativos/inativos no fim do período
+  finalizationSummary?: {
+    activatedCount: number;
+    archivedCount: number;
+    keptActiveCount: number;
+    exemptedCount: number;
+  };
   updatedAt?: string;
   updatedByUserId?: string;
   updatedByName?: string;

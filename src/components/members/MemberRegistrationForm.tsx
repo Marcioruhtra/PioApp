@@ -7,6 +7,7 @@ import {
   Image as ImageIcon,
   Loader2,
   Paperclip,
+  RefreshCw,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -37,6 +38,8 @@ interface MemberRegistrationFormProps {
     | { success: boolean; error?: string };
   onCancel: () => void;
   initialCategory?: MemberCategory;
+  initialData?: Partial<MemberRegistrationFormData>;
+  isResubmission?: boolean;
 }
 
 const createEmptyFormData = (
@@ -79,13 +82,23 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
   onSubmit,
   onCancel,
   initialCategory,
+  initialData,
+  isResubmission = false,
 }) => {
   const defaultCategory: MemberCategory =
-    initialCategory || (mode === 'self_enrollment' ? 'aspirante' : 'embaixador');
+    initialCategory || initialData?.category || (mode === 'self_enrollment' ? 'aspirante' : 'embaixador');
 
-  const [formData, setFormData] = useState<MemberRegistrationFormData>(() =>
-    createEmptyFormData(defaultCategory, mode)
-  );
+  const [formData, setFormData] = useState<MemberRegistrationFormData>(() => {
+    const empty = createEmptyFormData(defaultCategory, mode);
+    if (!initialData) return empty;
+    return {
+      ...empty,
+      ...initialData,
+      category: initialData.category || empty.category,
+      gender: initialData.gender || empty.gender,
+      documentDeliveryMethod: initialData.documentDeliveryMethod || empty.documentDeliveryMethod,
+    };
+  });
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isProcessingAttachment, setIsProcessingAttachment] = useState<'bi' | 'photo' | null>(null);
@@ -199,6 +212,18 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
 
   return (
     <form onSubmit={handleFormSubmit} className="space-y-6">
+      {isResubmission && (
+        <div className="p-3.5 bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800 rounded-lg text-xs text-blue-950 dark:text-blue-200 space-y-1">
+          <div className="font-bold flex items-center gap-1.5">
+            <RefreshCw className="w-4 h-4 text-blue-800 dark:text-blue-400" />
+            <span>Refazer Inscrição · Reutilizar Dados e Atualizar Uploads</span>
+          </div>
+          <p>
+            Os seus dados anteriores foram carregados automaticamente. Pode alterá-los e, se desejar, substituir os documentos anexados (B.I. e Fotografia) antes de submeter novamente para a Secretaria.
+          </p>
+        </div>
+      )}
+
       {formError && (
         <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 rounded-lg text-xs flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />

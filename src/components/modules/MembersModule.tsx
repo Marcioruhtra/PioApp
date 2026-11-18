@@ -206,6 +206,7 @@ export const MembersModule: React.FC = () => {
     openTime: '',
     closeDate: '',
     closeTime: '',
+    enableReconfirmation: false,
   });
   const [enrollmentScheduleError, setEnrollmentScheduleError] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState<Date>(() => new Date());
@@ -221,6 +222,22 @@ export const MembersModule: React.FC = () => {
     [state.settings.enrollmentConfig, nowTick]
   );
 
+  const reconfirmationStats = useMemo(() => {
+    const cfg = state.settings.enrollmentConfig;
+    const eligible = (state.members || []).filter(
+      (m) => m.status === 'ativo' || m.status === 'inativo'
+    );
+    const periodId = cfg?.periodId;
+    const reconfirmed = periodId
+      ? eligible.filter((m) => m.lastReconfirmedPeriodId === periodId).length
+      : 0;
+    const newlyEnrolled = periodId
+      ? eligible.filter((m) => m.enrolledPeriodId === periodId && m.lastReconfirmedPeriodId !== periodId).length
+      : 0;
+    const pending = Math.max(0, eligible.length - reconfirmed - newlyEnrolled);
+    return { total: eligible.length, reconfirmed, newlyEnrolled, pending };
+  }, [state.members, state.settings.enrollmentConfig]);
+
   const handleOpenEnrollmentScheduleModal = () => {
     const existing = state.settings.enrollmentConfig;
     const now = new Date();
@@ -229,6 +246,7 @@ export const MembersModule: React.FC = () => {
       openTime: existing?.isOpen && existing.openTime ? existing.openTime : getLocalCurrentTimeString(now),
       closeDate: existing?.isOpen && existing.closeDate ? existing.closeDate : '',
       closeTime: existing?.isOpen && existing.closeTime ? existing.closeTime : '',
+      enableReconfirmation: Boolean(existing?.enableReconfirmation),
     });
     setEnrollmentScheduleError(null);
     setIsEnrollmentScheduleModalOpen(true);
@@ -245,11 +263,14 @@ export const MembersModule: React.FC = () => {
     setNowTick(new Date());
     setIsEnrollmentScheduleModalOpen(false);
     const updatedAvail = evaluateEnrollmentAvailability(res.config, new Date());
+    const reconfNote = res.config?.enableReconfirmation
+      ? ' Reconfirmação de dados e documentos ativada para membros registados.'
+      : '';
     showFeedback(
       'success',
       updatedAvail.status === 'agendadas'
-        ? `Reabertura de inscrições agendada: ${updatedAvail.reasonLabel}`
-        : `Inscrições reabertas com sucesso! ${updatedAvail.closeLabel ? `Encerramento estipulado para ${updatedAvail.closeLabel}.` : ''}`
+        ? `Reabertura agendada: ${updatedAvail.reasonLabel}${reconfNote}`
+        : `Período aberto com sucesso! ${updatedAvail.closeLabel ? `Encerramento estipulado para ${updatedAvail.closeLabel}.` : ''}${reconfNote}`
     );
   };
 
@@ -261,9 +282,12 @@ export const MembersModule: React.FC = () => {
     }
     setNowTick(new Date());
     setIsEnrollmentScheduleModalOpen(false);
+    const summaryText = res.summary
+      ? ` Atualização automática: ${res.summary.keptActiveCount + res.summary.activatedCount} membro(s) ativo(s) e ${res.summary.archivedCount} membro(s) arquivado(s) por falta de reconfirmação.`
+      : '';
     showFeedback(
       'success',
-      'Inscrições encerradas imediatamente. O botão "Fazer Inscrição no Clube" foi ocultado do ecrã de login.'
+      `Período encerrado imediatamente.${summaryText}`
     );
   };
 
@@ -750,9 +774,16 @@ export const MembersModule: React.FC = () => {
 
   // 5. Execução após Aprovação Válida (Req 2.3)
   const handleExecuteRequest = (reqId: string) => {
+    const req = (state.deletionRequests || []).find((r) => r.id === reqId);
     const res = executeApprovedMemberOperation(reqId);
     if (res.success) {
-      showFeedback('success', 'Operação autorizada executada com sucesso.');
+      if (req?.operationType === 'arquivamento') {
+        showFeedback('success', `Arquivamento de "${req.targetMemberName}" executado com sucesso. Eventuais contas de login vinculadas foram desativadas automaticamente.`);
+      } else if (req?.operationType === 'eliminacao') {
+        showFeedback('success', `Eliminação definitiva de "${req.targetMemberName}" e contas de login vinculadas executada com sucesso.`);
+      } else {
+        showFeedback('success', 'Operação autorizada executada com sucesso.');
+      }
     } else {
       showFeedback('error', res.error || 'Erro ao executar operação aprovada.');
     }
@@ -946,7 +977,9 @@ export const MembersModule: React.FC = () => {
               >
                 <option value="todas">Todos os Estados</option>
                 <option value="ativo">Apenas Ativos</option>
+                <option value="inativo">Inativos (Sem Reconfirmação)</option>
                 <option value="arquivado">Arquivados (Histórico)</option>
+                <option value="transferido">Transferidos</option>
               </select>
 
               {/* Situação Documental */}
@@ -1080,12 +1113,24 @@ export const MembersModule: React.FC = () => {
                           </span>
                         </td>
                         <td className="py-3 px-4">
-                          <span className={`text-[10px] font-bold uppercase tracking-wider ${
-                            member.status === 'ativo'
-                              ? 'text-emerald-700'
-                              : 'text-slate-500'
-                          }`}>
-                            {member.status === 'ativo' ? 'Ativo' : 'Arquivado'}
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                              member.status === 'ativo'
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : member.status === 'inativo'
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : member.status === 'transferido'
+                                ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                : 'bg-slate-100 text-slate-600 border-slate-200'
+                            }`}
+                          >
+                            {member.status === 'ativo'
+                              ? 'Ativo'
+                              : member.status === 'inativo'
+                              ? 'Inativo'
+                              : member.status === 'transferido'
+                              ? 'Transferido'
+                              : 'Arquivado'}
                           </span>
                         </td>
                         <td className="py-3 px-4 text-right">
@@ -1130,7 +1175,7 @@ export const MembersModule: React.FC = () => {
                                 <Edit2 className="w-4 h-4" />
                               </button>
                             )}
-                            {can('members', 'ARCHIVE') && member.status === 'ativo' && (
+                            {can('members', 'ARCHIVE') && (member.status === 'ativo' || member.status === 'inativo') && (
                               <button
                                 onClick={() => {
                                   setSelectedMember(member);
@@ -1254,18 +1299,59 @@ export const MembersModule: React.FC = () => {
                   <span>{enrollmentAvailability.statusLabel}</span>
                 </span>
                 <span className="text-xs font-bold text-slate-900 dark:text-white">
-                  Período de Inscrições no Clube (Ecrã de Login)
+                  Período de Inscrições e Reconfirmação no Clube (Ecrã de Login)
                 </span>
+                {enrollmentAvailability.enableReconfirmation && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 dark:bg-blue-900/70 text-blue-900 dark:text-blue-200 border border-blue-300 dark:border-blue-700">
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Reconfirmação Ativa</span>
+                  </span>
+                )}
               </div>
 
               <p className="text-xs text-slate-700 dark:text-slate-200">
                 {enrollmentAvailability.reasonLabel}{' '}
                 <span className="text-slate-600 dark:text-slate-300">
                   {enrollmentAvailability.isCurrentlyOpen
-                    ? 'O botão «Fazer Inscrição no Clube» está visível no ecrã de login.'
-                    : 'O botão «Fazer Inscrição no Clube» encontra-se oculto no ecrã de login.'}
+                    ? enrollmentAvailability.enableReconfirmation
+                      ? 'Os botões «Fazer Inscrição no Clube» e «Fazer Reconfirmação de Dados» estão visíveis no ecrã de login.'
+                      : 'O botão «Fazer Inscrição no Clube» está visível no ecrã de login.'
+                    : 'Os botões de inscrição/reconfirmação encontram-se ocultos no ecrã de login.'}
                 </span>
               </p>
+
+              {enrollmentAvailability.enableReconfirmation && enrollmentAvailability.isCurrentlyOpen && (
+                <div className="flex flex-wrap gap-3 text-[11px] text-blue-900 dark:text-blue-200 pt-0.5 font-medium">
+                  <span>
+                    <strong>Reconfirmados neste período:</strong> {reconfirmationStats.reconfirmed}
+                  </span>
+                  {reconfirmationStats.newlyEnrolled > 0 && (
+                    <span>
+                      <strong>Novos admitidos no período:</strong> {reconfirmationStats.newlyEnrolled}
+                    </span>
+                  )}
+                  <span>
+                    <strong>Pendentes de reconfirmação:</strong> {reconfirmationStats.pending}
+                  </span>
+                </div>
+              )}
+
+              {enrollmentAvailability.finalizationSummary && (
+                <div className="text-[11px] font-semibold text-slate-800 dark:text-slate-200 bg-white/80 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 rounded-lg inline-flex flex-wrap gap-3">
+                  <span>
+                    Definição Automática Pós-Período:{' '}
+                    <strong className="text-emerald-700 dark:text-emerald-400">
+                      {enrollmentAvailability.finalizationSummary.keptActiveCount +
+                        enrollmentAvailability.finalizationSummary.activatedCount}{' '}
+                      Ativos
+                    </strong>
+                    {' · '}
+                    <strong className="text-rose-700 dark:text-rose-400">
+                      {enrollmentAvailability.finalizationSummary.archivedCount} Arquivados (não reconfirmaram)
+                    </strong>
+                  </span>
+                </div>
+              )}
 
               {(enrollmentAvailability.openLabel || enrollmentAvailability.closeLabel) && state.settings.enrollmentConfig?.isOpen && (
                 <div className="flex flex-wrap gap-3 text-[11px] text-slate-600 dark:text-slate-300 pt-0.5">
@@ -2437,6 +2523,29 @@ export const MembersModule: React.FC = () => {
               <div>Nome: <strong>{selectedMember.fullName}</strong></div>
               <div>Categoria: <strong>{selectedMember.category.toUpperCase()}</strong></div>
             </div>
+
+            {(() => {
+              const linkedForArchive = findLinkedUserAccountsForMember(state.users, selectedMember);
+              if (linkedForArchive.length === 0) return null;
+              return (
+                <div className="p-3 bg-slate-50 border border-slate-200 text-slate-800 rounded-xl space-y-1">
+                  <p className="font-bold text-[11px] flex items-center gap-1.5 text-slate-900">
+                    <Lock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                    <span>Conta(s) de Login Vinculada(s) ({linkedForArchive.length})</span>
+                  </p>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    Quando o arquivamento for executado, a(s) conta(s) abaixo será(ão) <strong>desativada(s) automaticamente</strong> até que a ficha seja desarquivada:
+                  </p>
+                  <ul className="space-y-1 pt-0.5">
+                    {linkedForArchive.map((acc) => (
+                      <li key={acc.id} className="font-mono text-[11px] bg-white px-2 py-1 rounded border border-slate-200">
+                        {acc.name} ({acc.email})
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })()}
 
             <div>
               <label className="block text-slate-700 font-semibold mb-1">
@@ -3798,9 +3907,32 @@ export const MembersModule: React.FC = () => {
                 </div>
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Quando a data e o horário de encerramento forem atingidos (ou ao clicar em «Encerrar Imediatamente»), o botão de inscrição desaparecerá automaticamente do ecrã de login.
+                Quando a data e o horário de encerramento forem atingidos (ou ao clicar em «Encerrar Imediatamente»), o período será encerrado automaticamente.
               </p>
             </div>
+
+            <label className="flex items-start gap-3 p-3.5 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={enrollmentScheduleForm.enableReconfirmation}
+                onChange={(e) =>
+                  setEnrollmentScheduleForm((prev) => ({
+                    ...prev,
+                    enableReconfirmation: e.target.checked,
+                  }))
+                }
+                className="mt-0.5 w-4 h-4 rounded border-blue-300 text-blue-900 focus:ring-blue-900 shrink-0"
+              />
+              <div className="space-y-1">
+                <div className="font-bold text-blue-950 dark:text-blue-200 flex items-center gap-1.5">
+                  <RefreshCw className="w-3.5 h-3.5 text-blue-800 dark:text-blue-400" />
+                  <span>Ativar Opção de Reconfirmação de Dados dos Membros</span>
+                </div>
+                <p className="text-[11px] text-blue-900/90 dark:text-blue-300 leading-relaxed">
+                  Permite que os membros já registados e inscritos reconfirmem e atualizem os seus dados cadastrais e documentos durante este período. Após o término do período, os membros com ficha válida que passaram na inscrição ou concluíram a reconfirmação ficarão <strong>Ativos</strong>, enquanto os membros registados que não reconfirmarem serão marcados automaticamente como <strong>Inativos</strong>.
+                </p>
+              </div>
+            </label>
 
             <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200 dark:border-slate-700">
               {state.settings.enrollmentConfig?.isOpen !== false ? (

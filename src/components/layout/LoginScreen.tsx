@@ -7,6 +7,7 @@ import {
   UserPlus,
   CheckCircle2,
   Clock,
+  RefreshCw,
   Search,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
@@ -14,10 +15,13 @@ import { doc, getDoc, getDocFromServer } from 'firebase/firestore';
 import { db, auth, setPersistence, browserLocalPersistence, browserSessionPersistence } from '../../firebase';
 import { Modal } from '../common/Modal';
 import { MemberRegistrationForm } from '../members/MemberRegistrationForm';
+import { MemberReconfirmationForm } from '../members/MemberReconfirmationForm';
 import { EnrollmentStatusCard } from '../members/EnrollmentStatusCard';
-import { MemberEnrollmentRequest } from '../../types';
+import { Member, MemberEnrollmentRequest } from '../../types';
+import { formatDateTimeAO } from '../../utils/date';
 import {
   evaluateEnrollmentAvailability,
+  findMemberForReconfirmation,
   lookupMemberOrEnrollmentStatus,
   reconcileApprovedEnrollmentsWithMembers,
   UnifiedEnrollmentLookupResult,
@@ -43,6 +47,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     refreshFromCloud,
     isCloudLoading,
     submitEnrollmentRequest,
+    submitMemberReconfirmation,
     createSelfServiceMemberAccount,
   } = useClub();
   const [identifier, setIdentifier] = useState('');
@@ -54,11 +59,20 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   // Estados de Inscrição Direta no Clube (Ecrã de Login)
   const [isEnrollmentModalOpen, setIsEnrollmentModalOpen] = useState(false);
-  const [enrollmentModalTab, setEnrollmentModalTab] = useState<'form' | 'status'>('form');
+  const [enrollmentModalTab, setEnrollmentModalTab] = useState<'form' | 'reconfirmation' | 'status'>('form');
   const [submittedRequest, setSubmittedRequest] = useState<MemberEnrollmentRequest | null>(null);
   const [statusLookupBI, setStatusLookupBI] = useState('');
   const [statusLookupBirth, setStatusLookupBirth] = useState('');
   const [lookupResult, setLookupResult] = useState<UnifiedEnrollmentLookupResult | null | 'not_found'>(null);
+
+  // Estados de Reconfirmação de Dados dos Membros (Ecrã de Login)
+  const [reconfLookupId, setReconfLookupId] = useState('');
+  const [reconfLookupBirth, setReconfLookupBirth] = useState('');
+  const [reconfLookupError, setReconfLookupError] = useState<string | null>(null);
+  const [reconfTargetMember, setReconfTargetMember] = useState<Member | null>(null);
+  const [reconfirmedMember, setReconfirmedMember] = useState<Member | null>(null);
+  const [isSearchingReconf, setIsSearchingReconf] = useState(false);
+
   const [nowTick, setNowTick] = useState<Date>(() => new Date());
 
   React.useEffect(() => {
@@ -75,7 +89,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     if (!enrollmentAvailability.isCurrentlyOpen && enrollmentModalTab === 'form' && !submittedRequest) {
       setEnrollmentModalTab('status');
     }
-  }, [enrollmentAvailability.isCurrentlyOpen, enrollmentModalTab, submittedRequest]);
+    if (!enrollmentAvailability.isReconfirmationOpen && enrollmentModalTab === 'reconfirmation' && !reconfirmedMember) {
+      setEnrollmentModalTab('status');
+    }
+  }, [
+    enrollmentAvailability.isCurrentlyOpen,
+    enrollmentAvailability.isReconfirmationOpen,
+    enrollmentModalTab,
+    submittedRequest,
+    reconfirmedMember,
+  ]);
 
   const GENERIC_LOGIN_ERROR = 'Não foi possível iniciar sessão. Verifique as credenciais ou contacte o administrador.';
 
@@ -197,20 +220,27 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         return;
       }
 
-      // 7. Verificação de conta ativa e confirmação do Diretor na nuvem
+      const resolvedMember =
+        user.linkedMemberId
+          ? membersToSearch.find((m: any) => m && (m.id === user.linkedMemberId || m.manualNumber === user.linkedMemberId))
+          : matchingMember;
+
+      // 7. Verificação de conta ativa, arquivamento da ficha e confirmação do Diretor na nuvem
       if (user.active === false) {
         if (isPendingMemberAccountConfirmation(user)) {
           setErrorMessage('A sua conta de login foi criada e aguarda confirmação do Diretor para ser ativada.');
+        } else if (user.deactivatedByArchive || resolvedMember?.status === 'arquivado') {
+          setErrorMessage('A sua ficha de membro encontra-se arquivada e a sua conta de login foi desativada. Contacte a Direção ou Secretaria.');
         } else {
           setErrorMessage(GENERIC_LOGIN_ERROR);
         }
         return;
       }
 
-      const resolvedMember =
-        user.linkedMemberId
-          ? membersToSearch.find((m: any) => m && (m.id === user.linkedMemberId || m.manualNumber === user.linkedMemberId))
-          : undefined;
+      if (resolvedMember?.status === 'arquivado' && user.role !== 'admin_tecnico' && user.id !== 'INST-001' && user.id !== 'USR-ADMIN') {
+        setErrorMessage('A sua ficha de membro encontra-se arquivada e a sua conta de login foi desativada. Contacte a Direção ou Secretaria.');
+        return;
+      }
 
       const syncedLoginUser =
         resolvedMember && user.role !== 'admin_tecnico' && user.id !== 'INST-001' && user.id !== 'USR-ADMIN'
@@ -303,6 +333,58 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setLookupResult(match || 'not_found');
   };
 
+  const handleLookupMemberForReconfirmation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setReconfLookupError(null);
+    setIsSearchingReconf(true);
+    let members = state.members || [];
+    let requests = state.enrollmentRequests || [];
+    let currentYear = state.settings.currentYear || new Date().getFullYear();
+    let deletions = state.deletionRequests || [];
+    let auditLogs = state.auditLogs || [];
+
+    try {
+      if (db && (db as any).app) {
+        try {
+          const snap = await getDocFromServer(doc(db, 'club_data', 'main_state')).catch(() =>
+            getDoc(doc(db, 'club_data', 'main_state'))
+          );
+          if (snap && snap.exists()) {
+            const cloudData = snap.data();
+            if (cloudData) {
+              if (Array.isArray(cloudData.members)) members = cloudData.members;
+              if (Array.isArray(cloudData.enrollmentRequests)) requests = cloudData.enrollmentRequests;
+              if (Array.isArray(cloudData.deletionRequests)) deletions = cloudData.deletionRequests;
+              if (Array.isArray(cloudData.auditLogs)) auditLogs = cloudData.auditLogs;
+              if (cloudData.settings?.currentYear) currentYear = cloudData.settings.currentYear;
+              syncFromCloud(cloudData);
+            }
+          }
+        } catch {
+          // Usa estado local em cache
+        }
+      }
+
+      const reconciled = reconcileApprovedEnrollmentsWithMembers(
+        members,
+        requests,
+        currentYear,
+        deletions,
+        auditLogs
+      );
+      const res = findMemberForReconfirmation(reconciled.members, reconfLookupId, reconfLookupBirth);
+      if (res.found) {
+        setReconfTargetMember(res.member);
+        setReconfirmedMember(null);
+      } else {
+        setReconfTargetMember(null);
+        setReconfLookupError(res.error);
+      }
+    } finally {
+      setIsSearchingReconf(false);
+    }
+  };
+
   return (
     <div className="min-h-[100dvh] flex items-center justify-center bg-slate-900 p-4 safe-area-pt safe-area-pb">
       <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 sm:p-8 my-auto">
@@ -385,7 +467,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               </button>
             </form>
 
-            {/* Secção de Inscrição Direta no Clube (Exclusiva do Ecrã de Login) */}
+            {/* Secção de Inscrição e Reconfirmação Direta no Clube (Exclusiva do Ecrã de Login) */}
             <div className="pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2">
               {enrollmentAvailability.isCurrentlyOpen && (
                 <button
@@ -400,6 +482,23 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 >
                   <UserPlus className="w-4 h-4 text-emerald-700" />
                   <span>Fazer Inscrição no Clube</span>
+                </button>
+              )}
+              {enrollmentAvailability.isReconfirmationOpen && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void refreshFromCloud();
+                    setReconfLookupError(null);
+                    setReconfTargetMember(null);
+                    setReconfirmedMember(null);
+                    setEnrollmentModalTab('reconfirmation');
+                    setIsEnrollmentModalOpen(true);
+                  }}
+                  className="w-full py-2.5 px-4 bg-blue-50 hover:bg-blue-100 text-blue-900 border border-blue-200 rounded-lg font-bold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <RefreshCw className="w-4 h-4 text-blue-800" />
+                  <span>Fazer Reconfirmação de Dados</span>
                 </button>
               )}
               <button
@@ -462,20 +561,29 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         )}
       </div>
 
-      {/* Modal: Inscrição Direta no Clube (Ecrã de Login) */}
+      {/* Modal: Inscrição, Reconfirmação e Consulta de Estado (Ecrã de Login) */}
       <Modal
         isOpen={isEnrollmentModalOpen}
         onClose={() => {
           setIsEnrollmentModalOpen(false);
           setSubmittedRequest(null);
+          setReconfirmedMember(null);
         }}
-        title="Inscrição Direta no Clube"
-        description="Preencha a ficha oficial de inscrição para avaliação e autorização da Secretaria do Clube."
+        title={
+          enrollmentAvailability.isReconfirmationOpen
+            ? 'Inscrição & Reconfirmação no Clube'
+            : 'Inscrição Direta no Clube'
+        }
+        description={
+          enrollmentAvailability.isReconfirmationOpen
+            ? 'Submeta uma nova inscrição, reconfirme/atualize os dados da sua ficha de membro ou consulte o seu estado.'
+            : 'Preencha a ficha oficial de inscrição para avaliação e autorização da Secretaria do Clube.'
+        }
         maxWidth="3xl"
       >
         <div className="space-y-5">
-          {/* Alternador entre Formulário de Inscrição e Consulta de Estado */}
-          <div className="flex border-b border-slate-200 dark:border-slate-700 gap-4">
+          {/* Alternador entre Inscrição, Reconfirmação e Consulta de Estado */}
+          <div className="flex flex-wrap border-b border-slate-200 dark:border-slate-700 gap-4">
             {enrollmentAvailability.isCurrentlyOpen && (
               <button
                 type="button"
@@ -488,6 +596,20 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               >
                 <UserPlus className="w-3.5 h-3.5" />
                 <span>Formulário de Inscrição</span>
+              </button>
+            )}
+            {enrollmentAvailability.isReconfirmationOpen && (
+              <button
+                type="button"
+                onClick={() => setEnrollmentModalTab('reconfirmation')}
+                className={`pb-2.5 px-1 text-xs font-bold border-b-2 transition-colors flex items-center gap-1.5 ${
+                  enrollmentModalTab === 'reconfirmation'
+                    ? 'border-blue-900 text-blue-900 dark:border-blue-400 dark:text-blue-400'
+                    : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+                }`}
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Reconfirmação de Dados</span>
               </button>
             )}
             <button
@@ -588,6 +710,154 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 }}
               />
             )
+          ) : enrollmentModalTab === 'reconfirmation' && (enrollmentAvailability.isReconfirmationOpen || reconfirmedMember) ? (
+            reconfirmedMember ? (
+              <div className="p-5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl space-y-4 text-xs">
+                <div className="flex items-start gap-3">
+                  <CheckCircle2 className="w-6 h-6 text-emerald-700 dark:text-emerald-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h3 className="text-sm font-black text-emerald-950 dark:text-emerald-200">
+                      Reconfirmação de Dados Concluída com Sucesso!
+                    </h3>
+                    <p className="text-emerald-900 dark:text-emerald-300 mt-1 leading-relaxed">
+                      Os seus dados cadastrais e documentos foram atualizados e confirmados na Secretaria. O seu estado permanecerá <strong>Ativo</strong> após o encerramento do período.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-white dark:bg-slate-800 p-4 rounded-lg border border-emerald-200 dark:border-emerald-800/60 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Nome Completo</span>
+                    <span className="font-semibold text-slate-900 dark:text-white">{reconfirmedMember.fullName}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Nº de Matrícula</span>
+                    <span className="font-mono font-black text-blue-900 dark:text-blue-300">{reconfirmedMember.manualNumber}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Estado Atual</span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-900 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-bold text-[10px]">
+                      Ativo · Reconfirmado
+                    </span>
+                  </div>
+                  {reconfirmedMember.lastReconfirmedAt && (
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Data da Reconfirmação</span>
+                      <span className="font-semibold text-slate-900 dark:text-white">
+                        {formatDateTimeAO(reconfirmedMember.lastReconfirmedAt)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReconfirmedMember(null);
+                      setReconfTargetMember(null);
+                    }}
+                    className="px-4 py-2 text-xs font-semibold text-emerald-900 dark:text-emerald-300 bg-white dark:bg-slate-800 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                  >
+                    Reconfirmar Outro Membro
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEnrollmentModalOpen(false);
+                      setReconfirmedMember(null);
+                      setReconfTargetMember(null);
+                    }}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg transition-colors"
+                  >
+                    Concluir
+                  </button>
+                </div>
+              </div>
+            ) : reconfTargetMember ? (
+              <div className="space-y-3">
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReconfTargetMember(null);
+                      setReconfLookupError(null);
+                    }}
+                    className="text-[11px] font-semibold text-blue-900 dark:text-blue-300 hover:underline"
+                  >
+                    ← Localizar outro registo
+                  </button>
+                </div>
+                <MemberReconfirmationForm
+                  member={reconfTargetMember}
+                  currentPeriodId={enrollmentAvailability.periodId}
+                  onSubmit={async (formData) => {
+                    const res = await submitMemberReconfirmation(reconfTargetMember.id, formData);
+                    if (res.success && res.member) {
+                      setReconfirmedMember(res.member);
+                      setReconfTargetMember(res.member);
+                    }
+                    return res;
+                  }}
+                  onCancel={() => {
+                    setReconfTargetMember(null);
+                    setIsEnrollmentModalOpen(false);
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="space-y-4 text-xs">
+                <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Membros já registados ou com inscrição validada: introduza o seu{' '}
+                  <strong className="text-slate-900 dark:text-white">Número do B.I. (ou Nº de Matrícula)</strong> e a sua{' '}
+                  <strong className="text-slate-900 dark:text-white">Data de Nascimento</strong> para confirmar e atualizar os seus dados e documentos.
+                </p>
+
+                {reconfLookupError && (
+                  <div className="p-3 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 rounded-lg flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{reconfLookupError}</span>
+                  </div>
+                )}
+
+                <form onSubmit={handleLookupMemberForReconfirmation} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                  <div>
+                    <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">Nº do B.I. ou Matrícula</label>
+                    <input
+                      type="text"
+                      placeholder="007849312LA041 ou EBX-..."
+                      value={reconfLookupId}
+                      onChange={(e) => {
+                        setReconfLookupId(e.target.value);
+                        setReconfLookupError(null);
+                      }}
+                      className="w-full p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded font-mono uppercase focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">Data de Nascimento</label>
+                    <input
+                      type="date"
+                      value={reconfLookupBirth}
+                      onChange={(e) => {
+                        setReconfLookupBirth(e.target.value);
+                        setReconfLookupError(null);
+                      }}
+                      className="w-full p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
+                      required
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isSearchingReconf}
+                    className="px-4 py-2 bg-blue-900 hover:bg-blue-800 text-white font-bold rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {isSearchingReconf ? 'A localizar...' : 'Localizar Registo'}
+                  </button>
+                </form>
+              </div>
+            )
           ) : (
             <div className="space-y-4 text-xs">
               <p className="text-slate-600 dark:text-slate-300">
@@ -643,6 +913,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 <EnrollmentStatusCard
                   registeredMember={lookupResult.member}
                   request={lookupResult.request}
+                  reconfirmationInfo={{
+                    isReconfirmationOpen: enrollmentAvailability.isReconfirmationOpen,
+                    periodId: enrollmentAvailability.periodId,
+                    onStartReconfirmation: (m) => {
+                      setReconfTargetMember(m);
+                      setReconfirmedMember(null);
+                      setReconfLookupError(null);
+                      setEnrollmentModalTab('reconfirmation');
+                    },
+                  }}
                   selfServiceAccount={{
                     users: state.users,
                     onCreateAccount: createSelfServiceMemberAccount,

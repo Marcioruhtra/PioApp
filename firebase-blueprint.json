@@ -131,7 +131,11 @@
         "photoDocumentFileName": { "type": "string" },
         "photoDocumentBase64": { "type": "string" },
         "attachedDocuments": { "type": "array" },
-        "documentationStatus": { "type": "string" }
+        "documentationStatus": { "type": "string" },
+        "enrolledPeriodId": { "type": "string" },
+        "lastReconfirmedPeriodId": { "type": "string" },
+        "lastReconfirmedAt": { "type": "string" },
+        "reconfirmationCount": { "type": "number" }
       },
       "required": ["id", "manualNumber", "fullName", "birthDate", "identityCardNumber"]
     }

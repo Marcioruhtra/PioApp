@@ -75,6 +75,7 @@ import {
 } from '../services/permissionService';
 import {
   MemberRegistrationFormData,
+  MemberReconfirmationInput,
   validateEnrollmentSubmission,
   buildEnrollmentRequest,
   buildApprovedMemberFromEnrollment,
@@ -86,6 +87,9 @@ import {
   validateEnrollmentScheduleInput,
   evaluateEnrollmentAvailability,
   formatScheduleDateTimeLabel,
+  applyMemberReconfirmation,
+  finalizeEndedEnrollmentPeriod,
+  buildResubmittedEnrollmentRequest,
 } from '../services/enrollmentService';
 import { createAuditLog } from '../services/auditService';
 import { getNowISOString, formatDateAO, generateManualNumber } from '../utils/date';
@@ -104,6 +108,9 @@ import {
   syncUserWithLinkedMember,
   getStrictLinkedMember,
   removeLinkedAccountsForMember,
+  deactivateLinkedAccountsForMember,
+  reactivateLinkedAccountsForMember,
+  resolveLinkedMember,
   isDirectionMember,
   isDirectionRole,
   buildSelfServiceMemberAccount,
@@ -148,6 +155,10 @@ interface ClubContextValue {
   submitEnrollmentRequest: (
     data: MemberRegistrationFormData
   ) => Promise<{ success: boolean; request?: MemberEnrollmentRequest; error?: string }>;
+  resubmitEnrollmentRequest: (
+    rejectedProtocolNumber: string,
+    data: MemberRegistrationFormData
+  ) => Promise<{ success: boolean; request?: MemberEnrollmentRequest; error?: string }>;
   markEnrollmentUnderReview: (
     requestId: string
   ) => { success: boolean; request?: MemberEnrollmentRequest; error?: string };
@@ -180,11 +191,21 @@ interface ClubContextValue {
     openTime?: string;
     closeDate?: string;
     closeTime?: string;
+    enableReconfirmation?: boolean;
   }) => { success: boolean; config?: EnrollmentScheduleConfig; error?: string };
   closeEnrollmentsImmediately: () => {
     success: boolean;
     config?: EnrollmentScheduleConfig;
+    summary?: EnrollmentScheduleConfig['finalizationSummary'];
     error?: string;
+  };
+  submitMemberReconfirmation: (
+    memberId: string,
+    data: MemberReconfirmationInput
+  ) => Promise<{ success: boolean; member?: Member; error?: string }>;
+  finalizeEnrollmentPeriodIfEnded: () => {
+    finalized: boolean;
+    summary?: EnrollmentScheduleConfig['finalizationSummary'];
   };
 
   // Tesouraria
@@ -340,7 +361,7 @@ interface ClubContextValue {
     userId: string,
     reason?: string
   ) => { success: boolean; error?: string };
-  toggleUserActive: (userId: string) => void;
+  toggleUserActive: (userId: string) => { success: boolean; error?: string };
   deleteUserAccount: (userId: string) => { success: boolean; error?: string };
   updateSettings: (newSettings: Partial<ClubSettings>) => void;
   openNewFiscalYear: (year: number) => { success: boolean; error?: string };
@@ -555,12 +576,25 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
     const reconciled = reconcileUsersAndMembers(remoteUsers, reconciledEnrollments.members);
 
+    const finalizedOnSync = finalizeEndedEnrollmentPeriod({
+      members: reconciled.members,
+      enrollmentRequests: reconciledEnrollments.enrollmentRequests,
+      config: remoteSettings.enrollmentConfig,
+    });
+    const postFinalizedMembers = finalizedOnSync.hasChanges ? finalizedOnSync.members : reconciled.members;
+    const postFinalizedUsers = finalizedOnSync.hasChanges
+      ? reconcileUsersAndMembers(reconciled.users, postFinalizedMembers).users
+      : reconciled.users;
+    const postFinalizedSettings = finalizedOnSync.hasChanges
+      ? { ...remoteSettings, enrollmentConfig: finalizedOnSync.config }
+      : remoteSettings;
+
     // Atualiza em tempo real os dados do utilizador atualmente autenticado neste dispositivo (ex: nome, email, Nº de Membro, senha, cargo, estado ativo)
     let nextCurrentUser = prev.currentUser
       ? { ...prev.currentUser, role: sanitizeRoleType(prev.currentUser.role) }
       : prev.currentUser;
-    if (prev.currentUser && prev.currentUser.id !== 'INST-001' && reconciled.users.length > 0) {
-      const liveUser = reconciled.users.find(
+    if (prev.currentUser && prev.currentUser.id !== 'INST-001' && postFinalizedUsers.length > 0) {
+      const liveUser = postFinalizedUsers.find(
         (u) =>
           u.id === prev.currentUser.id ||
           (u.linkedMemberId && prev.currentUser.linkedMemberId && u.linkedMemberId === prev.currentUser.linkedMemberId) ||
@@ -575,8 +609,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return {
       ...prev,
       ...remoteData,
-      users: reconciled.users,
-      members: reconciled.members,
+      users: postFinalizedUsers,
+      members: postFinalizedMembers,
       fees: Array.isArray(remoteData.fees) ? remoteData.fees : [],
       accounts: Array.isArray(remoteData.accounts) && remoteData.accounts.length > 0 ? remoteData.accounts : prev.accounts,
       receipts: Array.isArray(remoteData.receipts) ? remoteData.receipts : [],
@@ -589,7 +623,21 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       documents: Array.isArray(remoteData.documents) ? remoteData.documents : [],
       circulars: Array.isArray(remoteData.circulars) ? remoteData.circulars : [],
       paymentProofs: Array.isArray(remoteData.paymentProofs) ? remoteData.paymentProofs : [],
-      auditLogs: remoteAuditLogs,
+      auditLogs: finalizedOnSync.hasChanges
+        ? [
+            createAuditLog(
+              'SISTEMA-PERIODO',
+              'Sistema Automático',
+              'diretor',
+              'members',
+              'FINALIZACAO_AUTOMATICA_PERIODO_INSCRICAO',
+              `Período de inscrições e reconfirmação encerrado automaticamente (${(finalizedOnSync.summary?.keptActiveCount || 0) + (finalizedOnSync.summary?.activatedCount || 0)} ativos · ${finalizedOnSync.summary?.archivedCount || 0} arquivados).`,
+              finalizedOnSync.config?.periodId || 'ENROLLMENT_PERIOD',
+              'Período de Inscrições e Reconfirmação'
+            ),
+            ...remoteAuditLogs,
+          ]
+        : remoteAuditLogs,
       notifications: Array.isArray(remoteData.notifications) ? remoteData.notifications : [],
       deletionRequests: remoteDeletions,
       chaplaincyRequests: Array.isArray(remoteData.chaplaincyRequests) ? remoteData.chaplaincyRequests : [],
@@ -600,7 +648,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       quotaWaivers: Array.isArray(remoteData.quotaWaivers) ? remoteData.quotaWaivers : [],
       musicItems: Array.isArray(remoteData.musicItems) ? remoteData.musicItems : (prev.musicItems || []),
       enrollmentRequests: reconciledEnrollments.enrollmentRequests,
-      settings: remoteSettings,
+      settings: postFinalizedSettings,
       currentUser: nextCurrentUser,
     };
   };
@@ -1105,6 +1153,68 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
+  // 2. LIQUIDAÇÃO AUTOMÁTICA DO PERÍODO DE INSCRIÇÕES E RECONFIRMAÇÃO QUANDO TERMINA A DATA/HORA ESTIPULADA
+  useEffect(() => {
+    const config = state.settings.enrollmentConfig;
+    if (
+      !config ||
+      !config.enableReconfirmation ||
+      !config.periodId ||
+      config.finalizedPeriodId === config.periodId
+    ) {
+      return;
+    }
+
+    const checkAndFinalize = () => {
+      const result = finalizeEndedEnrollmentPeriod({
+        members: state.members,
+        enrollmentRequests: state.enrollmentRequests || [],
+        config: state.settings.enrollmentConfig,
+      });
+      if (!result.hasChanges || !result.config) return;
+
+      const reconciled = reconcileUsersAndMembers(state.users, result.members);
+
+      const now = getNowISOString();
+      const totalActive = (result.summary?.keptActiveCount || 0) + (result.summary?.activatedCount || 0);
+      const totalArchived = result.summary?.archivedCount || 0;
+      const auditEntry = createAuditLog(
+        'SISTEMA-PERIODO',
+        'Sistema Automático',
+        'diretor',
+        'members',
+        'FINALIZACAO_AUTOMATICA_PERIODO_INSCRICAO',
+        `Fim do período de inscrições e reconfirmação: ${totalActive} membro(s) ativo(s) e ${totalArchived} membro(s) arquivado(s) por falta de reconfirmação (contas desativadas).`,
+        result.config.periodId || 'ENROLLMENT_PERIOD',
+        'Período de Inscrições e Reconfirmação'
+      );
+
+      const nextState: ClubDatabaseState = {
+        ...state,
+        members: reconciled.members,
+        users: reconciled.users,
+        settings: {
+          ...state.settings,
+          enrollmentConfig: result.config,
+        },
+        auditLogs: [auditEntry, ...state.auditLogs],
+        updatedAt: now,
+      };
+
+      setState(nextState);
+      saveStateToStorage(nextState);
+      pushToFirestore(nextState);
+    };
+
+    checkAndFinalize();
+    const timer = setInterval(checkAndFinalize, 12000);
+    return () => clearInterval(timer);
+  }, [
+    state.settings.enrollmentConfig,
+    state.members,
+    state.enrollmentRequests,
+  ]);
+
   // 3. ENVIO CONTÍNUO DE ALTERAÇÕES LOCAIS PARA A NUVEM (APÓS CARREGAMENTO INICIAL DA NUVEM)
   useEffect(() => {
     // Nunca envia o estado inicial vazio antes de confirmar o estado vivo do Firestore
@@ -1407,10 +1517,17 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const newId = generateNextMemberId(state.members);
     const now = getNowISOString();
 
+    const activeEnrollmentConfig = state.settings.enrollmentConfig;
+    const activePeriodId =
+      activeEnrollmentConfig?.isOpen && activeEnrollmentConfig.periodId
+        ? activeEnrollmentConfig.periodId
+        : undefined;
+
     const rawNewMember: Member = {
       ...memberData,
       manualNumber: manualNum,
       id: newId,
+      enrolledPeriodId: memberData.enrolledPeriodId || activePeriodId,
       createdAt: now,
       updatedAt: now,
     };
@@ -1512,6 +1629,113 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const newState: ClubDatabaseState = {
       ...baseState,
       enrollmentRequests: [newRequest, ...existingRequests],
+      notifications: [newNotification, ...(baseState.notifications || [])],
+      auditLogs: [auditEntry, ...(baseState.auditLogs || [])],
+      updatedAt: now,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    await pushToFirestore(newState);
+
+    return { success: true, request: newRequest };
+  };
+
+  const resubmitEnrollmentRequest = async (
+    rejectedProtocolNumber: string,
+    data: MemberRegistrationFormData
+  ): Promise<{ success: boolean; request?: MemberEnrollmentRequest; error?: string }> => {
+    let baseState = state;
+    if (db && (db as any).app) {
+      try {
+        let snap: any = null;
+        try {
+          snap = await getDocFromServer(doc(db, 'club_data', 'main_state'));
+        } catch {
+          snap = await getDoc(doc(db, 'club_data', 'main_state')).catch(() => null);
+        }
+        if (snap && snap.exists()) {
+          const cloudData = snap.data() as ClubDatabaseState;
+          if (cloudData) {
+            baseState = normalizeCloudState(cloudData, state);
+          }
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    const availability = evaluateEnrollmentAvailability(baseState.settings.enrollmentConfig);
+    if (!availability.isCurrentlyOpen) {
+      return {
+        success: false,
+        error: availability.reasonLabel || 'As inscrições no clube encontram-se encerradas no momento.',
+      };
+    }
+
+    const existingRequests = baseState.enrollmentRequests || [];
+    const rejectedReq = existingRequests.find(
+      (r) => r.protocolNumber === rejectedProtocolNumber || r.id === rejectedProtocolNumber
+    );
+    if (!rejectedReq || rejectedReq.status !== 'rejeitado') {
+      return { success: false, error: 'Inscrição recusada não encontrada.' };
+    }
+
+    const activeRequestsForValidation = existingRequests.filter(
+      (r) => r.protocolNumber !== rejectedReq.protocolNumber
+    );
+    const validation = validateEnrollmentSubmission(data, baseState.members, activeRequestsForValidation);
+    if (!validation.valid || !validation.resolvedManualNumber) {
+      return { success: false, error: validation.error || 'Dados de inscrição inválidos.' };
+    }
+
+    const newRequest = buildResubmittedEnrollmentRequest(
+      rejectedReq,
+      data,
+      validation.resolvedManualNumber,
+      baseState.settings.currentYear || new Date().getFullYear(),
+      existingRequests,
+      currentUser?.id && currentUser.id !== 'USR-GUEST' ? currentUser.id : undefined
+    );
+
+    const updatedRequests = [
+      newRequest,
+      ...existingRequests.filter((r) => r.protocolNumber !== rejectedReq.protocolNumber),
+    ];
+
+    const activeMatrix = baseState.settings.permissionsMatrix || ROLE_PERMISSIONS_MATRIX;
+    const targetRoles = (Object.keys(ROLE_LABELS) as RoleType[]).filter((r) =>
+      hasApproveEnrollmentPermission(r, activeMatrix)
+    );
+
+    const newNotification: ClubNotification = {
+      id: `NOTIF-RESUB-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: 'Inscrição Refeita após Recusa',
+      message: `${newRequest.fullName} refez a sua inscrição após recusa anterior (Novo Protocolo: ${newRequest.protocolNumber}) e aguarda autorização.`,
+      timestamp: newRequest.submittedAt,
+      read: false,
+      category: 'member',
+      targetModule: 'members',
+      targetId: newRequest.id,
+      recipientRoles: targetRoles.length > 0 ? targetRoles : ['secretario', 'admin_tecnico'],
+      priority: 'alta',
+    };
+
+    const auditEntry = createAuditLog(
+      currentUser?.id || 'AUTO-INSCRICAO',
+      currentUser?.id && currentUser.id !== 'USR-GUEST' ? currentUser.name : newRequest.fullName,
+      currentUser?.id && currentUser.id !== 'USR-GUEST' ? currentUser.role : 'membro',
+      'members',
+      'REFAZER_INSCRICAO',
+      `Inscrição refeita a partir da recusada ${rejectedReq.protocolNumber} -> Novo Protocolo ${newRequest.protocolNumber}`,
+      newRequest.protocolNumber,
+      newRequest.fullName
+    );
+
+    const now = getNowISOString();
+    const newState: ClubDatabaseState = {
+      ...baseState,
+      enrollmentRequests: updatedRequests,
       notifications: [newNotification, ...(baseState.notifications || [])],
       auditLogs: [auditEntry, ...(baseState.auditLogs || [])],
       updatedAt: now,
@@ -1672,7 +1896,14 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: built.error || 'Não foi possível criar a ficha do membro.' };
     }
 
-    const createdMember = built.member;
+    const activePeriodCfg = state.settings.enrollmentConfig;
+    const activePeriodId =
+      activePeriodCfg?.isOpen && activePeriodCfg.periodId ? activePeriodCfg.periodId : undefined;
+
+    const createdMember: Member = {
+      ...built.member,
+      ...(activePeriodId ? { enrolledPeriodId: activePeriodId } : {}),
+    };
     const updatedRequest = markEnrollmentReviewed(targetReq, 'aprovado', currentUser, {
       reason: options?.reason,
       createdMemberId: createdMember.id,
@@ -1775,6 +2006,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     openTime?: string;
     closeDate?: string;
     closeTime?: string;
+    enableReconfirmation?: boolean;
   }): { success: boolean; config?: EnrollmentScheduleConfig; error?: string } => {
     if (!hasManageEnrollmentPeriodPermission(currentUser.role, state.settings.permissionsMatrix)) {
       return {
@@ -1792,8 +2024,14 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const now = getNowISOString();
+    const periodId = `PER-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const enableReconfirmation = Boolean(schedule.enableReconfirmation);
+
     const nextConfig: EnrollmentScheduleConfig = {
       isOpen: true,
+      periodId,
+      enableReconfirmation,
+      openedAt: now,
       openDate: validation.normalized.openDate,
       openTime: validation.normalized.openTime,
       closeDate: validation.normalized.closeDate,
@@ -1817,13 +2055,24 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       currentUser.role,
       'members',
       'REABERTURA_INSCRICOES',
-      `Período de inscrições reaberto (${openDesc} · ${closeDesc}).`,
-      'ENROLLMENT_PERIOD',
+      `Período de inscrições reaberto (${openDesc} · ${closeDesc} · ${enableReconfirmation ? 'Com Reconfirmação de Dados Ativa' : 'Apenas Novas Inscrições'}).`,
+      periodId,
       'Período de Inscrições'
     );
 
+    const updatedUsers = enableReconfirmation
+      ? state.users.map((u) => {
+          if (!u) return u;
+          if (isInstitutionalAccountRecord(u) || u.role === 'diretor' || u.role === 'secretario') {
+            return u;
+          }
+          return { ...u, active: false };
+        })
+      : state.users;
+
     const nextState: ClubDatabaseState = {
       ...state,
+      users: updatedUsers,
       settings: {
         ...state.settings,
         enrollmentConfig: nextConfig,
@@ -1842,6 +2091,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const closeEnrollmentsImmediately = (): {
     success: boolean;
     config?: EnrollmentScheduleConfig;
+    summary?: EnrollmentScheduleConfig['finalizationSummary'];
     error?: string;
   } => {
     if (!hasManageEnrollmentPeriodPermission(currentUser.role, state.settings.permissionsMatrix)) {
@@ -1852,7 +2102,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const now = getNowISOString();
-    const nextConfig: EnrollmentScheduleConfig = {
+    const existingCfg = state.settings.enrollmentConfig;
+    const closedBaseConfig: EnrollmentScheduleConfig = {
+      ...(existingCfg || {}),
       isOpen: false,
       closedImmediatelyAt: now,
       updatedAt: now,
@@ -1861,22 +2113,42 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updatedByRole: currentUser.role,
     };
 
+    const finalizedResult = finalizeEndedEnrollmentPeriod({
+      members: state.members,
+      enrollmentRequests: state.enrollmentRequests || [],
+      config: closedBaseConfig,
+      now: new Date(now),
+    });
+
+    const finalConfig = finalizedResult.hasChanges && finalizedResult.config
+      ? finalizedResult.config
+      : closedBaseConfig;
+    const finalMembers = finalizedResult.hasChanges ? finalizedResult.members : state.members;
+    const finalUsers = finalizedResult.hasChanges
+      ? reconcileUsersAndMembers(state.users, finalMembers).users
+      : state.users;
+    const summaryDesc = finalizedResult.hasChanges && finalizedResult.summary
+      ? ` Estado automático atualizado: ${finalizedResult.summary.keptActiveCount + finalizedResult.summary.activatedCount} membro(s) ativo(s) e ${finalizedResult.summary.archivedCount} membro(s) arquivado(s) por falta de reconfirmação (contas desativadas).`
+      : '';
+
     const auditEntry = createAuditLog(
       currentUser.id,
       currentUser.name,
       currentUser.role,
       'members',
       'ENCERRAMENTO_INSCRICOES',
-      'Inscrições no clube encerradas imediatamente.',
-      'ENROLLMENT_PERIOD',
+      `Inscrições no clube encerradas imediatamente.${summaryDesc}`,
+      finalConfig.periodId || 'ENROLLMENT_PERIOD',
       'Período de Inscrições'
     );
 
     const nextState: ClubDatabaseState = {
       ...state,
+      members: finalMembers,
+      users: finalUsers,
       settings: {
         ...state.settings,
-        enrollmentConfig: nextConfig,
+        enrollmentConfig: finalConfig,
       },
       auditLogs: [auditEntry, ...state.auditLogs],
       updatedAt: now,
@@ -1886,7 +2158,163 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     saveStateToStorage(nextState);
     pushToFirestore(nextState);
 
-    return { success: true, config: nextConfig };
+    return { success: true, config: finalConfig, summary: finalizedResult.summary };
+  };
+
+  const finalizeEnrollmentPeriodIfEnded = (): {
+    finalized: boolean;
+    summary?: EnrollmentScheduleConfig['finalizationSummary'];
+  } => {
+    const result = finalizeEndedEnrollmentPeriod({
+      members: state.members,
+      enrollmentRequests: state.enrollmentRequests || [],
+      config: state.settings.enrollmentConfig,
+    });
+    if (!result.hasChanges || !result.config) {
+      return { finalized: false };
+    }
+
+    const reconciled = reconcileUsersAndMembers(state.users, result.members);
+
+    const now = getNowISOString();
+    const totalActive = (result.summary?.keptActiveCount || 0) + (result.summary?.activatedCount || 0);
+    const totalArchived = result.summary?.archivedCount || 0;
+    const auditEntry = createAuditLog(
+      'SISTEMA-PERIODO',
+      'Sistema Automático',
+      'diretor',
+      'members',
+      'FINALIZACAO_AUTOMATICA_PERIODO_INSCRICAO',
+      `Fim do período de inscrições e reconfirmação: ${totalActive} membro(s) ativo(s) e ${totalArchived} membro(s) arquivado(s) por falta de reconfirmação (contas desativadas).`,
+      result.config.periodId || 'ENROLLMENT_PERIOD',
+      'Período de Inscrições e Reconfirmação'
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      members: reconciled.members,
+      users: reconciled.users,
+      settings: {
+        ...state.settings,
+        enrollmentConfig: result.config,
+      },
+      auditLogs: [auditEntry, ...state.auditLogs],
+      updatedAt: now,
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
+    return { finalized: true, summary: result.summary };
+  };
+
+  const submitMemberReconfirmation = async (
+    memberId: string,
+    data: MemberReconfirmationInput
+  ): Promise<{ success: boolean; member?: Member; error?: string }> => {
+    let baseState = state;
+
+    if (db && (db as any).app) {
+      try {
+        let snap: any = null;
+        try {
+          snap = await getDocFromServer(doc(db, 'club_data', 'main_state'));
+        } catch {
+          snap = await getDoc(doc(db, 'club_data', 'main_state')).catch(() => null);
+        }
+        if (snap && snap.exists()) {
+          const cloudData = snap.data() as ClubDatabaseState;
+          if (cloudData) {
+            baseState = normalizeCloudState(cloudData, state);
+          }
+        }
+      } catch {
+        // Continua com baseState local caso esteja offline
+      }
+    }
+
+    const availability = evaluateEnrollmentAvailability(baseState.settings.enrollmentConfig);
+    if (!availability.isCurrentlyOpen || !availability.enableReconfirmation) {
+      return {
+        success: false,
+        error: 'O período de reconfirmação de dados dos membros não está aberto neste momento.',
+      };
+    }
+
+    const targetMember = (baseState.members || []).find((m) => m.id === memberId);
+    if (!targetMember) {
+      return { success: false, error: 'Ficha de membro não encontrada para reconfirmação.' };
+    }
+
+    const now = getNowISOString();
+    const applied = applyMemberReconfirmation({
+      member: targetMember,
+      existingMembers: baseState.members,
+      data,
+      periodId: baseState.settings.enrollmentConfig?.periodId,
+      users: baseState.users,
+      nowISO: now,
+    });
+
+    if (!applied.success || !applied.updatedMember) {
+      return { success: false, error: applied.error || 'Não foi possível validar os dados de reconfirmação.' };
+    }
+
+    const updatedMember = applied.updatedMember;
+    const nextMembers = baseState.members.map((m) => (m.id === updatedMember.id ? updatedMember : m));
+    const nextUsers = applied.updatedUsers || baseState.users;
+
+    const syncedCurrentUser =
+      baseState.currentUser && baseState.currentUser.id !== 'USR-GUEST' && baseState.currentUser.id !== 'INST-001'
+        ? nextUsers.find(
+            (u) => u.id === baseState.currentUser.id || u.linkedMemberId === updatedMember.id
+          ) || baseState.currentUser
+        : baseState.currentUser;
+
+    if (syncedCurrentUser && syncedCurrentUser.id !== 'USR-GUEST' && syncedCurrentUser !== baseState.currentUser) {
+      syncStoredSessionUser(syncedCurrentUser);
+    }
+
+    const newNotification: ClubNotification = {
+      id: `NOTIF-REC-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: 'Reconfirmação de Dados Concluída',
+      message: `${updatedMember.fullName} (${updatedMember.manualNumber}) reconfirmou e atualizou os seus dados cadastrais e documentos.`,
+      timestamp: now,
+      read: false,
+      category: 'member',
+      targetModule: 'members',
+      targetId: updatedMember.id,
+      recipientRoles: ['diretor', 'secretario', 'admin_tecnico'],
+      priority: 'normal',
+    };
+
+    const auditEntry = createAuditLog(
+      currentUser?.id && currentUser.id !== 'USR-GUEST' ? currentUser.id : updatedMember.id,
+      currentUser?.id && currentUser.id !== 'USR-GUEST' ? currentUser.name : updatedMember.fullName,
+      currentUser?.id && currentUser.id !== 'USR-GUEST' ? currentUser.role : 'membro',
+      'members',
+      'RECONFIRMACAO_MEMBRO',
+      `Reconfirmação de dados e documentos concluída por ${updatedMember.fullName} (Matrícula: ${updatedMember.manualNumber}).`,
+      updatedMember.id,
+      updatedMember.fullName
+    );
+
+    const newState: ClubDatabaseState = {
+      ...baseState,
+      members: nextMembers,
+      users: nextUsers,
+      currentUser: syncedCurrentUser,
+      notifications: [newNotification, ...(baseState.notifications || [])],
+      auditLogs: [auditEntry, ...(baseState.auditLogs || [])],
+      updatedAt: now,
+    };
+
+    setState(newState);
+    saveStateToStorage(newState);
+    await pushToFirestore(newState);
+
+    return { success: true, member: updatedMember };
   };
 
   const updateMemberDocumentationStatus = (
@@ -2156,10 +2584,20 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return m;
     });
 
-    // Sincronização contínua e automática para todas as contas de login vinculadas (nome, email, Nº de Membro, telefone)
-    const updatedUsers = savedUpdatedMember
+    // Sincronização contínua e automática para todas as contas de login vinculadas (nome, email, Nº de Membro, telefone e estado de arquivamento)
+    let updatedUsers = savedUpdatedMember
       ? syncMemberChangesToUsers(savedUpdatedMember, state.users, targetMember)
       : state.users;
+
+    if (savedUpdatedMember && savedUpdatedMember.status === 'arquivado') {
+      updatedUsers = deactivateLinkedAccountsForMember(updatedUsers, savedUpdatedMember).updatedUsers;
+    } else if (
+      savedUpdatedMember &&
+      targetMember?.status === 'arquivado' &&
+      savedUpdatedMember.status === 'ativo'
+    ) {
+      updatedUsers = reactivateLinkedAccountsForMember(updatedUsers, savedUpdatedMember).updatedUsers;
+    }
 
     const syncedCurrentUser =
       state.currentUser.id !== 'INST-001'
@@ -2297,28 +2735,79 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'É obrigatório indicar o motivo fundamentado do arquivamento (mínimo 5 caracteres).' };
     }
 
+    const target = state.members.find((m) => m.id === id);
+    if (!target) {
+      return { success: false, error: 'Membro não encontrado.' };
+    }
+
     const now = getNowISOString();
-    let memberName = '';
+    const cleanReason = reason.trim();
+    const memberName = target.fullName;
 
     const updated = state.members.map((m) => {
       if (m.id === id) {
-        memberName = m.fullName;
         return {
           ...m,
           status: 'arquivado' as const,
-          archiveReason: reason,
+          archiveReason: cleanReason,
           archivedAt: now,
           updatedAt: now,
         };
       }
       return m;
     });
-    const newState = { ...state, members: updated };
+
+    const { updatedUsers, deactivatedUsers } = deactivateLinkedAccountsForMember(state.users, target);
+    const deactivatedIds = new Set(deactivatedUsers.map((u) => u.id));
+    const nextCurrentUser =
+      currentUser.id !== 'INST-001' && deactivatedIds.has(currentUser.id)
+        ? updatedUsers.find((u) => u.id === currentUser.id) || currentUser
+        : currentUser;
+    if (nextCurrentUser !== currentUser) {
+      syncStoredSessionUser(nextCurrentUser);
+    }
+
+    const auditEntries: AuditLogEntry[] = [
+      createAuditLog(
+        currentUser.id,
+        currentUser.name,
+        currentUser.role,
+        'members',
+        'ARQUIVAMENTO_MEMBRO',
+        deactivatedUsers.length > 0
+          ? `Membro arquivado com autorização da Direção (${cleanReason}). Conta vinculada desativada automaticamente (${deactivatedUsers.map((u) => u.email).join(', ')}).`
+          : `Membro arquivado com autorização da Direção: ${cleanReason}`,
+        id,
+        memberName,
+        cleanReason
+      ),
+      ...deactivatedUsers.map((linkedUser) =>
+        createAuditLog(
+          currentUser.id,
+          currentUser.name,
+          currentUser.role,
+          'audit',
+          'DESATIVACAO_CONTA_VINCULADA',
+          `Conta vinculada desativada automaticamente (${linkedUser.email}) com o arquivamento do membro ${memberName}.`,
+          linkedUser.id,
+          linkedUser.email,
+          cleanReason
+        )
+      ),
+    ];
+
+    const newState = {
+      ...state,
+      members: updated,
+      users: updatedUsers,
+      currentUser: nextCurrentUser,
+      auditLogs: [...auditEntries, ...state.auditLogs],
+      updatedAt: now,
+    };
     setState(newState);
     saveStateToStorage(newState);
     pushToFirestore(newState);
 
-    logAction('members', 'ARQUIVAMENTO_MEMBRO', `Membro arquivado com autorização da Direção: ${reason}`, id, memberName, reason);
     return { success: true };
   };
 
@@ -2327,27 +2816,67 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Sem autorização para desarquivar membros.' };
     }
 
-    let memberName = '';
+    const target = state.members.find((m) => m.id === id);
+    if (!target) {
+      return { success: false, error: 'Membro não encontrado.' };
+    }
+
+    const now = getNowISOString();
+    const memberName = target.fullName;
 
     const updated = state.members.map((m) => {
       if (m.id === id) {
-        memberName = m.fullName;
         return {
           ...m,
           status: 'ativo' as const,
           archiveReason: undefined,
           archivedAt: undefined,
-          updatedAt: getNowISOString(),
+          updatedAt: now,
         };
       }
       return m;
     });
-    const newState = { ...state, members: updated };
+
+    const { updatedUsers, reactivatedUsers } = reactivateLinkedAccountsForMember(state.users, target);
+
+    const auditEntries: AuditLogEntry[] = [
+      createAuditLog(
+        currentUser.id,
+        currentUser.name,
+        currentUser.role,
+        'members',
+        'DESARQUIVAMENTO_MEMBRO',
+        reactivatedUsers.length > 0
+          ? `Membro desarquivado. Conta vinculada reativada automaticamente (${reactivatedUsers.map((u) => u.email).join(', ')}).`
+          : `Membro desarquivado`,
+        id,
+        memberName
+      ),
+      ...reactivatedUsers.map((linkedUser) =>
+        createAuditLog(
+          currentUser.id,
+          currentUser.name,
+          currentUser.role,
+          'audit',
+          'REATIVACAO_CONTA_VINCULADA',
+          `Conta vinculada reativada automaticamente (${linkedUser.email}) após desarquivamento do membro ${memberName}.`,
+          linkedUser.id,
+          linkedUser.email
+        )
+      ),
+    ];
+
+    const newState = {
+      ...state,
+      members: updated,
+      users: updatedUsers,
+      auditLogs: [...auditEntries, ...state.auditLogs],
+      updatedAt: now,
+    };
     setState(newState);
     saveStateToStorage(newState);
     pushToFirestore(newState);
 
-    logAction('members', 'DESARQUIVAMENTO_MEMBRO', `Membro desarquivado`, id, memberName);
     return { success: true };
   };
 
@@ -2526,6 +3055,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const now = getNowISOString();
     let updatedMembers = state.members;
+    let updatedUsers = state.users;
+    let removedLinkedUsers: UserAccount[] = [];
+    let deactivatedLinkedUsers: UserAccount[] = [];
 
     if (req.operationType === 'arquivamento') {
       updatedMembers = state.members.map(m => {
@@ -2540,9 +3072,11 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         return m;
       });
+      const deactivationResult = deactivateLinkedAccountsForMember(state.users, member);
+      updatedUsers = deactivationResult.updatedUsers;
+      deactivatedLinkedUsers = deactivationResult.deactivatedUsers;
     }
-    let updatedUsers = state.users;
-    let removedLinkedUsers: UserAccount[] = [];
+
     if (req.operationType === 'eliminacao') {
       // Remoção estrita do membro PRESERVANDO integralmente recibos, movimentos financeiros e documentos (Req 2.4)
       updatedMembers = state.members.filter(m => m.id !== req.targetId);
@@ -2577,7 +3111,11 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currentUser.role,
         'members',
         req.operationType === 'eliminacao' ? 'ELIMINACAO_MEMBRO_EXECUTADA' : 'ARQUIVAMENTO_MEMBRO_EXECUTADO',
-        `${req.operationType === 'eliminacao' ? 'Eliminação definitiva' : 'Arquivamento'} de ${member.fullName} executado após autorização da Direção.`,
+        req.operationType === 'eliminacao'
+          ? `Eliminação definitiva de ${member.fullName} executada após autorização da Direção.`
+          : deactivatedLinkedUsers.length > 0
+            ? `Arquivamento de ${member.fullName} executado após autorização da Direção. Conta vinculada desativada automaticamente (${deactivatedLinkedUsers.map((u) => u.email).join(', ')}).`
+            : `Arquivamento de ${member.fullName} executado após autorização da Direção.`,
         member.id,
         member.fullName,
         req.reason
@@ -2590,6 +3128,19 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
           'audit',
           'ELIMINACAO_CONTA_VINCULADA',
           `Conta vinculada eliminada automaticamente (${linkedUser.email}) com a eliminação do membro ${member.fullName}, sem necessidade de autorização prévia do administrador.`,
+          linkedUser.id,
+          linkedUser.email,
+          req.reason
+        )
+      ),
+      ...deactivatedLinkedUsers.map((linkedUser) =>
+        createAuditLog(
+          currentUser.id,
+          currentUser.name,
+          currentUser.role,
+          'audit',
+          'DESATIVACAO_CONTA_VINCULADA',
+          `Conta vinculada desativada automaticamente (${linkedUser.email}) com o arquivamento do membro ${member.fullName}.`,
           linkedUser.id,
           linkedUser.email,
           req.reason
@@ -5488,13 +6039,28 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const toggleUserActive = (userId: string) => {
-    if (!can('audit', 'ADMIN')) return;
+    if (!can('audit', 'ADMIN')) {
+      return { success: false, error: 'Apenas o Administrador Técnico pode alterar o estado de contas.' };
+    }
+    const targetUser = state.users.find((u) => u.id === userId);
+    if (!targetUser) {
+      return { success: false, error: 'Conta de utilizador não encontrada.' };
+    }
+    const linkedMember = resolveLinkedMember(targetUser, state.members);
+    if (!targetUser.active && linkedMember?.status === 'arquivado') {
+      return {
+        success: false,
+        error: `Não é possível reativar a conta enquanto a ficha de ${linkedMember.fullName} estiver arquivada. Desarquive primeiro a ficha do membro.`,
+      };
+    }
+
     const nowISO = getNowISOString();
     const updated = state.users.map((u) => {
       if (u.id === userId) {
         const nextActive = !u.active;
+        const { deactivatedByArchive: _clearedArchiveFlag, ...rest } = u;
         return {
-          ...u,
+          ...rest,
           active: nextActive,
           ...(nextActive && isPendingMemberAccountConfirmation(u)
             ? {
@@ -5512,7 +6078,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setState(newState);
     saveStateToStorage(newState);
     pushToFirestore(newState);
-    logAction('audit', 'ALTERACAO_ESTADO_CONTA', `Estado da conta alternado`, userId);
+    logAction('audit', 'ALTERACAO_ESTADO_CONTA', `Estado da conta alternado para ${!targetUser.active ? 'Ativa' : 'Desativada'}`, userId, targetUser.email);
+    return { success: true };
   };
 
   const deleteUserAccount = (userId: string) => {
@@ -6471,6 +7038,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         uploadMemberPhoto,
         deleteMemberPhoto,
         submitEnrollmentRequest,
+        resubmitEnrollmentRequest,
         markEnrollmentUnderReview,
         updateEnrollmentReviewMessage,
         approveEnrollmentRequest,
@@ -6478,6 +7046,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateMemberDocumentationStatus,
         reopenEnrollments,
         closeEnrollmentsImmediately,
+        submitMemberReconfirmation,
+        finalizeEnrollmentPeriodIfEnded,
         createReceipt,
         cancelReceipt,
         updateQuotaConfig,

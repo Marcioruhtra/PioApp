@@ -55,6 +55,9 @@ import {
   reconcileApprovedEnrollmentsWithMembers,
   validateEnrollmentScheduleInput,
   evaluateEnrollmentAvailability,
+  findMemberForReconfirmation,
+  applyMemberReconfirmation,
+  finalizeEndedEnrollmentPeriod,
 } from '../src/services/enrollmentService';
 import { formatKz } from '../src/utils/currency';
 import { formatDateAO, calculateAgeYears } from '../src/utils/date';
@@ -70,6 +73,8 @@ import {
   hasMemberPortalAccess,
   findLinkedUserAccountsForMember,
   removeLinkedAccountsForMember,
+  deactivateLinkedAccountsForMember,
+  reactivateLinkedAccountsForMember,
   isDirectionRole,
   isDirectionMember,
   getMemberTeamLabel,
@@ -78,6 +83,7 @@ import {
   buildSelfServiceMemberAccount,
   confirmPendingMemberAccount,
   rejectPendingMemberAccount,
+  isInstitutionalAccountRecord,
 } from '../src/services/accountSyncService';
 import {
   countChargeableSundays,
@@ -98,7 +104,7 @@ import {
   shouldSkipIncomingSnapshot,
   getReconnectDelayMs,
 } from '../src/services/realtimeSyncService';
-import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver, FeeDefinition } from '../src/types';
+import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver, FeeDefinition, EnrollmentScheduleConfig } from '../src/types';
 
 function runTests() {
   console.log("=== INICIANDO BATERIA COMPLETA DE TESTES DO SISTEMA ===");
@@ -3404,6 +3410,678 @@ function runTests() {
       keptMember2?.photoDocumentBase64 === 'data:image/jpeg;base64,PAULO_FOTO' &&
       keptMember2?.photoUrl === 'data:image/jpeg;base64,PAULO_FOTO',
     "Ao limpar inscrições já aprovadas, uploads correspondentes em falta são preservados/copiados para a ficha do membro ativo"
+  );
+
+  // 48. DESATIVAÇÃO AUTOMÁTICA DA CONTA DE LOGIN AO ARQUIVAR FICHA DE MEMBRO
+  console.log("\n48. Teste de Desativação Automática da Conta de Login ao Arquivar Membro:");
+
+  const memberForArchive = {
+    ...state.members[0],
+    id: 'MEM-ARCHIVE-ACCT-1',
+    manualNumber: '2026/888',
+    fullName: 'Domingos Kiala Arquivado',
+    email: 'domingos.kiala@clubedalvorada.ao',
+    status: 'ativo' as const,
+  };
+
+  const activeUserForArchive = {
+    id: 'USR-ARCHIVE-ACCT-1',
+    name: memberForArchive.fullName,
+    email: memberForArchive.email,
+    role: 'membro' as const,
+    linkedMemberId: memberForArchive.id,
+    manualNumber: memberForArchive.manualNumber,
+    active: true,
+    createdAt: '2026-01-15T10:00:00.000Z',
+  };
+
+  const preExistingInactiveUser = {
+    id: 'USR-MANUAL-INACTIVE-2',
+    name: memberForArchive.fullName,
+    email: 'outro.email@clubedalvorada.ao',
+    role: 'membro' as const,
+    linkedMemberId: memberForArchive.id,
+    manualNumber: memberForArchive.manualNumber,
+    active: false,
+    createdAt: '2026-01-10T10:00:00.000Z',
+  };
+
+  const adminProtectedUser = {
+    id: 'USR-ADMIN',
+    name: 'Administrador Técnico',
+    email: 'admin@clubedalvorada.ao',
+    role: 'admin_tecnico' as const,
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  const archiveDeactivationResult = deactivateLinkedAccountsForMember(
+    [activeUserForArchive, preExistingInactiveUser, adminProtectedUser],
+    memberForArchive
+  );
+  const deactivatedMainUser = archiveDeactivationResult.updatedUsers.find(
+    (u) => u.id === 'USR-ARCHIVE-ACCT-1'
+  );
+  const untouchedInactiveUser = archiveDeactivationResult.updatedUsers.find(
+    (u) => u.id === 'USR-MANUAL-INACTIVE-2'
+  );
+  const untouchedAdmin = archiveDeactivationResult.updatedUsers.find(
+    (u) => u.id === 'USR-ADMIN'
+  );
+
+  assert(
+    archiveDeactivationResult.deactivatedUsers.length === 1 &&
+      deactivatedMainUser?.active === false &&
+      deactivatedMainUser?.deactivatedByArchive === true &&
+      untouchedInactiveUser?.active === false &&
+      untouchedInactiveUser?.deactivatedByArchive !== true &&
+      untouchedAdmin?.active === true,
+    "Ao arquivar um membro, todas as contas ativas vinculadas são desativadas automaticamente preservando a conta institucional/admin"
+  );
+
+  // Reconciliação contínua garante que nenhuma conta vinculada a ficha arquivada permaneça ativa
+  const staleActiveUserLinkedToArchivedMember = {
+    ...activeUserForArchive,
+    active: true,
+  };
+  const archivedMemberCopy = {
+    ...memberForArchive,
+    status: 'arquivado' as const,
+  };
+  const reconciledArchived = reconcileUsersAndMembers(
+    [staleActiveUserLinkedToArchivedMember, adminProtectedUser],
+    [archivedMemberCopy]
+  );
+  const reconciledArchivedUser = reconciledArchived.users.find(
+    (u) => u.id === 'USR-ARCHIVE-ACCT-1'
+  );
+
+  assert(
+    reconciledArchived.changed === true &&
+      reconciledArchivedUser?.active === false &&
+      reconciledArchivedUser?.deactivatedByArchive === true,
+    "reconcileUsersAndMembers desativa automaticamente qualquer conta ainda ativa vinculada a ficha arquivada"
+  );
+
+  // Ao desarquivar o membro, apenas contas desativadas pelo arquivamento são reativadas
+  const reactivateResult = reactivateLinkedAccountsForMember(
+    archiveDeactivationResult.updatedUsers,
+    memberForArchive
+  );
+  const reactivatedMainUser = reactivateResult.updatedUsers.find(
+    (u) => u.id === 'USR-ARCHIVE-ACCT-1'
+  );
+  const stillDisabledManualUser = reactivateResult.updatedUsers.find(
+    (u) => u.id === 'USR-MANUAL-INACTIVE-2'
+  );
+
+  assert(
+    reactivateResult.reactivatedUsers.length === 1 &&
+      reactivatedMainUser?.active === true &&
+      reactivatedMainUser?.deactivatedByArchive === undefined &&
+      stillDisabledManualUser?.active === false,
+    "Ao desarquivar o membro, apenas a conta desativada pelo arquivamento é reativada automaticamente"
+  );
+
+  // =========================================================================
+  // TESTE 49: Reconfirmação no Período de Inscrições & Definição Automática Pós-Período (Ativo / Inativo)
+  // =========================================================================
+  console.log("\n=== TESTE 49: Reconfirmação de Dados e Definição Automática Ativo/Inativo Pós-Período ===");
+
+  const reconfPeriodId = 'PER-RECONF-2026-01';
+  const openPeriodConfig: EnrollmentScheduleConfig = {
+    isOpen: true,
+    periodId: reconfPeriodId,
+    enableReconfirmation: true,
+    openedAt: '2026-04-01T08:00:00.000Z',
+    openDate: '2026-04-01',
+    openTime: '08:00',
+    closeDate: '2026-04-30',
+    closeTime: '23:59',
+    updatedAt: '2026-04-01T08:00:00.000Z',
+    updatedByName: 'Diretor Geral',
+  };
+
+  const evalWhileOpen = evaluateEnrollmentAvailability(
+    openPeriodConfig,
+    new Date(2026, 3, 15, 12, 0, 0)
+  );
+  assert(
+    evalWhileOpen.isCurrentlyOpen === true &&
+      evalWhileOpen.enableReconfirmation === true &&
+      evalWhileOpen.isReconfirmationOpen === true &&
+      evalWhileOpen.statusLabel.includes('Reconfirmação'),
+    "evaluateEnrollmentAvailability sinaliza corretamente período aberto com Reconfirmação ativa"
+  );
+
+  const evalDisabledReconf = evaluateEnrollmentAvailability(
+    { ...openPeriodConfig, enableReconfirmation: false },
+    new Date(2026, 3, 15, 12, 0, 0)
+  );
+  assert(
+    evalDisabledReconf.isCurrentlyOpen === true &&
+      evalDisabledReconf.enableReconfirmation === false &&
+      evalDisabledReconf.isReconfirmationOpen === false,
+    "evaluateEnrollmentAvailability mantém isReconfirmationOpen=false quando opção não foi ativada pelo Diretor"
+  );
+
+  const sampleEmergencyContact = {
+    name: 'Encarregado Teste',
+    relationship: 'Pai',
+    phone: '923000000',
+    phoneVerified: false,
+  };
+
+  // Membros simulados antes da reconfirmação
+  const memExistingReconf: Member = {
+    id: 'MEM-REC-01',
+    manualNumber: 'EBX-9001',
+    fullName: 'João Membro Antigo',
+    birthDate: '2005-05-10',
+    gender: 'M',
+    identityCardNumber: '009001001LA041',
+    phone: '923111001',
+    email: 'joao.rec@clube.ao',
+    address: 'Luanda - Maianga',
+    category: 'embaixador',
+    joinedDate: '2023-02-10',
+    investitureDate: '2024-05-01',
+    annualRenewalYear: 2025,
+    status: 'inativo', // Estava inativo antes do período; reconfirmar deve torná-lo ativo
+    emergencyContact: sampleEmergencyContact,
+    allergiesOrMedicalNotes: 'Nenhuma',
+    biDocumentFileName: 'bi_antigo.pdf',
+    biDocumentBase64: 'data:application/pdf;base64,OLD_BI_DATA',
+    attachedDocuments: [
+      {
+        id: 'DOC-OLD-1',
+        title: 'Declaração 2025',
+        fileName: 'decl_2025.pdf',
+        base64: 'data:application/pdf;base64,OLD_DECL',
+        uploadedAt: '2025-02-01T10:00:00.000Z',
+      },
+    ],
+    createdAt: '2023-02-10T10:00:00.000Z',
+    updatedAt: '2025-02-01T10:00:00.000Z',
+  };
+
+  const memNotReconfirmed: Member = {
+    id: 'MEM-REC-02',
+    manualNumber: 'EBX-9002',
+    fullName: 'Maria Sem Reconfirmação',
+    birthDate: '2006-08-20',
+    gender: 'F',
+    identityCardNumber: '009002002LA042',
+    phone: '923111002',
+    email: 'maria.rec@clube.ao',
+    address: 'Luanda - Talatona',
+    category: 'embaixador',
+    joinedDate: '2023-03-01',
+    investitureDate: '2024-06-01',
+    annualRenewalYear: 2025,
+    status: 'ativo',
+    emergencyContact: sampleEmergencyContact,
+    allergiesOrMedicalNotes: 'Nenhuma',
+    createdAt: '2023-03-01T10:00:00.000Z',
+    updatedAt: '2025-03-01T10:00:00.000Z',
+  };
+
+  const memNewlyApprovedInPeriod: Member = {
+    id: 'MEM-REC-03',
+    manualNumber: 'EBX-9003',
+    fullName: 'Pedro Novo Inscrito Aprovado',
+    birthDate: '2008-01-12',
+    gender: 'M',
+    identityCardNumber: '009003003LA043',
+    phone: '923111003',
+    email: 'pedro.novo@clube.ao',
+    address: 'Luanda - Kilamba',
+    category: 'aspirante',
+    joinedDate: '2026-04-10',
+    annualRenewalYear: 2026,
+    status: 'ativo',
+    enrolledPeriodId: reconfPeriodId,
+    enrollmentProtocol: 'INS-2026-9003',
+    emergencyContact: sampleEmergencyContact,
+    allergiesOrMedicalNotes: 'Nenhuma',
+    createdAt: '2026-04-10T10:00:00.000Z',
+    updatedAt: '2026-04-10T10:00:00.000Z',
+  };
+
+  const memArchivedUntouched: Member = {
+    id: 'MEM-REC-04',
+    manualNumber: 'EBX-9004',
+    fullName: 'Carlos Arquivado',
+    birthDate: '2004-02-14',
+    gender: 'M',
+    identityCardNumber: '009004004LA044',
+    phone: '923111004',
+    email: 'carlos.arq@clube.ao',
+    address: 'Luanda - Viana',
+    category: 'embaixador',
+    joinedDate: '2022-01-10',
+    annualRenewalYear: 2024,
+    status: 'arquivado',
+    emergencyContact: sampleEmergencyContact,
+    allergiesOrMedicalNotes: 'Nenhuma',
+    createdAt: '2022-01-10T10:00:00.000Z',
+    updatedAt: '2025-01-10T10:00:00.000Z',
+  };
+
+  const memTransferredUntouched: Member = {
+    id: 'MEM-REC-05',
+    manualNumber: 'EBX-9005',
+    fullName: 'Ana Transferida',
+    birthDate: '2005-11-30',
+    gender: 'F',
+    identityCardNumber: '009005005LA045',
+    phone: '923111005',
+    email: 'ana.trans@clube.ao',
+    address: 'Luanda - Cazenga',
+    category: 'embaixador',
+    joinedDate: '2022-05-10',
+    annualRenewalYear: 2024,
+    status: 'transferido',
+    emergencyContact: sampleEmergencyContact,
+    allergiesOrMedicalNotes: 'Nenhuma',
+    createdAt: '2022-05-10T10:00:00.000Z',
+    updatedAt: '2025-01-10T10:00:00.000Z',
+  };
+
+  const testReconfMembers = [
+    memExistingReconf,
+    memNotReconfirmed,
+    memNewlyApprovedInPeriod,
+    memArchivedUntouched,
+    memTransferredUntouched,
+  ];
+
+  // Lookup de reconfirmação
+  const lookupArchived = findMemberForReconfirmation(
+    testReconfMembers,
+    memArchivedUntouched.identityCardNumber,
+    memArchivedUntouched.birthDate
+  );
+  assert(
+    lookupArchived.found === false && lookupArchived.archived === true,
+    "findMemberForReconfirmation bloqueia membro arquivado com mensagem informativa"
+  );
+
+  const lookupTransferred = findMemberForReconfirmation(
+    testReconfMembers,
+    memTransferredUntouched.manualNumber,
+    memTransferredUntouched.birthDate
+  );
+  assert(
+    lookupTransferred.found === false,
+    "findMemberForReconfirmation bloqueia membro transferido"
+  );
+
+  const lookupExistingByManual = findMemberForReconfirmation(
+    testReconfMembers,
+    'EBX-9001',
+    '2005-05-10'
+  );
+  assert(
+    lookupExistingByManual.found === true && lookupExistingByManual.member.id === 'MEM-REC-01',
+    "findMemberForReconfirmation localiza membro inativo/ativo por Nº de Matrícula + Data de Nascimento"
+  );
+
+  const linkedUserReconf: UserAccount = {
+    id: 'USR-REC-01',
+    name: 'João Membro Antigo',
+    email: 'joao.rec@clube.ao',
+    role: 'membro',
+    linkedMemberId: 'MEM-REC-01',
+    manualNumber: 'EBX-9001',
+    active: true,
+    createdAt: '2024-01-01T10:00:00.000Z',
+  };
+
+  // Reconfirmação com atualização de dados e novo anexo sem destruir documentos anteriores
+  const duplicateBiReconfAttempt = applyMemberReconfirmation({
+    member: memExistingReconf,
+    existingMembers: testReconfMembers,
+    periodId: reconfPeriodId,
+    users: [linkedUserReconf],
+    nowISO: '2026-04-12T10:00:00.000Z',
+    data: {
+      fullName: 'João Membro Atualizado',
+      birthDate: '2005-05-10',
+      gender: 'M',
+      identityCardNumber: memNotReconfirmed.identityCardNumber, // duplicado proposital
+      phone: '923999888',
+      email: 'joao.atualizado@clube.ao',
+      address: 'Luanda - Ingombota',
+      allergiesOrMedicalNotes: 'Nenhuma',
+      investitureDate: '2024-05-01',
+    },
+  });
+  assert(
+    duplicateBiReconfAttempt.success === false,
+    "applyMemberReconfirmation impede alteração de B.I. para número pertencente a outro membro"
+  );
+
+  const reconfResult = applyMemberReconfirmation({
+    member: memExistingReconf,
+    existingMembers: testReconfMembers,
+    periodId: reconfPeriodId,
+    users: [linkedUserReconf],
+    nowISO: '2026-04-12T10:00:00.000Z',
+    data: {
+      fullName: 'João Membro Atualizado',
+      birthDate: '2005-05-10',
+      gender: 'M',
+      identityCardNumber: memExistingReconf.identityCardNumber,
+      phone: '923999888',
+      email: 'joao.atualizado@clube.ao',
+      address: 'Luanda - Ingombota',
+      allergiesOrMedicalNotes: 'Nenhuma',
+      investitureDate: '2024-05-01',
+      newAttachedDocuments: [
+        {
+          title: 'Atestado Médico 2026',
+          fileName: 'atestado_2026.pdf',
+          base64: 'data:application/pdf;base64,NEW_ATESTADO',
+        },
+      ],
+    },
+  });
+
+  assert(
+    reconfResult.success === true &&
+      reconfResult.updatedMember?.status === 'ativo' &&
+      reconfResult.updatedMember?.lastReconfirmedPeriodId === reconfPeriodId &&
+      reconfResult.updatedMember?.reconfirmationCount === 1 &&
+      reconfResult.updatedMember?.biDocumentBase64 === 'data:application/pdf;base64,OLD_BI_DATA' &&
+      reconfResult.updatedMember?.attachedDocuments?.length === 2 &&
+      reconfResult.updatedUsers?.[0]?.email === 'joao.atualizado@clube.ao' &&
+      reconfResult.updatedUsers?.[0]?.name === 'João Membro Atualizado',
+    "applyMemberReconfirmation atualiza dados, preserva anexos antigos, adiciona novos anexos, reativa membro e sincroniza conta"
+  );
+
+  const membersAfterReconf = testReconfMembers.map((m) =>
+    m.id === memExistingReconf.id && reconfResult.updatedMember ? reconfResult.updatedMember : m
+  );
+
+  // Liquidação NÃO deve ocorrer enquanto o período ainda está aberto
+  const prematureFinalize = finalizeEndedEnrollmentPeriod({
+    members: membersAfterReconf,
+    enrollmentRequests: [],
+    config: openPeriodConfig,
+    now: new Date(2026, 3, 15, 12, 0, 0),
+  });
+  assert(
+    prematureFinalize.hasChanges === false,
+    "finalizeEndedEnrollmentPeriod não altera estados enquanto o período ainda está aberto"
+  );
+
+  // Liquidação NÃO deve ocorrer se enableReconfirmation for false
+  const disabledReconfFinalize = finalizeEndedEnrollmentPeriod({
+    members: membersAfterReconf,
+    enrollmentRequests: [],
+    config: { ...openPeriodConfig, enableReconfirmation: false },
+    now: new Date(2026, 4, 2, 10, 0, 0),
+  });
+  assert(
+    disabledReconfFinalize.hasChanges === false,
+    "finalizeEndedEnrollmentPeriod preserva comportamento padrão quando Reconfirmação não foi habilitada"
+  );
+
+  // Após término do prazo de inscrição/reconfirmação (02/05/2026), liquidação automática corre
+  const postDeadlineFinalize = finalizeEndedEnrollmentPeriod({
+    members: membersAfterReconf,
+    enrollmentRequests: [],
+    config: openPeriodConfig,
+    now: new Date(2026, 4, 2, 10, 0, 0),
+  });
+
+  const finalizedM1 = postDeadlineFinalize.members.find((m) => m.id === 'MEM-REC-01');
+  const finalizedM2 = postDeadlineFinalize.members.find((m) => m.id === 'MEM-REC-02');
+  const finalizedM3 = postDeadlineFinalize.members.find((m) => m.id === 'MEM-REC-03');
+  const finalizedM4 = postDeadlineFinalize.members.find((m) => m.id === 'MEM-REC-04');
+  const finalizedM5 = postDeadlineFinalize.members.find((m) => m.id === 'MEM-REC-05');
+
+  assert(
+    postDeadlineFinalize.hasChanges === true &&
+      postDeadlineFinalize.config?.isOpen === false &&
+      postDeadlineFinalize.config?.finalizedPeriodId === reconfPeriodId &&
+      finalizedM1?.status === 'ativo' &&
+      finalizedM2?.status === 'arquivado' &&
+      finalizedM3?.status === 'ativo' &&
+      finalizedM4?.status === 'arquivado' &&
+      finalizedM5?.status === 'transferido' &&
+      postDeadlineFinalize.summary?.archivedCount === 1 &&
+      postDeadlineFinalize.summary?.exemptedCount === 2,
+    "Após encerramento do período, reconfirmados e novos admitidos ficam 'ativo', não reconfirmados são arquivados, e arquivados/transferidos permanecem intocados"
+  );
+
+  // Idempotência da liquidação
+  const secondFinalizeAttempt = finalizeEndedEnrollmentPeriod({
+    members: postDeadlineFinalize.members,
+    enrollmentRequests: [],
+    config: postDeadlineFinalize.config,
+    now: new Date(2026, 4, 3, 10, 0, 0),
+  });
+  assert(
+    secondFinalizeAttempt.hasChanges === false,
+    "finalizeEndedEnrollmentPeriod é estritamente idempotente para o mesmo período já liquidado"
+  );
+
+  // =========================================================================
+  // TESTE 50: Desativação de Contas na Abertura da Reconfirmação, Arquivamento por Falta de Reconfirmação e Reativação sem Autorização do Administrador
+  // =========================================================================
+  console.log("\n=== TESTE 50: Desativação na Reconfirmação, Arquivamento e Reativação de Conta ao Desarquivar ===");
+
+  const userInst: UserAccount = {
+    id: 'INST-001',
+    name: 'Conta Institucional',
+    email: 'institucional@clubedalvorada.ao',
+    role: 'admin_tecnico',
+    active: true,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  };
+
+  const userDirector: UserAccount = {
+    id: 'USR-DIR-1',
+    name: 'Diretor Geral',
+    email: 'diretor@clube.ao',
+    role: 'diretor',
+    active: true,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  };
+
+  const userSecretary: UserAccount = {
+    id: 'USR-SEC-1',
+    name: 'Secretário do Clube',
+    email: 'secretario@clube.ao',
+    role: 'secretario',
+    active: true,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  };
+
+  const userTreasurer: UserAccount = {
+    id: 'USR-TES-1',
+    name: 'Tesoureiro',
+    email: 'tesouraria@clube.ao',
+    role: 'tesoureiro',
+    active: true,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  };
+
+  const userRegularMember1: UserAccount = {
+    id: 'USR-MEM-1',
+    name: 'Membro Um',
+    email: 'membro1@clube.ao',
+    role: 'membro',
+    linkedMemberId: 'MEM-T50-1',
+    manualNumber: 'EBX-5001',
+    active: true,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  };
+
+  const userRegularMember2: UserAccount = {
+    id: 'USR-MEM-2',
+    name: 'Membro Dois',
+    email: 'membro2@clube.ao',
+    role: 'membro',
+    linkedMemberId: 'MEM-T50-2',
+    manualNumber: 'EBX-5002',
+    active: true,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  };
+
+  const allTestUsers = [
+    userInst,
+    userDirector,
+    userSecretary,
+    userTreasurer,
+    userRegularMember1,
+    userRegularMember2,
+  ];
+
+  // 1. Simulação da regra de abertura da Reconfirmação pelo Diretor
+  const enableReconfFlag = true;
+  const deactivatedOnReconfOpen = enableReconfFlag
+    ? allTestUsers.map((u) => {
+        if (!u) return u;
+        if (isInstitutionalAccountRecord(u) || u.role === 'diretor' || u.role === 'secretario') {
+          return u;
+        }
+        return { ...u, active: false };
+      })
+    : allTestUsers;
+
+  const instAfter = deactivatedOnReconfOpen.find((u) => u.id === 'INST-001');
+  const dirAfter = deactivatedOnReconfOpen.find((u) => u.id === 'USR-DIR-1');
+  const secAfter = deactivatedOnReconfOpen.find((u) => u.id === 'USR-SEC-1');
+  const tesAfter = deactivatedOnReconfOpen.find((u) => u.id === 'USR-TES-1');
+  const mem1After = deactivatedOnReconfOpen.find((u) => u.id === 'USR-MEM-1');
+  const mem2After = deactivatedOnReconfOpen.find((u) => u.id === 'USR-MEM-2');
+
+  assert(
+    instAfter?.active === true &&
+      dirAfter?.active === true &&
+      secAfter?.active === true &&
+      tesAfter?.active === false &&
+      mem1After?.active === false &&
+      mem2After?.active === false,
+    "Ao ativar a reconfirmação de dados, todas as contas são desativadas exceto a conta institucional, a do diretor e a do secretário"
+  );
+
+  // 2. Membro 1 faz reconfirmação durante o período -> a sua conta é ativada
+  const memberT50_1: Member = {
+    id: 'MEM-T50-1',
+    manualNumber: 'EBX-5001',
+    fullName: 'Membro Um',
+    birthDate: '2005-01-10',
+    gender: 'M',
+    identityCardNumber: '005001001LA041',
+    phone: '923500001',
+    email: 'membro1@clube.ao',
+    address: 'Luanda',
+    category: 'embaixador',
+    joinedDate: '2023-01-01',
+    investitureDate: '2024-01-01',
+    annualRenewalYear: 2025,
+    status: 'ativo',
+    emergencyContact: sampleEmergencyContact,
+    allergiesOrMedicalNotes: 'Nenhuma',
+    createdAt: '2023-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+  };
+
+  const memberT50_2: Member = {
+    id: 'MEM-T50-2',
+    manualNumber: 'EBX-5002',
+    fullName: 'Membro Dois',
+    birthDate: '2006-02-20',
+    gender: 'F',
+    identityCardNumber: '005002002LA042',
+    phone: '923500002',
+    email: 'membro2@clube.ao',
+    address: 'Luanda',
+    category: 'embaixador',
+    joinedDate: '2023-01-01',
+    investitureDate: '2024-01-01',
+    annualRenewalYear: 2025,
+    status: 'ativo',
+    emergencyContact: sampleEmergencyContact,
+    allergiesOrMedicalNotes: 'Nenhuma',
+    createdAt: '2023-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+  };
+
+  const reconfResT50 = applyMemberReconfirmation({
+    member: memberT50_1,
+    existingMembers: [memberT50_1, memberT50_2],
+    periodId: 'PER-50',
+    users: deactivatedOnReconfOpen,
+    data: {
+      fullName: 'Membro Um Reconfirmado',
+      birthDate: '2005-01-10',
+      gender: 'M',
+      identityCardNumber: '005001001LA041',
+      phone: '923500001',
+      email: 'membro1@clube.ao',
+      address: 'Luanda - Nova Morada',
+      allergiesOrMedicalNotes: 'Nenhuma',
+      investitureDate: '2024-01-01',
+    },
+  });
+
+  const reconfirmedMem1User = reconfResT50.updatedUsers?.find((u) => u.id === 'USR-MEM-1');
+  assert(
+    reconfResT50.success === true &&
+      reconfResT50.updatedMember?.status === 'ativo' &&
+      reconfirmedMem1User?.active === true,
+    "Ao submeter a reconfirmação de dados, a conta do membro é automaticamente ativada"
+  );
+
+  // 3. Fim do período: Membro 2 não fez reconfirmação -> ficha arquivada e conta desativada
+  const membersBeforeClose = [reconfResT50.updatedMember!, memberT50_2];
+  const postClosePeriodConfig: EnrollmentScheduleConfig = {
+    isOpen: false,
+    periodId: 'PER-50',
+    enableReconfirmation: true,
+    openedAt: '2026-04-01T00:00:00.000Z',
+  };
+
+  const periodFinalizeT50 = finalizeEndedEnrollmentPeriod({
+    members: membersBeforeClose,
+    config: postClosePeriodConfig,
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+
+  const reconciledAfterPeriodEnd = reconcileUsersAndMembers(
+    reconfResT50.updatedUsers || deactivatedOnReconfOpen,
+    periodFinalizeT50.members
+  );
+
+  const m1Final = periodFinalizeT50.members.find((m) => m.id === 'MEM-T50-1');
+  const m2Final = periodFinalizeT50.members.find((m) => m.id === 'MEM-T50-2');
+  const u2Final = reconciledAfterPeriodEnd.users.find((u) => u.id === 'USR-MEM-2');
+
+  assert(
+    m1Final?.status === 'ativo' &&
+      m2Final?.status === 'arquivado' &&
+      u2Final?.active === false &&
+      u2Final?.deactivatedByArchive === true,
+    "Ao encerrar o período, quem não reconfirmou tem a sua ficha arquivada e conta desativada automaticamente"
+  );
+
+  // 4. Desarquivar Membro 2 pelo método normal (Diretor/Secretário) -> conta reativada sem autorização do Administrador
+  const unarchiveResultT50 = reactivateLinkedAccountsForMember(
+    reconciledAfterPeriodEnd.users,
+    m2Final!
+  );
+  const u2Reactivated = unarchiveResultT50.updatedUsers.find((u) => u.id === 'USR-MEM-2');
+
+  assert(
+    unarchiveResultT50.reactivatedUsers.length === 1 &&
+      u2Reactivated?.active === true &&
+      u2Reactivated?.deactivatedByArchive === undefined,
+    "Ao desarquivar o membro pelo método normal, a sua conta de login é automaticamente ativada sem autorização prévia do Administrador"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");

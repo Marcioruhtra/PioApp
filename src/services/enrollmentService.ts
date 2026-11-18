@@ -10,6 +10,7 @@ import {
   EnrollmentDocumentDeliveryMethod,
   EnrollmentScheduleConfig,
   Member,
+  MemberAttachedDocument,
   MemberCategory,
   MemberDocumentationStatus,
   MemberEnrollmentRequest,
@@ -19,6 +20,7 @@ import {
 import { generateManualNumber, getNowISOString, getTodayISODate } from '../utils/date';
 import { isMemberNumberUnique, findPotentialDuplicateMember } from './storageService';
 import { sanitizeMemberIntegrity } from './memberIntegrityService';
+import { syncMemberChangesToUsers, isPendingMemberAccountConfirmation } from './accountSyncService';
 
 export interface MemberRegistrationFormData {
   manualNumber: string;
@@ -1065,6 +1067,11 @@ export interface EnrollmentAvailabilityStatus {
   reasonLabel: string;
   openLabel?: string;
   closeLabel?: string;
+  enableReconfirmation: boolean;
+  isReconfirmationOpen: boolean;
+  periodId?: string;
+  finalizedAt?: string;
+  finalizationSummary?: EnrollmentScheduleConfig['finalizationSummary'];
 }
 
 export function evaluateEnrollmentAvailability(
@@ -1077,8 +1084,13 @@ export function evaluateEnrollmentAvailability(
       status: 'abertas',
       statusLabel: 'Inscrições Abertas',
       reasonLabel: 'As inscrições no clube estão atualmente abertas.',
+      enableReconfirmation: false,
+      isReconfirmationOpen: false,
     };
   }
+
+  const enableReconfirmation = Boolean(config.enableReconfirmation);
+  const periodLabel = enableReconfirmation ? 'Inscrições e Reconfirmação' : 'Inscrições';
 
   const openLabel = config.openDate
     ? formatScheduleDateTimeLabel(config.openDate, config.openTime, '00:00')
@@ -1091,10 +1103,15 @@ export function evaluateEnrollmentAvailability(
     return {
       isCurrentlyOpen: false,
       status: 'encerradas',
-      statusLabel: 'Inscrições Encerradas',
-      reasonLabel: 'As inscrições foram encerradas pela Direção do Clube.',
+      statusLabel: `${periodLabel} Encerradas`,
+      reasonLabel: `As ${enableReconfirmation ? 'inscrições e reconfirmações' : 'inscrições'} foram encerradas pela Direção do Clube.`,
       openLabel,
       closeLabel,
+      enableReconfirmation,
+      isReconfirmationOpen: false,
+      periodId: config.periodId,
+      finalizedAt: config.finalizedAt,
+      finalizationSummary: config.finalizationSummary,
     };
   }
 
@@ -1115,9 +1132,14 @@ export function evaluateEnrollmentAvailability(
       isCurrentlyOpen: false,
       status: 'agendadas',
       statusLabel: 'Abertura Agendada',
-      reasonLabel: `As inscrições abrirão em ${openLabel}${closeLabel ? ` e encerram em ${closeLabel}` : ''}.`,
+      reasonLabel: `${periodLabel} abrirão em ${openLabel}${closeLabel ? ` e encerram em ${closeLabel}` : ''}.`,
       openLabel,
       closeLabel,
+      enableReconfirmation,
+      isReconfirmationOpen: false,
+      periodId: config.periodId,
+      finalizedAt: config.finalizedAt,
+      finalizationSummary: config.finalizationSummary,
     };
   }
 
@@ -1125,21 +1147,500 @@ export function evaluateEnrollmentAvailability(
     return {
       isCurrentlyOpen: false,
       status: 'encerradas',
-      statusLabel: 'Inscrições Encerradas',
-      reasonLabel: `O período estipulado de inscrições encerrou em ${closeLabel}.`,
+      statusLabel: `${periodLabel} Encerradas`,
+      reasonLabel: `O período estipulado de ${enableReconfirmation ? 'inscrições e reconfirmação' : 'inscrições'} encerrou em ${closeLabel}.`,
       openLabel,
       closeLabel,
+      enableReconfirmation,
+      isReconfirmationOpen: false,
+      periodId: config.periodId,
+      finalizedAt: config.finalizedAt,
+      finalizationSummary: config.finalizationSummary,
     };
   }
 
   return {
     isCurrentlyOpen: true,
     status: 'abertas',
-    statusLabel: 'Inscrições Abertas',
+    statusLabel: `${periodLabel} Abertas`,
     reasonLabel: closeLabel
-      ? `Inscrições abertas até ${closeLabel}.`
-      : 'As inscrições no clube estão atualmente abertas.',
+      ? `${periodLabel} abertas até ${closeLabel}.`
+      : `As ${enableReconfirmation ? 'inscrições e reconfirmações de dados' : 'inscrições'} no clube estão atualmente abertas.`,
     openLabel,
     closeLabel,
+    enableReconfirmation,
+    isReconfirmationOpen: enableReconfirmation,
+    periodId: config.periodId,
+    finalizedAt: config.finalizedAt,
+    finalizationSummary: config.finalizationSummary,
   };
 }
+
+export interface MemberReconfirmationInput {
+  fullName: string;
+  birthDate: string;
+  gender: 'M' | 'F';
+  identityCardNumber: string;
+  phone: string;
+  email: string;
+  address: string;
+  guardianName?: string;
+  guardianPhone?: string;
+  emergencyName?: string;
+  emergencyRelationship?: string;
+  emergencyPhone?: string;
+  bloodType?: string;
+  allergiesOrMedicalNotes: string;
+  investitureDate?: string;
+  professionalCourse?: string;
+  biDocumentFileName?: string;
+  biDocumentBase64?: string;
+  photoDocumentFileName?: string;
+  photoDocumentBase64?: string;
+  newAttachedDocuments?: Array<{
+    title: string;
+    fileName: string;
+    base64: string;
+  }>;
+}
+
+export function findMemberForReconfirmation(
+  members: Member[],
+  identityCardOrManualNumber: string,
+  birthDate: string
+):
+  | { found: true; member: Member }
+  | { found: false; archived?: boolean; error: string } {
+  const rawIdentifier = String(identityCardOrManualNumber || '').trim();
+  const cleanBI = normalizeIdentityCardNumber(rawIdentifier);
+  const cleanManual = rawIdentifier.toUpperCase();
+  const cleanBirth = String(birthDate || '').trim();
+
+  if (!cleanBI || !cleanBirth) {
+    return {
+      found: false,
+      error: 'Informe o Número do B.I. (ou Nº de Matrícula) e a Data de Nascimento para localizar o seu registo.',
+    };
+  }
+
+  const matched = (members || []).find((m) => {
+    if (!m) return false;
+    if (String(m.birthDate || '').trim() !== cleanBirth) return false;
+    const mBI = normalizeIdentityCardNumber(m.identityCardNumber);
+    const mManual = String(m.manualNumber || '').trim().toUpperCase();
+    return (Boolean(mBI) && mBI === cleanBI) || (Boolean(mManual) && mManual === cleanManual);
+  });
+
+  if (!matched) {
+    return {
+      found: false,
+      error: 'Nenhum membro registado foi encontrado com este B.I./Matrícula e Data de Nascimento.',
+    };
+  }
+
+  if (matched.status === 'arquivado') {
+    return {
+      found: false,
+      archived: true,
+      error: 'A sua ficha de membro encontra-se arquivada. Contacte a Secretaria ou a Direção para regularização antes de reconfirmar.',
+    };
+  }
+
+  if (matched.status === 'transferido') {
+    return {
+      found: false,
+      error: 'A sua ficha encontra-se com estado Transferido e não está elegível para reconfirmação.',
+    };
+  }
+
+  return { found: true, member: matched };
+}
+
+export function applyMemberReconfirmation(params: {
+  member: Member;
+  existingMembers: Member[];
+  data: MemberReconfirmationInput;
+  periodId?: string;
+  users: UserAccount[];
+  nowISO?: string;
+}): {
+  success: boolean;
+  error?: string;
+  updatedMember?: Member;
+  updatedUsers?: UserAccount[];
+} {
+  const { member, existingMembers, data, periodId, users } = params;
+  const nowISO = params.nowISO || getNowISOString();
+
+  if (!member || member.status === 'arquivado' || member.status === 'transferido') {
+    return {
+      success: false,
+      error: 'Apenas membros registados ativos ou inativos não arquivados podem realizar reconfirmação.',
+    };
+  }
+
+  const cleanName = (data.fullName || '').trim();
+  const cleanBirth = (data.birthDate || '').trim();
+  const cleanBI = normalizeIdentityCardNumber(data.identityCardNumber);
+  const cleanPhone = (data.phone || '').trim();
+  const cleanEmail = (data.email || '').trim().toLowerCase();
+  const cleanAddress = (data.address || '').trim();
+  const cleanMedical = (data.allergiesOrMedicalNotes || '').trim();
+  const cleanInvestiture = (data.investitureDate || '').trim();
+  const cleanGuardianName = (data.guardianName || '').trim();
+  const cleanGuardianPhone = (data.guardianPhone || '').trim();
+
+  if (cleanName.length < 3) {
+    return { success: false, error: 'O Nome Completo é obrigatório (mínimo 3 caracteres).' };
+  }
+  if (!cleanBirth) {
+    return { success: false, error: 'A Data de Nascimento é obrigatória.' };
+  }
+  if (data.gender !== 'M' && data.gender !== 'F') {
+    return { success: false, error: 'O Sexo é obrigatório.' };
+  }
+  if (!cleanBI) {
+    return { success: false, error: 'O Número do Bilhete de Identidade (B.I.) é obrigatório.' };
+  }
+  if (!cleanPhone) {
+    return { success: false, error: 'O Telefone Principal é obrigatório.' };
+  }
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    return { success: false, error: 'Informe um endereço de E-mail válido.' };
+  }
+  if (!cleanAddress) {
+    return { success: false, error: 'O Município / Bairro é obrigatório.' };
+  }
+  if (!cleanMedical) {
+    return {
+      success: false,
+      error: 'O campo Alergias ou Cuidados Médicos é obrigatório (caso não possua, indique "Nenhuma").',
+    };
+  }
+  if ((member.category === 'embaixador' || member.category === 'lider') && !cleanInvestiture) {
+    return {
+      success: false,
+      error: `A Data Oficial de Investidura é obrigatória para a categoria ${member.category === 'lider' ? 'Líder' : 'Embaixador'}.`,
+    };
+  }
+
+  // Garante unicidade do B.I. e do E-mail entre outros membros existentes
+  const duplicateBI = (existingMembers || []).find(
+    (other) => other.id !== member.id && normalizeIdentityCardNumber(other.identityCardNumber) === cleanBI
+  );
+  if (duplicateBI) {
+    return {
+      success: false,
+      error: `O B.I. "${cleanBI}" já está associado a outro membro (${duplicateBI.fullName}).`,
+    };
+  }
+
+  const nextBiBase64 = (data.biDocumentBase64 || '').trim() || member.biDocumentBase64;
+  const nextBiFileName = (data.biDocumentBase64 || '').trim()
+    ? (data.biDocumentFileName || '').trim() || member.biDocumentFileName
+    : member.biDocumentFileName;
+
+  const nextPhotoBase64 = (data.photoDocumentBase64 || '').trim() || member.photoDocumentBase64;
+  const nextPhotoFileName = (data.photoDocumentBase64 || '').trim()
+    ? (data.photoDocumentFileName || '').trim() || member.photoDocumentFileName
+    : member.photoDocumentFileName;
+
+  const nextPhotoUrl = (data.photoDocumentBase64 || '').trim().startsWith('data:image/')
+    ? (data.photoDocumentBase64 || '').trim()
+    : member.photoUrl || (nextPhotoBase64?.startsWith('data:image/') ? nextPhotoBase64 : undefined);
+
+  const appendedAttachments: MemberAttachedDocument[] = (data.newAttachedDocuments || [])
+    .filter((docItem) => Boolean(docItem?.base64?.trim() && docItem?.fileName?.trim()))
+    .map((docItem, idx) => ({
+      id: `DOC-REC-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+      title: (docItem.title || '').trim() || docItem.fileName.trim(),
+      fileName: docItem.fileName.trim(),
+      base64: docItem.base64.trim(),
+      uploadedAt: nowISO,
+      uploadedByName: cleanName,
+    }));
+
+  const mergedAttachments: MemberAttachedDocument[] | undefined =
+    appendedAttachments.length > 0 || (member.attachedDocuments && member.attachedDocuments.length > 0)
+      ? [...(member.attachedDocuments || []), ...appendedAttachments]
+      : undefined;
+
+  const currentYear = new Date(nowISO).getFullYear();
+  const isAlreadyReconfirmedThisPeriod = Boolean(periodId && member.lastReconfirmedPeriodId === periodId);
+
+  const mergedMember: Member = {
+    ...member,
+    fullName: cleanName,
+    birthDate: cleanBirth,
+    gender: data.gender,
+    identityCardNumber: cleanBI,
+    phone: cleanPhone,
+    email: cleanEmail,
+    address: cleanAddress,
+    guardianName: cleanGuardianName || undefined,
+    guardianPhone: cleanGuardianPhone || undefined,
+    guardianValidated: cleanGuardianName ? Boolean(cleanGuardianPhone) : member.guardianValidated,
+    emergencyContact: {
+      name: (data.emergencyName || '').trim() || member.emergencyContact?.name || cleanGuardianName || cleanName,
+      relationship:
+        (data.emergencyRelationship || '').trim() ||
+        member.emergencyContact?.relationship ||
+        (cleanGuardianName ? 'Encarregado de Educação' : 'Familiar'),
+      phone: (data.emergencyPhone || '').trim() || member.emergencyContact?.phone || cleanGuardianPhone || cleanPhone,
+      phoneVerified: member.emergencyContact?.phoneVerified || false,
+    },
+    bloodType: (data.bloodType || '').trim() || undefined,
+    allergiesOrMedicalNotes: cleanMedical,
+    professionalCourse: (data.professionalCourse || '').trim() || undefined,
+    investitureDate:
+      member.category === 'embaixador' || member.category === 'lider' ? cleanInvestiture : member.investitureDate,
+    biDocumentFileName: nextBiFileName,
+    biDocumentBase64: nextBiBase64,
+    photoDocumentFileName: nextPhotoFileName,
+    photoDocumentBase64: nextPhotoBase64,
+    photoUrl: nextPhotoUrl,
+    attachedDocuments: mergedAttachments,
+    status: 'ativo',
+    annualRenewalYear: Math.max(member.annualRenewalYear || 0, Number.isFinite(currentYear) ? currentYear : 2026),
+    lastReconfirmedPeriodId: periodId || member.lastReconfirmedPeriodId,
+    lastReconfirmedAt: nowISO,
+    reconfirmationCount: (member.reconfirmationCount || 0) + (isAlreadyReconfirmedThisPeriod ? 0 : 1),
+    updatedAt: nowISO,
+  };
+
+  const { sanitized } = sanitizeMemberIntegrity(mergedMember);
+  const syncedUsers = syncMemberChangesToUsers(sanitized, users || [], member);
+  const updatedUsers = syncedUsers.map((u) => {
+    if (
+      u.linkedMemberId === sanitized.id &&
+      !isPendingMemberAccountConfirmation(u) &&
+      u.accountApprovalStatus !== 'rejeitada'
+    ) {
+      const { deactivatedByArchive: _removed, ...rest } = u;
+      return { ...rest, active: true };
+    }
+    return u;
+  });
+
+  return {
+    success: true,
+    updatedMember: sanitized,
+    updatedUsers,
+  };
+}
+
+export function isValidMemberFichaForActiveStatus(member: Member | undefined | null): boolean {
+  if (!member) return false;
+  return (
+    String(member.id || '').trim().length > 0 &&
+    String(member.manualNumber || '').trim().length > 0 &&
+    String(member.fullName || '').trim().length >= 2 &&
+    String(member.identityCardNumber || '').trim().length > 0 &&
+    String(member.birthDate || '').trim().length > 0
+  );
+}
+
+export interface PeriodFinalizationResult {
+  hasChanges: boolean;
+  members: Member[];
+  config?: EnrollmentScheduleConfig;
+  summary?: {
+    activatedCount: number;
+    archivedCount: number;
+    keptActiveCount: number;
+    exemptedCount: number;
+  };
+}
+
+/**
+ * Liquidação automática após o fim do período de inscrições e reconfirmação:
+ * - Mantém ou define como 'ativo':
+ *   1) Membros com ficha válida que passaram na inscrição neste período; ou
+ *   2) Membros registados que realizaram a reconfirmação de dados neste período.
+ * - Define como 'inativo':
+ *   Membros registados (ativos/inativos) com ficha anterior que NÃO realizaram a reconfirmação no período.
+ * - Preserva membros 'arquivado' e 'transferido' sem alteração.
+ */
+export function finalizeEndedEnrollmentPeriod(params: {
+  members: Member[];
+  enrollmentRequests?: MemberEnrollmentRequest[];
+  config?: EnrollmentScheduleConfig;
+  now?: Date;
+}): PeriodFinalizationResult {
+  const { members, enrollmentRequests = [], config } = params;
+  const now = params.now || new Date();
+
+  if (!config || !config.enableReconfirmation || !config.periodId) {
+    return { hasChanges: false, members, config };
+  }
+
+  if (config.finalizedPeriodId === config.periodId) {
+    return { hasChanges: false, members, config };
+  }
+
+  const availability = evaluateEnrollmentAvailability(config, now);
+  if (availability.status !== 'encerradas') {
+    return { hasChanges: false, members, config };
+  }
+
+  const nowISO = now.toISOString();
+  const openedAtMs = config.openedAt ? Date.parse(config.openedAt) : NaN;
+
+  const approvedInPeriodMemberIds = new Set<string>();
+  const approvedInPeriodProtocols = new Set<string>();
+
+  for (const req of enrollmentRequests) {
+    if (!req || req.status !== 'aprovado' || req.memberDeletedAt) continue;
+    const reviewedMs = req.reviewedAt ? Date.parse(req.reviewedAt) : NaN;
+    if (Number.isFinite(openedAtMs) && Number.isFinite(reviewedMs) && reviewedMs >= openedAtMs) {
+      if (req.createdMemberId) approvedInPeriodMemberIds.add(req.createdMemberId);
+      if (req.protocolNumber) approvedInPeriodProtocols.add(req.protocolNumber);
+    }
+  }
+
+  let activatedCount = 0;
+  let archivedCount = 0;
+  let keptActiveCount = 0;
+  let exemptedCount = 0;
+
+  const nextMembers = (members || []).map((m) => {
+    if (m.status === 'arquivado' || m.status === 'transferido') {
+      exemptedCount++;
+      return m;
+    }
+
+    const validFicha = isValidMemberFichaForActiveStatus(m);
+    const createdMs = m.createdAt ? Date.parse(m.createdAt) : NaN;
+    const enrolledInThisPeriod =
+      m.enrolledPeriodId === config.periodId ||
+      approvedInPeriodMemberIds.has(m.id) ||
+      (Boolean(m.enrollmentProtocol) && approvedInPeriodProtocols.has(m.enrollmentProtocol!)) ||
+      (Number.isFinite(openedAtMs) && Number.isFinite(createdMs) && createdMs >= openedAtMs);
+
+    const reconfirmedInThisPeriod = m.lastReconfirmedPeriodId === config.periodId;
+
+    if (validFicha && (reconfirmedInThisPeriod || enrolledInThisPeriod)) {
+      if (m.status !== 'ativo') {
+        activatedCount++;
+        return { ...m, status: 'ativo' as const, updatedAt: nowISO };
+      }
+      keptActiveCount++;
+      return m;
+    }
+
+    archivedCount++;
+    return {
+      ...m,
+      status: 'arquivado' as const,
+      archiveReason: 'Não efetuou a reconfirmação obrigatória de dados no período estipulado',
+      archivedAt: nowISO,
+      updatedAt: nowISO,
+    };
+    return m;
+  });
+
+  const summary = {
+    activatedCount,
+    archivedCount,
+    keptActiveCount,
+    exemptedCount,
+  };
+
+  const nextConfig: EnrollmentScheduleConfig = {
+    ...config,
+    isOpen: false,
+    finalizedPeriodId: config.periodId,
+    finalizedAt: nowISO,
+    finalizationSummary: summary,
+  };
+
+  return {
+    hasChanges: true,
+    members: nextMembers,
+    config: nextConfig,
+    summary,
+  };
+}
+
+export function buildResubmittedEnrollmentRequest(
+  rejectedReq: MemberEnrollmentRequest,
+  data: MemberRegistrationFormData,
+  resolvedManualNumber: string,
+  currentYear: number,
+  existingRequests: MemberEnrollmentRequest[],
+  submittedByUserId?: string
+): MemberEnrollmentRequest {
+  const newProtocol = generateNextEnrollmentProtocol(currentYear, existingRequests);
+  const now = getNowISOString();
+  const guardianName = (data.guardianName || '').trim();
+  const guardianPhone = (data.guardianPhone || '').trim();
+  const cleanName = data.fullName.trim();
+  const cleanPhone = data.phone.trim();
+
+  const hasNewBiDoc = Boolean((data.biDocumentBase64 || '').trim() && (data.biDocumentFileName || '').trim());
+  const hasNewPhotoDoc = Boolean((data.photoDocumentBase64 || '').trim() && (data.photoDocumentFileName || '').trim());
+
+  return {
+    id: newProtocol,
+    protocolNumber: newProtocol,
+    manualNumber: resolvedManualNumber,
+    fullName: cleanName,
+    birthDate: data.birthDate,
+    gender: data.gender,
+    identityCardNumber: normalizeIdentityCardNumber(data.identityCardNumber),
+    phone: cleanPhone,
+    email: data.email.trim(),
+    address: data.address.trim(),
+    category: data.category,
+    unitOrTeam: undefined,
+    guardianName: guardianName || undefined,
+    guardianPhone: guardianPhone || undefined,
+    emergencyContact: {
+      name: (data.emergencyName || '').trim() || guardianName || cleanName,
+      relationship:
+        (data.emergencyRelationship || '').trim() ||
+        (guardianName ? 'Encarregado de Educação' : 'Contacto Próprio'),
+      phone: (data.emergencyPhone || '').trim() || guardianPhone || cleanPhone,
+      phoneVerified: false,
+    },
+    bloodType: (data.bloodType || '').trim() || undefined,
+    allergiesOrMedicalNotes: data.allergiesOrMedicalNotes.trim(),
+    investitureDate:
+      data.category === 'embaixador' || data.category === 'lider'
+        ? (data.investitureDate || '').trim() || undefined
+        : undefined,
+    professionalCourse: (data.professionalCourse || '').trim() || undefined,
+    joinedDate: undefined,
+    documentDeliveryMethod:
+      data.documentDeliveryMethod === 'anexar_digital' ? 'anexar_digital' : 'presencial',
+    biDocumentFileName:
+      data.documentDeliveryMethod === 'anexar_digital'
+        ? hasNewBiDoc
+          ? data.biDocumentFileName!.trim()
+          : rejectedReq.biDocumentFileName
+        : undefined,
+    biDocumentBase64:
+      data.documentDeliveryMethod === 'anexar_digital'
+        ? hasNewBiDoc
+          ? data.biDocumentBase64!.trim()
+          : rejectedReq.biDocumentBase64
+        : undefined,
+    photoDocumentFileName:
+      data.documentDeliveryMethod === 'anexar_digital'
+        ? hasNewPhotoDoc
+          ? data.photoDocumentFileName!.trim()
+          : rejectedReq.photoDocumentFileName
+        : undefined,
+    photoDocumentBase64:
+      data.documentDeliveryMethod === 'anexar_digital'
+        ? hasNewPhotoDoc
+          ? data.photoDocumentBase64!.trim()
+          : rejectedReq.photoDocumentBase64
+        : undefined,
+    status: 'pendente',
+    submittedAt: now,
+    submittedByUserId: submittedByUserId || rejectedReq.submittedByUserId,
+  };
+}
+
+
