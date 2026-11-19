@@ -4908,6 +4908,31 @@ function runTests() {
     "Fecho Mensal calcula exclusivamente receitas válidas e despesas pagas do mês/ano alvo"
   );
 
+  // =========================================================================
+  // TESTE 57: Limpeza de Dados da Nuvem Apaga Módulos, Medalhas e Requisitos (Training Progress)
+  // =========================================================================
+  console.log("\n[TESTE 57] Limpeza de nuvem limpa módulos, medalhas e progressos/requisitos formativos...");
+  const sampleCleanState57: ClubDatabaseState = {
+    ...state,
+    classes: [
+      { id: 'CLS-1', code: 'AMIGO', title: 'Classe de Amigo', minimumAge: 10, requirementsCount: 2, requirements: ['Req 1', 'Req 2'], active: true },
+    ],
+    specialties: [
+      { id: 'ESP-1', code: 'ESP-SOC', title: 'Especialidade de Primeiros Socorros', category: 'saude', requirementsCount: 1, requirements: ['Req A'], active: true },
+    ],
+    trainingProgress: [
+      { id: 'TP-1', memberId: 'MEM-1', type: 'classe', targetId: 'CLS-1', targetTitle: 'Classe de Amigo', completedRequirements: [1], totalRequirements: 2, instructorUserId: 'U-1', instructorName: 'Instrutor', instructorValidated: false, finalAuthorizedApproval: false, updatedAt: '2026-01-01' },
+    ],
+  };
+
+  const cleaned57 = cleanSystemStorageSpace(sampleCleanState57, sampleCleanState57.currentUser, '2026-11-19');
+  assert(
+    cleaned57.classes.length === 0 &&
+      cleaned57.specialties.length === 0 &&
+      cleaned57.trainingProgress.length === 0,
+    "Botão 'Limpar dados da nuvem' apaga corretamente todos os módulos, medalhas e respetivos requisitos (trainingProgress)"
+  );
+
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");
   console.log(`Total de Testes: ${passed + failed}`);
   console.log(`Testes Aprovados: ${passed}`);
