@@ -33,7 +33,7 @@ import {
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import { formatKz, parseKzToCents } from '../../utils/currency';
-import { formatDateAO, formatDateTimeAO } from '../../utils/date';
+import { evaluateIdentityCardValidity, formatDateAO, formatDateTimeAO } from '../../utils/date';
 import { Modal } from '../common/Modal';
 import {
   PaymentMethod,
@@ -51,7 +51,9 @@ import { EnrollmentStatusCard } from '../members/EnrollmentStatusCard';
 import { MemberReconfirmationForm } from '../members/MemberReconfirmationForm';
 import { evaluateEnrollmentAvailability } from '../../services/enrollmentService';
 import {
+  DEFAULT_QUOTA_FEE_ID,
   calculateMemberQuotaSummary,
+  getSelectableInstitutionalFees,
   getTodayISODate,
   resolveQuotaConfig,
 } from '../../services/quotaService';
@@ -133,9 +135,11 @@ export const MemberPortalModule: React.FC = () => {
   const [replyFeedback, setReplyFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
 
+  const selectableInstitutionalFees = getSelectableInstitutionalFees(state.fees, state.settings);
+
   // Formulário Comprovativo
   const [proofForm, setProofForm] = useState({
-    feeDefinitionId: state.fees[0]?.id || '',
+    feeDefinitionId: selectableInstitutionalFees[0]?.id || DEFAULT_QUOTA_FEE_ID,
     amountStr: '2500',
     paymentMethod: 'multicaixa_express' as PaymentMethod,
     paymentDate: new Date().toISOString().split('T')[0],
@@ -229,10 +233,10 @@ export const MemberPortalModule: React.FC = () => {
   const handleProofSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setProofSubmitError(null);
-    const fee = state.fees.find(f => f.id === proofForm.feeDefinitionId);
+    const fee = selectableInstitutionalFees.find(f => f.id === proofForm.feeDefinitionId) || selectableInstitutionalFees[0];
     const res = submitPaymentProof({
-      feeDefinitionId: proofForm.feeDefinitionId,
-      feeTitle: fee?.title || 'Quota',
+      feeDefinitionId: fee?.id || proofForm.feeDefinitionId,
+      feeTitle: fee?.title || 'Quota Regular (Cada Domingo)',
       amountInCents: parseKzToCents(proofForm.amountStr),
       paymentMethod: proofForm.paymentMethod,
       referenceCode: '',
@@ -248,7 +252,7 @@ export const MemberPortalModule: React.FC = () => {
       setPortalActionSuccess('Comprovativo submetido com sucesso! Aguarda conferência da Tesouraria.');
       setTimeout(() => setPortalActionSuccess(null), 4000);
       setProofForm({
-        feeDefinitionId: state.fees[0]?.id || '',
+        feeDefinitionId: selectableInstitutionalFees[0]?.id || DEFAULT_QUOTA_FEE_ID,
         amountStr: '2500',
         paymentMethod: 'multicaixa_express',
         paymentDate: new Date().toISOString().split('T')[0],
@@ -300,6 +304,7 @@ export const MemberPortalModule: React.FC = () => {
   const [replyText, setReplyText] = useState('');
   const [replyAutoMarkViewed, setReplyAutoMarkViewed] = useState(true);
   const [isSubmittingReply, setIsSubmittingReply] = useState(false);
+  const [replyError, setReplyError] = useState<string | null>(null);
 
   // Estado para Detalhes de Sugestão
   const [selectedSuggestionToView, setSelectedSuggestionToView] = useState<MemberSuggestion | null>(null);
@@ -378,6 +383,7 @@ export const MemberPortalModule: React.FC = () => {
   const handleDirectorReplySubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedSuggestionToReply) return;
+    setReplyError(null);
     setIsSubmittingReply(true);
     const res = respondToSuggestion(
       selectedSuggestionToReply.id,
@@ -388,8 +394,9 @@ export const MemberPortalModule: React.FC = () => {
     if (res.success) {
       setSelectedSuggestionToReply(null);
       setReplyText('');
+      setReplyError(null);
     } else {
-      alert(res.error || 'Erro ao gravar resposta.');
+      setReplyError(res.error || 'Erro ao gravar resposta.');
     }
   };
 
@@ -543,8 +550,23 @@ export const MemberPortalModule: React.FC = () => {
         </div>
       </div>
 
-      {activePortalTab === 'geral' && (
+      {activePortalTab === 'geral' && (() => {
+        const biValidity = evaluateIdentityCardValidity(member.identityCardExpiryDate);
+        return (
         <div className="space-y-6">
+          {biValidity.isExpired && (
+            <div className="bg-rose-50 border border-rose-300 p-4 rounded-xl text-xs text-rose-950 flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-rose-700 mt-0.5" />
+              <div>
+                <span className="font-bold">Bilhete de Identidade (B.I.) Expirado: </span>
+                O seu B.I. expirou em <strong>{formatDateAO(member.identityCardExpiryDate)}</strong>.{' '}
+                {enrollmentAvailability.isReconfirmationOpen
+                  ? 'Atualize os dados do seu B.I. através do botão «Fazer Reconfirmação de Dados» abaixo.'
+                  : 'Apresente o seu B.I. renovado na Secretaria para atualização da ficha.'}
+              </div>
+            </div>
+          )}
+
           {/* Situação Documental e Reconfirmação na Secretaria */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-5 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1012,7 +1034,8 @@ export const MemberPortalModule: React.FC = () => {
         </div>
       </div>
     </div>
-  )}
+        );
+      })()}
 
   {/* ABA DE SUGESTÕES À DIREÇÃO */}
   {activePortalTab === 'sugestoes' && (
@@ -1540,11 +1563,15 @@ export const MemberPortalModule: React.FC = () => {
           <div>
             <label className="block text-slate-700 font-semibold mb-1">Taxa / Quota a Liquidar</label>
             <select
-              value={proofForm.feeDefinitionId}
+              value={
+                selectableInstitutionalFees.some((f) => f.id === proofForm.feeDefinitionId)
+                  ? proofForm.feeDefinitionId
+                  : selectableInstitutionalFees[0]?.id || DEFAULT_QUOTA_FEE_ID
+              }
               onChange={(e) => setProofForm({ ...proofForm, feeDefinitionId: e.target.value })}
               className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
             >
-              {state.fees.map((f) => (
+              {selectableInstitutionalFees.map((f) => (
                 <option key={f.id} value={f.id}>
                   {f.title} ({formatKz(f.amountInCents)})
                 </option>
@@ -1944,12 +1971,25 @@ export const MemberPortalModule: React.FC = () => {
           onClose={() => {
             setSelectedSuggestionToReply(null);
             setReplyText('');
+            setReplyError(null);
           }}
           title="Aba da Direção · Resposta à Sugestão"
           description="Processo confidencial e exclusivo da Direção com o membro autor da sugestão."
           maxWidth="lg"
         >
           <form onSubmit={handleDirectorReplySubmit} className="space-y-4 text-xs">
+            {replyError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs flex items-center justify-between">
+                <span>{replyError}</span>
+                <button
+                  type="button"
+                  onClick={() => setReplyError(null)}
+                  className="text-rose-500 hover:text-rose-800 font-bold ml-2 text-sm"
+                >
+                  ×
+                </button>
+              </div>
+            )}
             {/* Resumo da Sugestão */}
             <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
               <div className="flex items-center justify-between text-[11px] flex-wrap gap-1">

@@ -29,7 +29,13 @@ import { Member, MemberAttachedDocument, MemberCategory, OfficialDocument } from
 import { useClub } from '../../context/ClubContext';
 import { Modal } from '../common/Modal';
 import { DocumentViewerModal, ViewingDocumentPayload } from '../common/DocumentViewerModal';
-import { formatDateAO, formatDateTimeAO, getNowISOString, getTodayISODate } from '../../utils/date';
+import {
+  evaluateIdentityCardValidity,
+  formatDateAO,
+  formatDateTimeAO,
+  getNowISOString,
+  getTodayISODate,
+} from '../../utils/date';
 import { formatKz } from '../../utils/currency';
 import { downloadDocumentFile, processProofFile } from '../../utils/fileUpload';
 import { buildMemberDossierData } from '../../utils/memberDossier';
@@ -413,8 +419,20 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
         )}
 
         {/* SEPARADOR 1: DADOS & SAÚDE */}
-        {effectiveTab === 'dados_saude' && (
+        {effectiveTab === 'dados_saude' && (() => {
+          const biValidity = evaluateIdentityCardValidity(member.identityCardExpiryDate);
+          return (
           <div className="space-y-5">
+            {biValidity.isExpired && (
+              <div className="p-3 rounded-lg border border-rose-300 bg-rose-50 dark:bg-rose-950/40 dark:border-rose-800 text-rose-900 dark:text-rose-200 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-700 dark:text-rose-400 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold">Bilhete de Identidade (B.I.) Expirado:</span>{' '}
+                  O B.I. deste membro expirou em <strong>{formatDateAO(member.identityCardExpiryDate)}</strong>. Recomenda-se solicitar o documento renovado e atualizar a data de validade.
+                </div>
+              </div>
+            )}
+
             {dossier.missingGuardianInfo && (
               <div className="p-3 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800 text-amber-900 dark:text-amber-200 flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber-700 dark:text-amber-400 shrink-0 mt-0.5" />
@@ -439,6 +457,30 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
                 <p className="font-mono font-bold text-slate-900 dark:text-white mt-0.5">
                   {member.identityCardNumber}
                 </p>
+              </div>
+              <div>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">Validade do B.I.</span>
+                <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={`font-semibold tabular-nums ${
+                      biValidity.isExpired
+                        ? 'text-rose-700 dark:text-rose-400'
+                        : 'text-slate-900 dark:text-white'
+                    }`}
+                  >
+                    {member.identityCardExpiryDate ? formatDateAO(member.identityCardExpiryDate) : 'Não informada'}
+                  </span>
+                  {biValidity.isExpired && (
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300 dark:bg-rose-950/60 dark:text-rose-200 dark:border-rose-700">
+                      B.I. Expirado
+                    </span>
+                  )}
+                  {biValidity.isExpiringSoon && (
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 dark:bg-amber-950/60 dark:text-amber-200 dark:border-amber-700">
+                      {biValidity.label}
+                    </span>
+                  )}
+                </div>
               </div>
               <div>
                 <span className="text-[11px] text-slate-500 dark:text-slate-400">Género</span>
@@ -1010,7 +1052,8 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
               </div>
             )}
           </div>
-        )}
+          );
+        })()}
 
         {/* SEPARADOR 2: FORMAÇÃO & INVESTIDURA */}
         {canViewDossier360 && effectiveTab === 'formacao' && (

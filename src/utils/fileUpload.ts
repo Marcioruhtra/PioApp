@@ -285,3 +285,36 @@ export function downloadDocumentFile(base64OrUrl: string, fileName: string): boo
   document.body.removeChild(link);
   return true;
 }
+
+export function triggerCsvDownload(csvContent: string, filename: string): boolean {
+  if (!csvContent) return false;
+  const safeName = (filename || 'lista.csv').trim();
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const blobUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = safeName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 2500);
+  return true;
+}
+
+export function triggerPdfDownload(pdfBytes: ArrayBuffer | Uint8Array, filename: string): boolean {
+  if (!pdfBytes) return false;
+  const safeName = (filename || 'lista.pdf').trim();
+  const source = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
+  const exactBuffer = new ArrayBuffer(source.byteLength);
+  new Uint8Array(exactBuffer).set(source);
+  const blob = new Blob([exactBuffer], { type: 'application/pdf' });
+  const blobUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = safeName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 2500);
+  return true;
+}

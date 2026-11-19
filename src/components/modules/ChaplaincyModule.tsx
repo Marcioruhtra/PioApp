@@ -52,6 +52,7 @@ export const ChaplaincyModule: React.FC = () => {
   const [selectedRequest, setSelectedRequest] = useState<ChaplaincyRequest | null>(null);
   const [responseStatus, setResponseStatus] = useState<ChaplaincyStatus>('respondido');
   const [responseNotes, setResponseNotes] = useState('');
+  const [responseError, setResponseError] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterCategory, setFilterCategory] = useState<string>('all');
 
@@ -92,12 +93,14 @@ export const ChaplaincyModule: React.FC = () => {
   const handleRespondSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedRequest) return;
+    setResponseError(null);
     const res = respondToChaplaincyRequest(selectedRequest.id, responseStatus, responseNotes);
     if (res.success) {
       setSelectedRequest(null);
       setResponseNotes('');
+      setResponseError(null);
     } else {
-      alert(res.error || 'Erro ao responder.');
+      setResponseError(res.error || 'Erro ao responder.');
     }
   };
 
@@ -504,10 +507,26 @@ export const ChaplaincyModule: React.FC = () => {
                 ></textarea>
               </div>
 
+              {responseError && (
+                <div className="p-3 bg-rose-950/60 border border-rose-700 text-rose-200 rounded-lg text-xs flex items-center justify-between">
+                  <span>{responseError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setResponseError(null)}
+                    className="text-rose-300 hover:text-white font-bold ml-2"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setSelectedRequest(null)}
+                  onClick={() => {
+                    setSelectedRequest(null);
+                    setResponseError(null);
+                  }}
                   className="px-4 py-2.5 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"
                 >
                   Cancelar

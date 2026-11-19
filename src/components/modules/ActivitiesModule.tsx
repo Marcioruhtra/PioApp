@@ -106,6 +106,7 @@ export const ActivitiesModule: React.FC = () => {
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [printedDoc, setPrintedDoc] = useState<OfficialDocument | null>(null);
   const [activityError, setActivityError] = useState<string | null>(null);
+  const [activityToDelete, setActivityToDelete] = useState<ClubActivity | null>(null);
 
   // Formulário Nova Atividade
   const [activityForm, setActivityForm] = useState({
@@ -630,17 +631,7 @@ export const ActivitiesModule: React.FC = () => {
                       {/* Botão de Excluir Atividade */}
                       {(can('activities', 'ARCHIVE') || can('activities', 'EDIT') || currentUser.role === 'diretor' || currentUser.role === 'admin_tecnico') && (
                         <button
-                          onClick={() => {
-                            if (window.confirm(`Tem a certeza que deseja eliminar a atividade "${currentActivity.title}"?`)) {
-                              const res = deleteActivity(currentActivity.id);
-                              if (res.success) {
-                                setSelectedActivity(null);
-                              } else {
-                                console.error("[DEBUG] Error deleting activity:", res.error);
-                                setActivityError(res.error || 'Erro ao eliminar atividade.');
-                              }
-                            }
-                          }}
+                          onClick={() => setActivityToDelete(currentActivity)}
                           className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                           title="Eliminar atividade"
                         >
@@ -1965,6 +1956,46 @@ export const ActivitiesModule: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      {activityToDelete && (
+        <Modal
+          isOpen={Boolean(activityToDelete)}
+          onClose={() => setActivityToDelete(null)}
+          title="Eliminar Atividade"
+          description="Confirme a remoção definitiva desta atividade do calendário do clube."
+          maxWidth="sm"
+        >
+          <div className="space-y-4 text-xs">
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-900">
+              Tem a certeza que deseja eliminar a atividade <strong>{activityToDelete.title}</strong>?
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setActivityToDelete(null)}
+                className="px-3 py-1.5 text-slate-600 hover:text-slate-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const res = deleteActivity(activityToDelete.id);
+                  if (res.success) {
+                    setSelectedActivity(null);
+                  } else {
+                    setActivityError(res.error || 'Erro ao eliminar atividade.');
+                  }
+                  setActivityToDelete(null);
+                }}
+                className="px-4 py-1.5 font-semibold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs"
+              >
+                Sim, Eliminar
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

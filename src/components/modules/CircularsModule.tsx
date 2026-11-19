@@ -25,6 +25,7 @@ export const CircularsModule: React.FC = () => {
 
   const [isNewCircularModalOpen, setIsNewCircularModalOpen] = useState(false);
   const [selectedCircular, setSelectedCircular] = useState<Circular | null>(null);
+  const [circularToDelete, setCircularToDelete] = useState<Circular | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [priorityFilter, setPriorityFilter] = useState<'todos' | 'normal' | 'alta' | 'urgente'>('todos');
 
@@ -170,11 +171,7 @@ export const CircularsModule: React.FC = () => {
                     </button>
                     {can('requests', 'ADMIN') && (
                       <button
-                        onClick={() => {
-                          if (window.confirm('Deseja realmente remover esta circular oficial?')) {
-                            deleteCircular(circular.id);
-                          }
-                        }}
+                        onClick={() => setCircularToDelete(circular)}
                         className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                         title="Remover circular"
                       >
@@ -377,6 +374,44 @@ export const CircularsModule: React.FC = () => {
             >
               Fechar
             </button>
+          </div>
+        </Modal>
+      )}
+
+      {circularToDelete && (
+        <Modal
+          isOpen={Boolean(circularToDelete)}
+          onClose={() => setCircularToDelete(null)}
+          title="Remover Circular Oficial"
+          description="Esta operação remove permanentemente a circular do quadro institucional."
+          maxWidth="sm"
+        >
+          <div className="space-y-4 text-xs">
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-900">
+              Deseja realmente remover a circular <strong>{circularToDelete.title}</strong>?
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setCircularToDelete(null)}
+                className="px-3 py-1.5 text-slate-600 hover:text-slate-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteCircular(circularToDelete.id);
+                  if (selectedCircular?.id === circularToDelete.id) {
+                    setSelectedCircular(null);
+                  }
+                  setCircularToDelete(null);
+                }}
+                className="px-4 py-1.5 font-semibold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs"
+              >
+                Sim, Remover
+              </button>
+            </div>
           </div>
         </Modal>
       )}

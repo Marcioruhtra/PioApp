@@ -44,8 +44,11 @@ import { formatKz, parseKzToCents } from '../../utils/currency';
 import { formatDateAO, getMonthNamePT } from '../../utils/date';
 import { getMemberTeamLabel, isDirectionMember } from '../../services/accountSyncService';
 import {
+  DEFAULT_QUOTA_FEE_ID,
   calculateClubQuotaTotals,
   calculateMemberQuotaSummary,
+  getRubricsCatalogFees,
+  getSelectableInstitutionalFees,
   getTodayISODate,
   MemberQuotaSummary,
   resolveQuotaConfig,
@@ -200,7 +203,7 @@ export const TreasuryModule: React.FC = () => {
   // Formulário de Emissão de Recibo Manual
   const [receiptForm, setReceiptForm] = useState({
     memberId: state.members[0]?.id || '',
-    feeDefinitionId: state.fees[0]?.id || '',
+    feeDefinitionId: state.fees[0]?.id || DEFAULT_QUOTA_FEE_ID,
     periodLabel: 'Março 2026',
     amountStr: '2500',
     paymentMethod: 'multicaixa_express' as PaymentMethod,
@@ -215,7 +218,7 @@ export const TreasuryModule: React.FC = () => {
     description: '',
     category: 'Material de Instrução',
     amountStr: '',
-    accountId: 'ACC-01',
+    accountId: state.accounts.find((a) => a.active)?.id || state.accounts[0]?.id || '',
   });
 
   // Fecho Mensal
@@ -231,7 +234,7 @@ export const TreasuryModule: React.FC = () => {
   const totalIncomeCents = useMemo(
     () =>
       state.receipts
-        .filter((r) => !r.isCancelled)
+        .filter((r) => !r.isCancelled && r.status !== 'anulado')
         .reduce((acc, curr) => acc + curr.amountPaidInCents, 0),
     [state.receipts]
   );
@@ -248,6 +251,18 @@ export const TreasuryModule: React.FC = () => {
   const activeQuotaConfig = useMemo(
     () => resolveQuotaConfig(state.settings, state.fees),
     [state.settings, state.fees]
+  );
+
+  // Rubricas exibidas na aba "Rubricas Financeiras" (exclui a Quota Regular fixa que possui aba própria)
+  const rubricFees = useMemo(
+    () => getRubricsCatalogFees(state.fees, state.settings),
+    [state.fees, state.settings]
+  );
+
+  // Opções para o campo "Taxa / Quota Institucional" (garante sempre a Quota Regular fixa)
+  const selectableInstitutionalFees = useMemo(
+    () => getSelectableInstitutionalFees(state.fees, state.settings),
+    [state.fees, state.settings]
   );
 
   const todayISO = getTodayISODate();
@@ -414,7 +429,7 @@ export const TreasuryModule: React.FC = () => {
     return memberQuotaSummaries.find((s) => s.member.id === statementTarget.member.id) || statementTarget;
   }, [statementTarget, memberQuotaSummaries]);
 
-  const selectedFee = state.fees.find((f) => f.id === receiptForm.feeDefinitionId);
+  const selectedFee = selectableInstitutionalFees.find((f) => f.id === receiptForm.feeDefinitionId) || selectableInstitutionalFees[0];
   const isDonation = selectedFee?.category === 'doacao' || selectedFee?.title.toLowerCase().includes('doaç') || selectedFee?.title.toLowerCase().includes('doacao');
 
   // Emissão de Recibo
@@ -428,10 +443,14 @@ export const TreasuryModule: React.FC = () => {
     }
 
     const targetAccountId = receiptForm.accountId || state.accounts.find(a => a.active)?.id || state.accounts[0]?.id;
+    const resolvedFeeId =
+      selectableInstitutionalFees.find((f) => f.id === receiptForm.feeDefinitionId)?.id ||
+      selectableInstitutionalFees[0]?.id ||
+      DEFAULT_QUOTA_FEE_ID;
 
     const res = createReceipt({
       memberId: receiptForm.memberId === 'CUSTOM' ? '' : receiptForm.memberId,
-      feeDefinitionId: receiptForm.feeDefinitionId,
+      feeDefinitionId: resolvedFeeId,
       periodLabel: receiptForm.periodLabel,
       amountPaidInCents: cents,
       paymentMethod: receiptForm.paymentMethod,
@@ -446,7 +465,7 @@ export const TreasuryModule: React.FC = () => {
       setReceiptFormError(null);
       setReceiptForm({
         memberId: state.members[0]?.id || '',
-        feeDefinitionId: state.fees[0]?.id || '',
+        feeDefinitionId: selectableInstitutionalFees[0]?.id || DEFAULT_QUOTA_FEE_ID,
         periodLabel: 'Março 2026',
         amountStr: '2500',
         paymentMethod: 'multicaixa_express',
@@ -489,7 +508,7 @@ export const TreasuryModule: React.FC = () => {
         description: '',
         category: 'Material de Instrução',
         amountStr: '',
-        accountId: 'ACC-01',
+        accountId: state.accounts.find((a) => a.active)?.id || state.accounts[0]?.id || '',
       });
     } else {
       setExpenseFormError(res.error || 'Erro ao solicitar despesa.');
@@ -1423,7 +1442,7 @@ export const TreasuryModule: React.FC = () => {
                               || state.accounts[0];
                             setPaymentModalData({
                               expenseId: exp.id,
-                              accountId: preferredAccount?.id || 'ACC-01',
+                              accountId: preferredAccount?.id || '',
                             });
                             setPaymentError(null);
                           }}
@@ -1479,8 +1498,15 @@ export const TreasuryModule: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {state.fees.map((f) => (
-                  <tr key={f.id} className="hover:bg-slate-50">
+                {rubricFees.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="p-6 text-center text-slate-400">
+                      Nenhuma rubrica adicional registada. A quota fixa é gerida diretamente na aba Quotas.
+                    </td>
+                  </tr>
+                ) : (
+                  rubricFees.map((f) => (
+                    <tr key={f.id} className="hover:bg-slate-50">
                     <td className="p-3 font-semibold text-slate-900">{f.title}</td>
                     <td className="p-3">{f.category}</td>
                     <td className="p-3">{f.periodicity}</td>
@@ -1519,7 +1545,8 @@ export const TreasuryModule: React.FC = () => {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -1726,11 +1753,15 @@ export const TreasuryModule: React.FC = () => {
           <div>
             <label className="block text-slate-700 font-semibold mb-1">Taxa / Quota Institucional</label>
             <select
-              value={receiptForm.feeDefinitionId}
+              value={
+                selectableInstitutionalFees.some((f) => f.id === receiptForm.feeDefinitionId)
+                  ? receiptForm.feeDefinitionId
+                  : selectableInstitutionalFees[0]?.id || DEFAULT_QUOTA_FEE_ID
+              }
               onChange={(e) => setReceiptForm({ ...receiptForm, feeDefinitionId: e.target.value })}
               className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
             >
-              {state.fees.map((f) => (
+              {selectableInstitutionalFees.map((f) => (
                 <option key={f.id} value={f.id}>
                   {f.title} ({formatKz(f.amountInCents)})
                 </option>

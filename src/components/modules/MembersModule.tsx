@@ -38,6 +38,7 @@ import {
   Loader2,
   Paperclip,
   Image as ImageIcon,
+  Gift,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import {
@@ -49,7 +50,16 @@ import {
   OfficialDocument,
   MemberEnrollmentRequest,
 } from '../../types';
-import { formatDateAO, formatDateTimeAO, generateManualNumber, getTodayISODate } from '../../utils/date';
+import {
+  evaluateIdentityCardValidity,
+  formatDateAO,
+  formatDateTimeAO,
+  generateManualNumber,
+  getCurrentWeekWindow,
+  getExpiredIdentityCardMembers,
+  getTodayISODate,
+  getWeeklyBirthdayMembers,
+} from '../../utils/date';
 import { Modal } from '../common/Modal';
 import { EmptyState } from '../common/EmptyState';
 import { isMemberNumberUnique, findPotentialDuplicateMember } from '../../services/storageService';
@@ -60,8 +70,13 @@ import { MemberDossierModal } from '../members/MemberDossierModal';
 import { MemberRegistrationForm } from '../members/MemberRegistrationForm';
 import { EnrollmentStatusCard } from '../members/EnrollmentStatusCard';
 import {
+  EnrollmentReconfirmationExportType,
   MemberRegistrationFormData,
   findDuplicateEnrollmentByBI,
+  getEnrolledMembersForExport,
+  getNonReconfirmedMembersForExport,
+  getPendingReconfirmationMembers,
+  getReconfirmedMembersForExport,
   normalizeIdentityCardNumber,
   resolveMemberDocumentationStatus,
   validateRegistrationFields,
@@ -69,12 +84,19 @@ import {
   getLocalTodayDateString,
   getLocalCurrentTimeString,
 } from '../../services/enrollmentService';
-import { downloadDocumentFile, processProfilePhoto, processProofFile } from '../../utils/fileUpload';
+import {
+  downloadDocumentFile,
+  processProfilePhoto,
+  processProofFile,
+  triggerPdfDownload,
+} from '../../utils/fileUpload';
 import {
   ROLE_LABELS,
   hasManageEnrollmentPeriodPermission,
+  hasManageReconfirmationPeriodPermission,
   hasApproveMemberAccountPermission,
   hasDeleteMemberUploadsPermission,
+  hasExportEnrollmentReconfListsPermission,
   canExecuteMemberDeletion,
 } from '../../services/permissionService';
 import {
@@ -114,6 +136,7 @@ export const MembersModule: React.FC = () => {
     closeEnrollmentsImmediately,
     approvePendingMemberAccount,
     rejectPendingMemberAccount,
+    exportEnrollmentReconfirmationList,
   } = useClub();
 
   const isAdmin = currentUser.role === 'admin_tecnico' || can('audit', 'ADMIN');
@@ -133,7 +156,16 @@ export const MembersModule: React.FC = () => {
     currentUser.role,
     state.settings.permissionsMatrix
   );
+  const canManageReconfirmationPeriod = hasManageReconfirmationPeriodPermission(
+    currentUser.role,
+    state.settings.permissionsMatrix
+  );
+  const canManageAnyEnrollmentOrReconf = canManageEnrollmentPeriod || canManageReconfirmationPeriod;
   const canDeleteMemberUploads = hasDeleteMemberUploadsPermission(
+    currentUser.role,
+    state.settings.permissionsMatrix
+  );
+  const canExportEnrollmentReconfLists = hasExportEnrollmentReconfListsPermission(
     currentUser.role,
     state.settings.permissionsMatrix
   );
@@ -154,8 +186,12 @@ export const MembersModule: React.FC = () => {
   const [categoryFilter, setCategoryFilter] = useState<string>('todas');
   const [statusFilter, setStatusFilter] = useState<string>('ativo');
   const [documentationFilter, setDocumentationFilter] = useState<'todas' | MemberDocumentationStatus>('todas');
+  const [onlyExpiredBIFilter, setOnlyExpiredBIFilter] = useState(false);
 
-  // Modais de Operação
+  // Modais de Operação e Listas Rápidas
+  const [isPendingReconfModalOpen, setIsPendingReconfModalOpen] = useState(false);
+  const [pendingReconfSearch, setPendingReconfSearch] = useState('');
+  const [isWeeklyBirthdaysModalOpen, setIsWeeklyBirthdaysModalOpen] = useState(false);
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [isUnitsModalOpen, setIsUnitsModalOpen] = useState(false);
   const [editingUnitId, setEditingUnitId] = useState<string | null>(null);
@@ -206,6 +242,7 @@ export const MembersModule: React.FC = () => {
     openTime: '',
     closeDate: '',
     closeTime: '',
+    enableEnrollments: true,
     enableReconfirmation: false,
   });
   const [enrollmentScheduleError, setEnrollmentScheduleError] = useState<string | null>(null);
@@ -222,6 +259,35 @@ export const MembersModule: React.FC = () => {
     [state.settings.enrollmentConfig, nowTick]
   );
 
+  const pendingReconfirmationMembers = useMemo(
+    () => getPendingReconfirmationMembers(state.members, state.settings.enrollmentConfig),
+    [state.members, state.settings.enrollmentConfig]
+  );
+
+  const filteredPendingReconfMembers = useMemo(() => {
+    const q = pendingReconfSearch.trim().toLowerCase();
+    if (!q) return pendingReconfirmationMembers;
+    return pendingReconfirmationMembers.filter(
+      (m) =>
+        m.fullName.toLowerCase().includes(q) ||
+        m.manualNumber.toLowerCase().includes(q) ||
+        m.identityCardNumber.toLowerCase().includes(q) ||
+        (m.unitOrTeam || '').toLowerCase().includes(q)
+    );
+  }, [pendingReconfirmationMembers, pendingReconfSearch]);
+
+  const weeklyBirthdays = useMemo(
+    () => getWeeklyBirthdayMembers(state.members, nowTick),
+    [state.members, nowTick]
+  );
+
+  const weekWindow = useMemo(() => getCurrentWeekWindow(nowTick), [nowTick]);
+
+  const expiredBiMembers = useMemo(
+    () => getExpiredIdentityCardMembers(state.members, nowTick),
+    [state.members, nowTick]
+  );
+
   const reconfirmationStats = useMemo(() => {
     const cfg = state.settings.enrollmentConfig;
     const eligible = (state.members || []).filter(
@@ -234,19 +300,50 @@ export const MembersModule: React.FC = () => {
     const newlyEnrolled = periodId
       ? eligible.filter((m) => m.enrolledPeriodId === periodId && m.lastReconfirmedPeriodId !== periodId).length
       : 0;
-    const pending = Math.max(0, eligible.length - reconfirmed - newlyEnrolled);
+    const pending = periodId ? pendingReconfirmationMembers.length : eligible.length;
     return { total: eligible.length, reconfirmed, newlyEnrolled, pending };
-  }, [state.members, state.settings.enrollmentConfig]);
+  }, [state.members, state.settings.enrollmentConfig, pendingReconfirmationMembers]);
 
-  const handleOpenEnrollmentScheduleModal = () => {
+  const enrolledExportCount = useMemo(
+    () => getEnrolledMembersForExport(state.enrollmentRequests || []).length,
+    [state.enrollmentRequests]
+  );
+
+  const reconfirmedExportCount = useMemo(
+    () => getReconfirmedMembersForExport(state.members || [], state.settings.enrollmentConfig).length,
+    [state.members, state.settings.enrollmentConfig]
+  );
+
+  const nonReconfirmedExportCount = useMemo(
+    () => getNonReconfirmedMembersForExport(state.members || [], state.settings.enrollmentConfig).length,
+    [state.members, state.settings.enrollmentConfig]
+  );
+
+  const handleOpenEnrollmentScheduleModal = (preset: 'default' | 'reconfirmation_only' = 'default') => {
     const existing = state.settings.enrollmentConfig;
     const now = new Date();
+    const defaultEnableEnrollments =
+      preset === 'reconfirmation_only'
+        ? false
+        : !canManageEnrollmentPeriod
+        ? false
+        : existing?.isOpen
+        ? existing.enableEnrollments !== false
+        : true;
+    const defaultEnableReconfirmation =
+      preset === 'reconfirmation_only'
+        ? true
+        : !canManageReconfirmationPeriod
+        ? false
+        : Boolean(existing?.enableReconfirmation) || !canManageEnrollmentPeriod;
+
     setEnrollmentScheduleForm({
       openDate: existing?.isOpen && existing.openDate ? existing.openDate : getLocalTodayDateString(now),
       openTime: existing?.isOpen && existing.openTime ? existing.openTime : getLocalCurrentTimeString(now),
       closeDate: existing?.isOpen && existing.closeDate ? existing.closeDate : '',
       closeTime: existing?.isOpen && existing.closeTime ? existing.closeTime : '',
-      enableReconfirmation: Boolean(existing?.enableReconfirmation),
+      enableEnrollments: defaultEnableEnrollments,
+      enableReconfirmation: defaultEnableReconfirmation,
     });
     setEnrollmentScheduleError(null);
     setIsEnrollmentScheduleModalOpen(true);
@@ -257,27 +354,29 @@ export const MembersModule: React.FC = () => {
     setEnrollmentScheduleError(null);
     const res = reopenEnrollments(enrollmentScheduleForm);
     if (!res.success) {
-      setEnrollmentScheduleError(res.error || 'Não foi possível reabrir as inscrições.');
+      setEnrollmentScheduleError(res.error || 'Não foi possível abrir o período selecionado.');
       return;
     }
     setNowTick(new Date());
     setIsEnrollmentScheduleModalOpen(false);
     const updatedAvail = evaluateEnrollmentAvailability(res.config, new Date());
     const reconfNote = res.config?.enableReconfirmation
-      ? ' Reconfirmação de dados e documentos ativada para membros registados.'
+      ? res.config?.enableEnrollments === false
+        ? ' Apenas a Reconfirmação de dados foi aberta (Inscrições permanecem fechadas).'
+        : ' Reconfirmação de dados e documentos ativada para membros registados.'
       : '';
     showFeedback(
       'success',
       updatedAvail.status === 'agendadas'
-        ? `Reabertura agendada: ${updatedAvail.reasonLabel}${reconfNote}`
+        ? `Abertura agendada: ${updatedAvail.reasonLabel}${reconfNote}`
         : `Período aberto com sucesso! ${updatedAvail.closeLabel ? `Encerramento estipulado para ${updatedAvail.closeLabel}.` : ''}${reconfNote}`
     );
   };
 
-  const handleCloseEnrollmentsNow = () => {
-    const res = closeEnrollmentsImmediately();
+  const handleCloseEnrollmentsNow = (scope: 'all' | 'enrollments' | 'reconfirmation' = 'all') => {
+    const res = closeEnrollmentsImmediately(scope);
     if (!res.success) {
-      showFeedback('error', res.error || 'Sem permissão para encerrar inscrições.');
+      showFeedback('error', res.error || 'Sem permissão para encerrar este período.');
       return;
     }
     setNowTick(new Date());
@@ -285,15 +384,32 @@ export const MembersModule: React.FC = () => {
     const summaryText = res.summary
       ? ` Atualização automática: ${res.summary.keptActiveCount + res.summary.activatedCount} membro(s) ativo(s) e ${res.summary.archivedCount} membro(s) arquivado(s) por falta de reconfirmação.`
       : '';
-    showFeedback(
-      'success',
-      `Período encerrado imediatamente.${summaryText}`
-    );
+    const actionLabel =
+      scope === 'reconfirmation'
+        ? 'Reconfirmações encerradas imediatamente.'
+        : scope === 'enrollments'
+        ? 'Inscrições encerradas imediatamente.'
+        : 'Período encerrado imediatamente.';
+    showFeedback('success', `${actionLabel}${summaryText}`);
   };
 
   const showFeedback = (type: 'success' | 'error', message: string) => {
     setActionFeedback({ type, message });
     setTimeout(() => setActionFeedback(null), 5000);
+  };
+
+  const handleDownloadEnrollmentReconfList = (listType: EnrollmentReconfirmationExportType) => {
+    const res = exportEnrollmentReconfirmationList(listType);
+    if (!res.success || !res.pdfBytes || !res.filename) {
+      showFeedback('error', res.error || 'Sem permissão para baixar esta lista em PDF.');
+      return;
+    }
+    if ((res.rowsCount || 0) === 0) {
+      showFeedback('error', `A ${res.listLabel || 'lista selecionada'} não possui registos no momento.`);
+      return;
+    }
+    triggerPdfDownload(res.pdfBytes, res.filename);
+    showFeedback('success', `${res.listLabel} descarregada em PDF (${res.rowsCount} registo(s)).`);
   };
 
   // Estados de Edição de Membro
@@ -304,6 +420,7 @@ export const MembersModule: React.FC = () => {
     birthDate: '',
     gender: 'M' as 'M' | 'F',
     identityCardNumber: '',
+    identityCardExpiryDate: '',
     phone: '',
     email: '',
     address: '',
@@ -333,6 +450,7 @@ export const MembersModule: React.FC = () => {
       birthDate: m.birthDate,
       gender: m.gender || 'M',
       identityCardNumber: m.identityCardNumber,
+      identityCardExpiryDate: m.identityCardExpiryDate || '',
       phone: m.phone,
       email: m.email || '',
       address: m.address || '',
@@ -406,6 +524,7 @@ export const MembersModule: React.FC = () => {
       birthDate: editFormData.birthDate,
       gender: editFormData.gender,
       identityCardNumber: editFormData.identityCardNumber.trim(),
+      identityCardExpiryDate: editFormData.identityCardExpiryDate.trim() || undefined,
       phone: editFormData.phone.trim(),
       email: editFormData.email.trim() || undefined,
       address: editFormData.address.trim(),
@@ -460,9 +579,15 @@ export const MembersModule: React.FC = () => {
       const matchDoc =
         documentationFilter === 'todas' || docStatus === documentationFilter;
 
-      return matchSearch && matchCategory && matchStatus && matchDoc;
+      const matchExpiredBI =
+        !onlyExpiredBIFilter ||
+        (m.status !== 'arquivado' &&
+          m.status !== 'transferido' &&
+          evaluateIdentityCardValidity(m.identityCardExpiryDate, nowTick).isExpired);
+
+      return matchSearch && matchCategory && matchStatus && matchDoc && matchExpiredBI;
     });
-  }, [state.members, searchQuery, categoryFilter, statusFilter, documentationFilter]);
+  }, [state.members, searchQuery, categoryFilter, statusFilter, documentationFilter, onlyExpiredBIFilter, nowTick]);
 
   const pendingAuthCount = useMemo(() => {
     return (state.deletionRequests || []).filter((r) => r.status === 'pendente').length;
@@ -541,6 +666,7 @@ export const MembersModule: React.FC = () => {
       birthDate: formData.birthDate,
       gender: formData.gender,
       identityCardNumber: normalizeIdentityCardNumber(formData.identityCardNumber),
+      identityCardExpiryDate: formData.identityCardExpiryDate.trim() || undefined,
       phone: formData.phone.trim(),
       email: formData.email.trim(),
       address: formData.address.trim(),
@@ -842,6 +968,48 @@ export const MembersModule: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsWeeklyBirthdaysModalOpen(true)}
+            className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+              weeklyBirthdays.length > 0
+                ? 'text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border-indigo-200'
+                : 'text-slate-700 bg-slate-100 hover:bg-slate-200 border-slate-200'
+            }`}
+            title="Visualizar membros aniversariantes desta semana"
+          >
+            <Gift className="w-3.5 h-3.5" />
+            <span>Aniversariantes da Semana</span>
+            <span
+              className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${
+                weeklyBirthdays.length > 0
+                  ? 'bg-indigo-700 text-white'
+                  : 'bg-slate-300 text-slate-700'
+              }`}
+            >
+              {weeklyBirthdays.length}
+            </span>
+          </button>
+
+          {state.settings.enrollmentConfig?.periodId &&
+            (enrollmentAvailability.enableReconfirmation || pendingReconfirmationMembers.length > 0) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingReconfSearch('');
+                  setIsPendingReconfModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition-colors cursor-pointer"
+                title="Visualizar lista de membros que ainda não fizeram reconfirmação neste período"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Sem Reconfirmação</span>
+                <span className="px-1.5 py-0.5 rounded-full text-[10px] font-black bg-amber-600 text-white">
+                  {pendingReconfirmationMembers.length}
+                </span>
+              </button>
+            )}
+
           {can('members', 'ADMIN') && (
             <button
               onClick={() => setIsBatchRenewalOpen(true)}
@@ -997,6 +1165,36 @@ export const MembersModule: React.FC = () => {
             </div>
           </div>
 
+          {expiredBiMembers.length > 0 && (
+            <div className="p-3.5 rounded-xl border border-rose-200 bg-rose-50/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2 text-rose-900">
+                <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0" />
+                <span>
+                  <strong>{expiredBiMembers.length}</strong>{' '}
+                  {expiredBiMembers.length === 1 ? 'membro está com o' : 'membros estão com o'}{' '}
+                  <strong>Bilhete de Identidade (B.I.) expirado</strong>.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !onlyExpiredBIFilter;
+                  setOnlyExpiredBIFilter(next);
+                  if (next) {
+                    setStatusFilter('todas');
+                  }
+                }}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                  onlyExpiredBIFilter
+                    ? 'bg-rose-700 text-white border-rose-700 hover:bg-rose-800'
+                    : 'bg-white text-rose-800 border-rose-300 hover:bg-rose-100'
+                }`}
+              >
+                {onlyExpiredBIFilter ? 'Mostrar Todos os Membros' : `Filtrar B.I. Expirados (${expiredBiMembers.length})`}
+              </button>
+            </div>
+          )}
+
           {/* Tabela de Membros */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden w-full max-w-full min-w-0">
             {filteredMembers.length === 0 ? (
@@ -1078,7 +1276,28 @@ export const MembersModule: React.FC = () => {
                           </div>
                         </td>
                         <td className="py-3 px-4 font-mono text-[11px] text-slate-600">
-                          {member.identityCardNumber}
+                          <div>{member.identityCardNumber}</div>
+                          {member.identityCardExpiryDate && (() => {
+                            const biVal = evaluateIdentityCardValidity(member.identityCardExpiryDate, nowTick);
+                            return (
+                              <div className="font-sans mt-1 flex flex-wrap items-center gap-1">
+                                <span className="text-[10px] text-slate-500">
+                                  Val.: {formatDateAO(member.identityCardExpiryDate)}
+                                </span>
+                                {biVal.isExpired && (
+                                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                                    <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                                    <span>Expirado</span>
+                                  </span>
+                                )}
+                                {biVal.isExpiringSoon && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                                    {biVal.label}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="py-3 px-4">
                           {docStatus === 'falta_documento' ? (
@@ -1301,6 +1520,12 @@ export const MembersModule: React.FC = () => {
                 <span className="text-xs font-bold text-slate-900 dark:text-white">
                   Período de Inscrições e Reconfirmação no Clube (Ecrã de Login)
                 </span>
+                {enrollmentAvailability.isPeriodOpen && !enrollmentAvailability.isEnrollmentsOpen && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 dark:bg-rose-900/70 text-rose-900 dark:text-rose-200 border border-rose-300 dark:border-rose-700">
+                    <Lock className="w-3 h-3" />
+                    <span>Inscrições Fechadas</span>
+                  </span>
+                )}
                 {enrollmentAvailability.enableReconfirmation && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 dark:bg-blue-900/70 text-blue-900 dark:text-blue-200 border border-blue-300 dark:border-blue-700">
                     <RefreshCw className="w-3 h-3" />
@@ -1312,16 +1537,18 @@ export const MembersModule: React.FC = () => {
               <p className="text-xs text-slate-700 dark:text-slate-200">
                 {enrollmentAvailability.reasonLabel}{' '}
                 <span className="text-slate-600 dark:text-slate-300">
-                  {enrollmentAvailability.isCurrentlyOpen
-                    ? enrollmentAvailability.enableReconfirmation
+                  {enrollmentAvailability.isPeriodOpen
+                    ? enrollmentAvailability.isEnrollmentsOpen && enrollmentAvailability.isReconfirmationOpen
                       ? 'Os botões «Fazer Inscrição no Clube» e «Fazer Reconfirmação de Dados» estão visíveis no ecrã de login.'
-                      : 'O botão «Fazer Inscrição no Clube» está visível no ecrã de login.'
+                      : enrollmentAvailability.isReconfirmationOpen
+                      ? 'Apenas o botão «Fazer Reconfirmação de Dados» está visível no ecrã de login (novas inscrições ocultas).'
+                      : 'Apenas o botão «Fazer Inscrição no Clube» está visível no ecrã de login.'
                     : 'Os botões de inscrição/reconfirmação encontram-se ocultos no ecrã de login.'}
                 </span>
               </p>
 
-              {enrollmentAvailability.enableReconfirmation && enrollmentAvailability.isCurrentlyOpen && (
-                <div className="flex flex-wrap gap-3 text-[11px] text-blue-900 dark:text-blue-200 pt-0.5 font-medium">
+              {enrollmentAvailability.enableReconfirmation && enrollmentAvailability.isPeriodOpen && (
+                <div className="flex flex-wrap items-center gap-3 text-[11px] text-blue-900 dark:text-blue-200 pt-0.5 font-medium">
                   <span>
                     <strong>Reconfirmados neste período:</strong> {reconfirmationStats.reconfirmed}
                   </span>
@@ -1330,8 +1557,20 @@ export const MembersModule: React.FC = () => {
                       <strong>Novos admitidos no período:</strong> {reconfirmationStats.newlyEnrolled}
                     </span>
                   )}
-                  <span>
-                    <strong>Pendentes de reconfirmação:</strong> {reconfirmationStats.pending}
+                  <span className="inline-flex items-center gap-1.5">
+                    <span>
+                      <strong>Pendentes de reconfirmação:</strong> {reconfirmationStats.pending}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingReconfSearch('');
+                        setIsPendingReconfModalOpen(true);
+                      }}
+                      className="px-2 py-0.5 text-[10px] font-bold bg-white dark:bg-slate-800 text-blue-900 dark:text-blue-200 border border-blue-300 dark:border-blue-700 hover:bg-blue-100 dark:hover:bg-slate-700 rounded transition-colors cursor-pointer"
+                    >
+                      Ver lista ({reconfirmationStats.pending})
+                    </button>
                   </span>
                 </div>
               )}
@@ -1377,40 +1616,127 @@ export const MembersModule: React.FC = () => {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
-              {canManageEnrollmentPeriod ? (
+              {canManageAnyEnrollmentOrReconf ? (
                 <>
                   <button
                     type="button"
-                    onClick={handleOpenEnrollmentScheduleModal}
+                    onClick={() => handleOpenEnrollmentScheduleModal('default')}
                     className="px-3.5 py-2 text-xs font-bold text-white bg-blue-900 hover:bg-blue-800 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
                   >
                     <Calendar className="w-3.5 h-3.5" />
                     <span>
-                      {enrollmentAvailability.status === 'encerradas'
-                        ? 'Reabrir Inscrições'
-                        : 'Estipular Datas / Reabrir'}
+                      {!canManageEnrollmentPeriod && canManageReconfirmationPeriod
+                        ? enrollmentAvailability.isReconfirmationOpen
+                          ? 'Gerir Reconfirmações'
+                          : 'Abrir Reconfirmações'
+                        : enrollmentAvailability.status === 'encerradas'
+                        ? 'Abrir Inscrições / Reconfirmações'
+                        : 'Estipular Datas / Gerir'}
                     </span>
                   </button>
 
-                  {state.settings.enrollmentConfig?.isOpen !== false && (
+                  {canManageReconfirmationPeriod && canManageEnrollmentPeriod && !enrollmentAvailability.isReconfirmationOpen && (
                     <button
                       type="button"
-                      onClick={handleCloseEnrollmentsNow}
-                      className="px-3.5 py-2 text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                      onClick={() => handleOpenEnrollmentScheduleModal('reconfirmation_only')}
+                      className="px-3.5 py-2 text-xs font-bold text-blue-900 dark:text-blue-100 bg-blue-100 hover:bg-blue-200 dark:bg-blue-900/70 dark:hover:bg-blue-900 border border-blue-300 dark:border-blue-700 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
                     >
-                      <Lock className="w-3.5 h-3.5" />
-                      <span>Encerrar Imediatamente</span>
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Abrir Só Reconfirmações</span>
                     </button>
                   )}
+
+                  {state.settings.enrollmentConfig?.isOpen !== false && (() => {
+                    const isBoth = enrollmentAvailability.enableEnrollments && enrollmentAvailability.enableReconfirmation;
+                    const onlyReconf = !enrollmentAvailability.enableEnrollments && enrollmentAvailability.enableReconfirmation;
+                    if (isBoth && !canManageEnrollmentPeriod && canManageReconfirmationPeriod) {
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => handleCloseEnrollmentsNow('reconfirmation')}
+                          className="px-3.5 py-2 text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                          <span>Encerrar Reconfirmações</span>
+                        </button>
+                      );
+                    }
+                    if (isBoth && canManageEnrollmentPeriod && !canManageReconfirmationPeriod) {
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => handleCloseEnrollmentsNow('enrollments')}
+                          className="px-3.5 py-2 text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                          <span>Encerrar Inscrições</span>
+                        </button>
+                      );
+                    }
+                    const canCloseWhole =
+                      (!enrollmentAvailability.enableEnrollments || canManageEnrollmentPeriod) &&
+                      (!enrollmentAvailability.enableReconfirmation || canManageReconfirmationPeriod);
+                    if (!canCloseWhole) return null;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => handleCloseEnrollmentsNow('all')}
+                        className="px-3.5 py-2 text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <Lock className="w-3.5 h-3.5" />
+                        <span>{onlyReconf ? 'Encerrar Reconfirmações' : 'Encerrar Imediatamente'}</span>
+                      </button>
+                    );
+                  })()}
                 </>
               ) : (
                 <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-[11px] text-slate-600 dark:text-slate-300">
                   <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  <span>Gestão restrita via Grelha de Permissões (Abrir / Encerrar Inscrições)</span>
+                  <span>Gestão restrita via Grelha de Permissões (Abrir / Encerrar Inscrições ou Reconfirmações)</span>
                 </div>
               )}
             </div>
           </div>
+
+          {canExportEnrollmentReconfLists && (
+            <div className="p-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/30 flex flex-col lg:flex-row lg:items-center justify-between gap-3 shadow-xs w-full max-w-full">
+              <div className="space-y-0.5">
+                <h3 className="text-xs font-black uppercase tracking-wide text-blue-950 dark:text-blue-100 flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-blue-800 dark:text-blue-300 shrink-0" />
+                  <span>Baixar Listas Oficiais em PDF (Inscrição e Reconfirmação)</span>
+                </h3>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                  Descarregue em documento oficial PDF as listas de candidatos inscritos, membros reconfirmados e membros sem reconfirmação.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleDownloadEnrollmentReconfList('inscritos')}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-blue-900 bg-white hover:bg-blue-100 border border-blue-300 rounded-lg shadow-xs transition-colors cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Lista de Inscritos PDF ({enrolledExportCount})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDownloadEnrollmentReconfList('reconfirmados')}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg shadow-xs transition-colors cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Lista de Reconfirmados PDF ({reconfirmedExportCount})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDownloadEnrollmentReconfList('nao_reconfirmados')}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded-lg shadow-xs transition-colors cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Lista Não Reconfirmados PDF ({nonReconfirmedExportCount})</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {pendingMemberAccounts.length > 0 && (
             <div className="p-4 rounded-xl border border-amber-300 bg-amber-50/90 text-amber-950 space-y-3 shadow-xs w-full max-w-full">
@@ -1572,6 +1898,21 @@ export const MembersModule: React.FC = () => {
                         </td>
                         <td className="py-3 px-4">
                           <div className="font-mono text-[11px] text-slate-700">{req.identityCardNumber}</div>
+                          {req.identityCardExpiryDate && (() => {
+                            const reqBiVal = evaluateIdentityCardValidity(req.identityCardExpiryDate, nowTick);
+                            return (
+                              <div className="text-[10px] mt-0.5 flex flex-wrap items-center gap-1">
+                                <span className={reqBiVal.isExpired ? 'text-rose-700 font-bold' : 'text-slate-500'}>
+                                  Val. B.I.: {formatDateAO(req.identityCardExpiryDate)}
+                                </span>
+                                {reqBiVal.isExpired && (
+                                  <span className="px-1 py-0.2 rounded text-[9px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                                    Expirado
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
                           <div className="text-[10px] text-slate-500 mt-0.5">Nasc.: {formatDateAO(req.birthDate)}</div>
                         </td>
                         <td className="py-3 px-4">
@@ -1994,6 +2335,26 @@ export const MembersModule: React.FC = () => {
               <div>
                 <span className="text-[10px] uppercase font-bold text-slate-500 block">B.I. (Angola)</span>
                 <span className="font-mono text-slate-800">{viewingEnrollment.identityCardNumber}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Validade do B.I.</span>
+                {(() => {
+                  const viewBiVal = evaluateIdentityCardValidity(viewingEnrollment.identityCardExpiryDate, nowTick);
+                  return (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className={viewBiVal.isExpired ? 'font-bold text-rose-700' : 'text-slate-800'}>
+                        {viewingEnrollment.identityCardExpiryDate
+                          ? formatDateAO(viewingEnrollment.identityCardExpiryDate)
+                          : 'Não informada'}
+                      </span>
+                      {viewBiVal.isExpired && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                          B.I. Expirado
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
               <div>
                 <span className="text-[10px] uppercase font-bold text-slate-500 block">Data de Nascimento</span>
@@ -3317,6 +3678,20 @@ export const MembersModule: React.FC = () => {
                     required
                   />
                 </div>
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Validade do B.I.</label>
+                  <input
+                    type="date"
+                    value={editFormData.identityCardExpiryDate}
+                    onChange={(e) => setEditFormData({ ...editFormData, identityCardExpiryDate: e.target.value })}
+                    className="w-full p-2 border border-slate-200 rounded"
+                  />
+                  {evaluateIdentityCardValidity(editFormData.identityCardExpiryDate, nowTick).isExpired && (
+                    <p className="text-[10px] font-bold text-rose-600 mt-1">
+                      B.I. Expirado ({formatDateAO(editFormData.identityCardExpiryDate)})
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -3815,16 +4190,16 @@ export const MembersModule: React.FC = () => {
         </Modal>
       )}
 
-      {/* MODAL: Reabrir / Estipular Datas e Horários do Período de Inscrições */}
-      {isEnrollmentScheduleModalOpen && canManageEnrollmentPeriod && (
+      {/* MODAL: Gerir Abertura e Encerramento de Inscrições e Reconfirmações */}
+      {isEnrollmentScheduleModalOpen && canManageAnyEnrollmentOrReconf && (
         <Modal
           isOpen={isEnrollmentScheduleModalOpen}
           onClose={() => {
             setIsEnrollmentScheduleModalOpen(false);
             setEnrollmentScheduleError(null);
           }}
-          title="Gerir Abertura e Encerramento de Inscrições"
-          description="Estipule a data e horário de abertura e a data e horário de encerramento das inscrições no clube, ou encerre imediatamente."
+          title="Gerir Abertura de Inscrições e Reconfirmações"
+          description="Escolha de forma independente se pretende abrir novas Inscrições, apenas a Reconfirmação de Dados, ou ambos, e estipule as datas/horários."
           maxWidth="lg"
         >
           <form onSubmit={handleReopenEnrollmentsSubmit} className="space-y-4 text-xs">
@@ -3838,7 +4213,7 @@ export const MembersModule: React.FC = () => {
             <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-3">
               <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                 <Calendar className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
-                <span>Abertura das Inscrições</span>
+                <span>Abertura do Período</span>
               </h4>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -3869,14 +4244,14 @@ export const MembersModule: React.FC = () => {
                 </div>
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Se definir uma data/horário futuro, o botão de inscrição no ecrã de login só aparecerá a partir desse momento.
+                Se definir uma data/horário futuro, os botões selecionados no ecrã de login só aparecerão a partir desse momento.
               </p>
             </div>
 
             <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-3">
               <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                 <Clock className="w-3.5 h-3.5 text-rose-700 dark:text-rose-400" />
-                <span>Encerramento das Inscrições</span>
+                <span>Encerramento do Período</span>
               </h4>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -3911,34 +4286,83 @@ export const MembersModule: React.FC = () => {
               </p>
             </div>
 
-            <label className="flex items-start gap-3 p-3.5 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={enrollmentScheduleForm.enableReconfirmation}
-                onChange={(e) =>
-                  setEnrollmentScheduleForm((prev) => ({
-                    ...prev,
-                    enableReconfirmation: e.target.checked,
-                  }))
-                }
-                className="mt-0.5 w-4 h-4 rounded border-blue-300 text-blue-900 focus:ring-blue-900 shrink-0"
-              />
-              <div className="space-y-1">
-                <div className="font-bold text-blue-950 dark:text-blue-200 flex items-center gap-1.5">
-                  <RefreshCw className="w-3.5 h-3.5 text-blue-800 dark:text-blue-400" />
-                  <span>Ativar Opção de Reconfirmação de Dados dos Membros</span>
+            <div className="space-y-2.5">
+              <label
+                className={`flex items-start gap-3 p-3.5 rounded-xl border ${
+                  canManageEnrollmentPeriod
+                    ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/30 cursor-pointer'
+                    : 'border-slate-200 dark:border-slate-700 bg-slate-100/80 dark:bg-slate-800/50 opacity-70 cursor-not-allowed'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  disabled={!canManageEnrollmentPeriod}
+                  checked={enrollmentScheduleForm.enableEnrollments}
+                  onChange={(e) =>
+                    setEnrollmentScheduleForm((prev) => ({
+                      ...prev,
+                      enableEnrollments: e.target.checked,
+                    }))
+                  }
+                  className="mt-0.5 w-4 h-4 rounded border-emerald-300 text-emerald-800 focus:ring-emerald-800 shrink-0 disabled:cursor-not-allowed"
+                />
+                <div className="space-y-1">
+                  <div className="font-bold text-emerald-950 dark:text-emerald-200 flex items-center gap-1.5 flex-wrap">
+                    <UserPlus className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
+                    <span>Abrir Inscrições de Novos Membros</span>
+                    {!canManageEnrollmentPeriod && (
+                      <span className="text-[10px] font-semibold text-rose-700 dark:text-rose-400">
+                        (Sem permissão na Grelha)
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-emerald-900/90 dark:text-emerald-300 leading-relaxed">
+                    Exibe o botão «Fazer Inscrição no Clube» no ecrã de login para candidatos submeterem novas inscrições. Desmarque se pretender abrir apenas as Reconfirmações.
+                  </p>
                 </div>
-                <p className="text-[11px] text-blue-900/90 dark:text-blue-300 leading-relaxed">
-                  Permite que os membros já registados e inscritos reconfirmem e atualizem os seus dados cadastrais e documentos durante este período. Após o término do período, os membros com ficha válida que passaram na inscrição ou concluíram a reconfirmação ficarão <strong>Ativos</strong>, enquanto os membros registados que não reconfirmarem serão marcados automaticamente como <strong>Inativos</strong>.
-                </p>
-              </div>
-            </label>
+              </label>
+
+              <label
+                className={`flex items-start gap-3 p-3.5 rounded-xl border ${
+                  canManageReconfirmationPeriod
+                    ? 'border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 cursor-pointer'
+                    : 'border-slate-200 dark:border-slate-700 bg-slate-100/80 dark:bg-slate-800/50 opacity-70 cursor-not-allowed'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  disabled={!canManageReconfirmationPeriod}
+                  checked={enrollmentScheduleForm.enableReconfirmation}
+                  onChange={(e) =>
+                    setEnrollmentScheduleForm((prev) => ({
+                      ...prev,
+                      enableReconfirmation: e.target.checked,
+                    }))
+                  }
+                  className="mt-0.5 w-4 h-4 rounded border-blue-300 text-blue-900 focus:ring-blue-900 shrink-0 disabled:cursor-not-allowed"
+                />
+                <div className="space-y-1">
+                  <div className="font-bold text-blue-950 dark:text-blue-200 flex items-center gap-1.5 flex-wrap">
+                    <RefreshCw className="w-3.5 h-3.5 text-blue-800 dark:text-blue-400" />
+                    <span>Abrir Reconfirmação de Dados dos Membros</span>
+                    {!canManageReconfirmationPeriod && (
+                      <span className="text-[10px] font-semibold text-rose-700 dark:text-rose-400">
+                        (Sem permissão na Grelha)
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-blue-900/90 dark:text-blue-300 leading-relaxed">
+                    Pode ser ativada em conjunto com as inscrições ou de forma separada (sem abrir inscrições). Desativa todas as contas exceto Conta Institucional, Diretor e Secretário; membros que não reconfirmarem até ao encerramento terão a ficha <strong>Arquivada</strong> e a conta desativada.
+                  </p>
+                </div>
+              </label>
+            </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200 dark:border-slate-700">
               {state.settings.enrollmentConfig?.isOpen !== false ? (
                 <button
                   type="button"
-                  onClick={handleCloseEnrollmentsNow}
+                  onClick={() => handleCloseEnrollmentsNow('all')}
                   className="px-3.5 py-2 font-bold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors"
                 >
                   <Lock className="w-3.5 h-3.5" />
@@ -3961,10 +4385,11 @@ export const MembersModule: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors"
+                  disabled={!enrollmentScheduleForm.enableEnrollments && !enrollmentScheduleForm.enableReconfirmation}
+                  className="px-4 py-2 font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-40 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors"
                 >
                   <CheckCircle className="w-3.5 h-3.5" />
-                  <span>Reabrir / Salvar Período</span>
+                  <span>Abrir / Salvar Período</span>
                 </button>
               </div>
             </div>
@@ -3989,6 +4414,168 @@ export const MembersModule: React.FC = () => {
         documentItem={viewingDocument}
         onClose={() => setViewingDocument(null)}
       />
+
+      {/* MODAL RÁPIDO: Membros que ainda não fizeram Reconfirmação de Dados */}
+      <Modal
+        isOpen={isPendingReconfModalOpen}
+        onClose={() => setIsPendingReconfModalOpen(false)}
+        title={`Membros Pendentes de Reconfirmação (${pendingReconfirmationMembers.length})`}
+        description="Lista de membros elegíveis (ativos/inativos) que ainda não concluíram a reconfirmação de dados no período atual."
+        maxWidth="3xl"
+      >
+        <div className="space-y-4 text-xs">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={pendingReconfSearch}
+                onChange={(e) => setPendingReconfSearch(e.target.value)}
+                placeholder="Filtrar por nome, matrícula, B.I. ou equipa..."
+                className="w-full pl-9 pr-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-900"
+              />
+            </div>
+            {canExportEnrollmentReconfLists && (
+              <button
+                type="button"
+                onClick={() => handleDownloadEnrollmentReconfList('nao_reconfirmados')}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded-lg shadow-xs transition-colors cursor-pointer shrink-0"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Baixar Lista PDF ({nonReconfirmedExportCount})</span>
+              </button>
+            )}
+          </div>
+
+          {filteredPendingReconfMembers.length === 0 ? (
+            <div className="p-6 text-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400">
+              {pendingReconfirmationMembers.length === 0
+                ? 'Todos os membros elegíveis já realizaram a reconfirmação de dados neste período.'
+                : 'Nenhum membro encontrado com esse filtro.'}
+            </div>
+          ) : (
+            <div className="max-h-[60vh] overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-xl divide-y divide-slate-100 dark:divide-slate-800">
+              {filteredPendingReconfMembers.map((m) => {
+                const mBiVal = evaluateIdentityCardValidity(m.identityCardExpiryDate, nowTick);
+                return (
+                  <div
+                    key={m.id}
+                    className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors"
+                  >
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-slate-900 dark:text-white truncate">{m.fullName}</span>
+                        <span className="font-mono text-[10px] font-bold text-blue-900 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 px-1.5 py-0.5 rounded border border-blue-200 dark:border-blue-800">
+                          {m.manualNumber}
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                            m.status === 'ativo'
+                              ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                              : 'bg-rose-50 text-rose-800 border border-rose-200'
+                          }`}
+                        >
+                          {m.status === 'ativo' ? 'Ativo' : 'Inativo'}
+                        </span>
+                        {mBiVal.isExpired && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                            B.I. Expirado
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        <span className="capitalize">{m.category}</span> ·{' '}
+                        {getMemberTeamLabel(m, state.users)} · Tel.: {m.phone} · B.I.:{' '}
+                        <span className="font-mono">{m.identityCardNumber}</span>
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsPendingReconfModalOpen(false);
+                          setSelectedMember(m);
+                        }}
+                        className="px-2.5 py-1.5 text-[11px] font-bold text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>Ver Ficha</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* MODAL RÁPIDO: Membros Aniversariantes da Semana */}
+      <Modal
+        isOpen={isWeeklyBirthdaysModalOpen}
+        onClose={() => setIsWeeklyBirthdaysModalOpen(false)}
+        title={`Aniversariantes da Semana (${weeklyBirthdays.length})`}
+        description={`Semana corrente de ${weekWindow.startLabel} (Segunda) a ${weekWindow.endLabel} (Domingo).`}
+        maxWidth="2xl"
+      >
+        <div className="space-y-4 text-xs">
+          {weeklyBirthdays.length === 0 ? (
+            <div className="p-6 text-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400">
+              Nenhum membro registado celebra aniversário nesta semana ({weekWindow.startLabel} a {weekWindow.endLabel}).
+            </div>
+          ) : (
+            <div className="max-h-[60vh] overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-xl divide-y divide-slate-100 dark:divide-slate-800">
+              {weeklyBirthdays.map((entry) => (
+                <div
+                  key={entry.member.id}
+                  className={`p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 transition-colors ${
+                    entry.isToday
+                      ? 'bg-indigo-50/70 dark:bg-indigo-950/30'
+                      : 'hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                  }`}
+                >
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-bold text-slate-900 dark:text-white">{entry.member.fullName}</span>
+                      {entry.isToday && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-indigo-700 text-white">
+                          Hoje!
+                        </span>
+                      )}
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                        {entry.weekdayLabel} · {entry.dayMonthLabel}
+                      </span>
+                      {entry.turningAge !== null && (
+                        <span className="text-[11px] font-semibold text-indigo-800 dark:text-indigo-300">
+                          Completa {entry.turningAge} {entry.turningAge === 1 ? 'ano' : 'anos'}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Matrícula <strong className="font-mono">{entry.member.manualNumber}</strong> ·{' '}
+                      <span className="capitalize">{entry.member.category}</span> ·{' '}
+                      {getMemberTeamLabel(entry.member, state.users)} · Tel.: {entry.member.phone}
+                    </p>
+                  </div>
+                  <div className="shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsWeeklyBirthdaysModalOpen(false);
+                        setSelectedMember(entry.member);
+                      }}
+                      className="px-2.5 py-1.5 text-[11px] font-bold text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>Ver Ficha</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 };

@@ -12,7 +12,12 @@ import {
   Upload,
 } from 'lucide-react';
 import { EnrollmentDocumentDeliveryMethod, MemberCategory } from '../../types';
-import { generateManualNumber, getTodayISODate } from '../../utils/date';
+import {
+  evaluateIdentityCardValidity,
+  formatDateAO,
+  generateManualNumber,
+  getTodayISODate,
+} from '../../utils/date';
 import { downloadDocumentFile, processProofFile } from '../../utils/fileUpload';
 import { DocumentViewerModal, ViewingDocumentPayload } from '../common/DocumentViewerModal';
 import {
@@ -51,6 +56,7 @@ const createEmptyFormData = (
   birthDate: '',
   gender: 'M',
   identityCardNumber: '',
+  identityCardExpiryDate: '',
   phone: '',
   email: '',
   address: '',
@@ -106,6 +112,7 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
   const [previewDoc, setPreviewDoc] = useState<ViewingDocumentPayload | null>(null);
 
   const showJoinedDateField = mode === 'secretary' && formData.category !== 'aspirante';
+  const biValidity = evaluateIdentityCardValidity(formData.identityCardExpiryDate);
 
   const handleRegBirthDateChange = (dateVal: string) => {
     const autoNumber = generateManualNumber(formData.identityCardNumber, dateVal);
@@ -272,46 +279,78 @@ export const MemberRegistrationForm: React.FC<MemberRegistrationFormProps> = ({
             />
           </div>
 
-          <div>
-            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
-              Data de Nascimento <span className="text-rose-500">*</span>
-            </label>
-            <input
-              type="date"
-              value={formData.birthDate}
-              onChange={(e) => handleRegBirthDateChange(e.target.value)}
-              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
-              required
-            />
-          </div>
+          <div className="sm:col-span-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div>
+              <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
+                Data de Nascimento <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="date"
+                value={formData.birthDate}
+                onChange={(e) => handleRegBirthDateChange(e.target.value)}
+                className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
+                required
+              />
+            </div>
 
-          <div>
-            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
-              Sexo <span className="text-rose-500">*</span>
-            </label>
-            <select
-              value={formData.gender}
-              onChange={(e) => setFormData({ ...formData, gender: e.target.value as 'M' | 'F' })}
-              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
-              required
-            >
-              <option value="M">Masculino</option>
-              <option value="F">Feminino</option>
-            </select>
-          </div>
+            <div>
+              <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
+                Sexo <span className="text-rose-500">*</span>
+              </label>
+              <select
+                value={formData.gender}
+                onChange={(e) => setFormData({ ...formData, gender: e.target.value as 'M' | 'F' })}
+                className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
+                required
+              >
+                <option value="M">Masculino</option>
+                <option value="F">Feminino</option>
+              </select>
+            </div>
 
-          <div>
-            <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
-              B.I. (Angola) <span className="text-rose-500">*</span>
-            </label>
-            <input
-              type="text"
-              placeholder="007849312LA041"
-              value={formData.identityCardNumber}
-              onChange={(e) => handleRegBIChange(e.target.value)}
-              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded font-mono uppercase bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
-              required
-            />
+            <div>
+              <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
+                B.I. (Angola) <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="text"
+                placeholder="007849312LA041"
+                value={formData.identityCardNumber}
+                onChange={(e) => handleRegBIChange(e.target.value)}
+                className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded font-mono uppercase bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-slate-700 dark:text-slate-200 font-semibold mb-1">
+                Validade do B.I. <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="date"
+                value={formData.identityCardExpiryDate}
+                onChange={(e) =>
+                  setFormData({ ...formData, identityCardExpiryDate: e.target.value })
+                }
+                className={`w-full p-2 border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-1 focus:ring-blue-900 dark:focus:ring-blue-400 ${
+                  biValidity.isExpired
+                    ? 'border-rose-400 dark:border-rose-700'
+                    : 'border-slate-200 dark:border-slate-700'
+                }`}
+                required
+              />
+              {biValidity.isExpired && (
+                <p className="text-[11px] font-bold text-rose-600 dark:text-rose-400 mt-1 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3 shrink-0" />
+                  <span>B.I. Expirado ({formatDateAO(formData.identityCardExpiryDate)})</span>
+                </p>
+              )}
+              {biValidity.isExpiringSoon && (
+                <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-400 mt-1">
+                  {biValidity.label}
+                </p>
+              )}
+            </div>
           </div>
         </div>
       </div>

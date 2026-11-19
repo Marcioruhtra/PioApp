@@ -86,14 +86,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   );
 
   React.useEffect(() => {
-    if (!enrollmentAvailability.isCurrentlyOpen && enrollmentModalTab === 'form' && !submittedRequest) {
-      setEnrollmentModalTab('status');
+    if (!enrollmentAvailability.isEnrollmentsOpen && enrollmentModalTab === 'form' && !submittedRequest) {
+      setEnrollmentModalTab(enrollmentAvailability.isReconfirmationOpen ? 'reconfirmation' : 'status');
     }
     if (!enrollmentAvailability.isReconfirmationOpen && enrollmentModalTab === 'reconfirmation' && !reconfirmedMember) {
       setEnrollmentModalTab('status');
     }
   }, [
-    enrollmentAvailability.isCurrentlyOpen,
+    enrollmentAvailability.isEnrollmentsOpen,
     enrollmentAvailability.isReconfirmationOpen,
     enrollmentModalTab,
     submittedRequest,
@@ -469,7 +469,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
             {/* Secção de Inscrição e Reconfirmação Direta no Clube (Exclusiva do Ecrã de Login) */}
             <div className="pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2">
-              {enrollmentAvailability.isCurrentlyOpen && (
+              {enrollmentAvailability.isEnrollmentsOpen && (
                 <button
                   type="button"
                   onClick={() => {
@@ -570,13 +570,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           setReconfirmedMember(null);
         }}
         title={
-          enrollmentAvailability.isReconfirmationOpen
+          enrollmentAvailability.isEnrollmentsOpen && enrollmentAvailability.isReconfirmationOpen
             ? 'Inscrição & Reconfirmação no Clube'
+            : enrollmentAvailability.isReconfirmationOpen
+            ? 'Reconfirmação de Dados no Clube'
             : 'Inscrição Direta no Clube'
         }
         description={
-          enrollmentAvailability.isReconfirmationOpen
+          enrollmentAvailability.isEnrollmentsOpen && enrollmentAvailability.isReconfirmationOpen
             ? 'Submeta uma nova inscrição, reconfirme/atualize os dados da sua ficha de membro ou consulte o seu estado.'
+            : enrollmentAvailability.isReconfirmationOpen
+            ? 'Reconfirme e atualize os dados e documentos da sua ficha de membro ou consulte o seu estado.'
             : 'Preencha a ficha oficial de inscrição para avaliação e autorização da Secretaria do Clube.'
         }
         maxWidth="3xl"
@@ -584,7 +588,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         <div className="space-y-5">
           {/* Alternador entre Inscrição, Reconfirmação e Consulta de Estado */}
           <div className="flex flex-wrap border-b border-slate-200 dark:border-slate-700 gap-4">
-            {enrollmentAvailability.isCurrentlyOpen && (
+            {enrollmentAvailability.isEnrollmentsOpen && (
               <button
                 type="button"
                 onClick={() => setEnrollmentModalTab('form')}
@@ -626,7 +630,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             </button>
           </div>
 
-          {enrollmentModalTab === 'form' && (enrollmentAvailability.isCurrentlyOpen || submittedRequest) ? (
+          {enrollmentModalTab === 'form' && (enrollmentAvailability.isEnrollmentsOpen || submittedRequest) ? (
             submittedRequest ? (
               <div className="p-5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl space-y-4 text-xs">
                 <div className="flex items-start gap-3">

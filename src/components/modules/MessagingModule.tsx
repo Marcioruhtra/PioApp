@@ -60,7 +60,9 @@ export const MessagingModule: React.FC = () => {
     return <div className="p-6 text-xs text-slate-600">Sem permissão para aceder ao módulo de mensagens.</div>;
   }
 
-  const sentMessages = (state.messages || []).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const sentMessages = [...(state.messages || [])].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
 
   return (
     <div className="space-y-6 w-full max-w-full min-w-0">

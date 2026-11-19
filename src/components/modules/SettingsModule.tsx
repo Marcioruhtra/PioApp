@@ -110,8 +110,13 @@ export const SettingsModule: React.FC = () => {
                 <label className="block text-slate-700 font-semibold mb-1">Ano Fiscal em Curso</label>
                 <input
                   type="number"
-                  value={form.currentYear}
-                  onChange={(e) => setForm({ ...form, currentYear: parseInt(e.target.value, 10) })}
+                  min={2000}
+                  max={2100}
+                  value={Number.isFinite(form.currentYear) ? form.currentYear : state.settings.currentYear}
+                  onChange={(e) => {
+                    const parsed = parseInt(e.target.value, 10);
+                    setForm({ ...form, currentYear: Number.isNaN(parsed) ? state.settings.currentYear : parsed });
+                  }}
                   className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
                   disabled={!can('settings', 'EDIT')}
                 />
@@ -172,21 +177,27 @@ export const SettingsModule: React.FC = () => {
               ) : <span />}
 
               <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const res = openNewFiscalYear(form.currentYear + 1);
-                    if (res.success) {
-                      setForm((prev) => ({ ...prev, currentYear: form.currentYear + 1 }));
-                      setIsSaved(true);
-                      setTimeout(() => setIsSaved(false), 3000);
-                    }
-                  }}
-                  className="px-4 py-2 text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 rounded-lg shadow-xs flex items-center gap-1.5"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Abrir Ano {form.currentYear + 1}</span>
-                </button>
+                {can('settings', 'ADMIN') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErrorMessage(null);
+                      const targetYear = (Number.isFinite(form.currentYear) ? form.currentYear : state.settings.currentYear) + 1;
+                      const res = openNewFiscalYear(targetYear);
+                      if (res.success) {
+                        setForm((prev) => ({ ...prev, currentYear: targetYear }));
+                        setIsSaved(true);
+                        setTimeout(() => setIsSaved(false), 3000);
+                      } else {
+                        setErrorMessage(res.error || 'Erro ao abrir novo ano fiscal.');
+                      }
+                    }}
+                    className="px-4 py-2 text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 rounded-lg shadow-xs flex items-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Abrir Ano {(Number.isFinite(form.currentYear) ? form.currentYear : state.settings.currentYear) + 1}</span>
+                  </button>
+                )}
                 <button
                   type="submit"
                   className="px-4 py-2 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg shadow-xs flex items-center gap-1.5"

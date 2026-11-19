@@ -35,8 +35,10 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   { module: 'members', action: 'APPROVE', description: 'Aprovar eliminações de membros' },
   { module: 'members', action: 'APPROVE_ENROLLMENT', description: 'Analisar, validar ou recusar solicitações de inscrição de novos membros (Concedido pelo Administrador)' },
   { module: 'members', action: 'MANAGE_ENROLLMENT_PERIOD', description: 'Encerrar e reabrir o período de inscrições no clube (Concedido pelo Administrador)' },
+  { module: 'members', action: 'MANAGE_RECONFIRMATION_PERIOD', description: 'Abrir e encerrar separadamente o período de reconfirmação de dados dos membros (Concedido pelo Administrador)' },
   { module: 'members', action: 'APPROVE_MEMBER_ACCOUNT', description: 'Confirmar e ativar contas de login criadas por membros após validação da inscrição (Concedido pelo Administrador)' },
   { module: 'members', action: 'DELETE_MEMBER_UPLOADS', description: 'Apagar uploads e documentos anexados nas fichas dos membros (Exclusivo Diretor/Secretário — Concedido pelo Administrador)' },
+  { module: 'members', action: 'EXPORT_ENROLLMENT_RECONF_LISTS', description: 'Baixar listas em PDF de inscritos, reconfirmados e não reconfirmados (Concedido pelo Administrador)' },
   { module: 'members', action: 'EXPORT', description: 'Exportar listas de membros' },
   { module: 'members', action: 'PRINT', description: 'Imprimir fichas e cartões de membros' },
   { module: 'members', action: 'ADMIN', description: 'Gestão institucional e renovação anual' },
@@ -145,7 +147,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   admin_tecnico: {
     dashboard: ['VIEW'],
     associate_director: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
-    members: ['VIEW', 'VIEW_DOSSIER_360', 'CREATE', 'EDIT', 'DELETE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'APPROVE_ENROLLMENT', 'MANAGE_ENROLLMENT_PERIOD', 'APPROVE_MEMBER_ACCOUNT', 'DELETE_MEMBER_UPLOADS'],
+    members: ['VIEW', 'VIEW_DOSSIER_360', 'CREATE', 'EDIT', 'DELETE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'APPROVE_ENROLLMENT', 'MANAGE_ENROLLMENT_PERIOD', 'MANAGE_RECONFIRMATION_PERIOD', 'APPROVE_MEMBER_ACCOUNT', 'DELETE_MEMBER_UPLOADS', 'EXPORT_ENROLLMENT_RECONF_LISTS'],
     treasury: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'ARCHIVE', 'ADMIN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
     activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
@@ -165,7 +167,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   diretor: {
     dashboard: ['VIEW'],
     associate_director: [],
-    members: ['VIEW', 'VIEW_DOSSIER_360', 'EDIT', 'DELETE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'MANAGE_ENROLLMENT_PERIOD', 'APPROVE_MEMBER_ACCOUNT', 'DELETE_MEMBER_UPLOADS'],
+    members: ['VIEW', 'VIEW_DOSSIER_360', 'EDIT', 'DELETE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'MANAGE_ENROLLMENT_PERIOD', 'MANAGE_RECONFIRMATION_PERIOD', 'APPROVE_MEMBER_ACCOUNT', 'DELETE_MEMBER_UPLOADS', 'EXPORT_ENROLLMENT_RECONF_LISTS'],
     treasury: ['VIEW', 'CREATE', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
     activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT'],
@@ -205,7 +207,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
   secretario: {
     dashboard: ['VIEW'],
     associate_director: [],
-    members: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'APPROVE', 'APPROVE_ENROLLMENT'],
+    members: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT', 'ARCHIVE', 'APPROVE', 'APPROVE_ENROLLMENT', 'EXPORT_ENROLLMENT_RECONF_LISTS'],
     treasury: [],
     activities: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT'],
     training: [],
@@ -394,8 +396,10 @@ export const ACTION_LABELS: Record<PermissionAction, string> = {
   VIEW_DOSSIER_360: 'Dossiê 360º do Membro',
   APPROVE_ENROLLMENT: 'Validar / Recusar Inscrições',
   MANAGE_ENROLLMENT_PERIOD: 'Abrir / Encerrar Inscrições',
+  MANAGE_RECONFIRMATION_PERIOD: 'Abrir / Encerrar Reconfirmações',
   APPROVE_MEMBER_ACCOUNT: 'Confirmar Contas de Login (Membros)',
   DELETE_MEMBER_UPLOADS: 'Apagar Uploads nas Fichas',
+  EXPORT_ENROLLMENT_RECONF_LISTS: 'Baixar Listas em PDF (Inscrição e Reconfirmação)',
 };
 
 /**
@@ -421,9 +425,11 @@ export const syncPermissionsMatrix = (
   const needsDossier360Sync = !synced.admin_tecnico?.members?.includes('VIEW_DOSSIER_360');
   const needsEnrollmentPermSync = !synced.admin_tecnico?.members?.includes('APPROVE_ENROLLMENT');
   const needsEnrollmentPeriodPermSync = !synced.admin_tecnico?.members?.includes('MANAGE_ENROLLMENT_PERIOD');
+  const needsReconfirmationPeriodPermSync = !synced.admin_tecnico?.members?.includes('MANAGE_RECONFIRMATION_PERIOD');
   const needsApproveMemberAccountSync = !synced.admin_tecnico?.members?.includes('APPROVE_MEMBER_ACCOUNT');
   const needsMemberDeleteSync = !synced.admin_tecnico?.members?.includes('DELETE');
   const needsDeleteMemberUploadsSync = !synced.admin_tecnico?.members?.includes('DELETE_MEMBER_UPLOADS');
+  const needsExportEnrollmentReconfListsSync = !synced.admin_tecnico?.members?.includes('EXPORT_ENROLLMENT_RECONF_LISTS');
 
   for (const role of roles) {
     if (!synced[role]) {
@@ -444,6 +450,9 @@ export const syncPermissionsMatrix = (
         if (needsEnrollmentPeriodPermSync && base[role].members.includes('MANAGE_ENROLLMENT_PERIOD') && !synced[role].members.includes('MANAGE_ENROLLMENT_PERIOD')) {
           synced[role].members.push('MANAGE_ENROLLMENT_PERIOD');
         }
+        if (needsReconfirmationPeriodPermSync && base[role].members.includes('MANAGE_RECONFIRMATION_PERIOD') && !synced[role].members.includes('MANAGE_RECONFIRMATION_PERIOD')) {
+          synced[role].members.push('MANAGE_RECONFIRMATION_PERIOD');
+        }
         if (needsApproveMemberAccountSync && base[role].members.includes('APPROVE_MEMBER_ACCOUNT') && !synced[role].members.includes('APPROVE_MEMBER_ACCOUNT')) {
           synced[role].members.push('APPROVE_MEMBER_ACCOUNT');
         }
@@ -455,6 +464,9 @@ export const syncPermissionsMatrix = (
         }
         if (role !== 'admin_tecnico' && role !== 'diretor' && role !== 'secretario') {
           synced[role].members = synced[role].members.filter((a) => a !== 'DELETE_MEMBER_UPLOADS');
+        }
+        if (needsExportEnrollmentReconfListsSync && base[role].members.includes('EXPORT_ENROLLMENT_RECONF_LISTS') && !synced[role].members.includes('EXPORT_ENROLLMENT_RECONF_LISTS')) {
+          synced[role].members.push('EXPORT_ENROLLMENT_RECONF_LISTS');
         }
       } else if (mod === 'activities') {
         for (const act of base[role].activities) {
@@ -611,6 +623,29 @@ export const hasManageEnrollmentPeriodPermission = (
 };
 
 /**
+ * Apenas o Administrador Técnico pode conceder ou revogar a permissão de abrir/encerrar
+ * reconfirmações de dados separadamente na grelha de permissões.
+ */
+export const canGrantManageReconfirmationPeriod = (actorRole: RoleType): boolean => {
+  return actorRole === 'admin_tecnico';
+};
+
+/**
+ * Verifica pela Grelha de Permissões se o cargo pode abrir, agendar ou encerrar
+ * separadamente o período de reconfirmação de dados dos membros.
+ */
+export const hasManageReconfirmationPeriodPermission = (
+  role: RoleType,
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>
+): boolean => {
+  if (role === 'admin_tecnico') return true;
+  if (permissionsMatrix?.[role] && Array.isArray(permissionsMatrix[role].members)) {
+    return permissionsMatrix[role].members.includes('MANAGE_RECONFIRMATION_PERIOD');
+  }
+  return hasPermission(role, 'members', 'MANAGE_RECONFIRMATION_PERIOD');
+};
+
+/**
  * Verifica se o cargo pode executar a eliminação definitiva de um membro (e da respetiva conta vinculada)
  * sem necessitar de autorização prévia do Administrador Técnico (audit: ADMIN).
  * - Diretor/Admin ou qualquer cargo com members:DELETE / members:ADMIN pode eliminar diretamente.
@@ -681,4 +716,27 @@ export const hasDeleteMemberUploadsPermission = (
     return permissionsMatrix[role].members.includes('DELETE_MEMBER_UPLOADS');
   }
   return hasPermission(role, 'members', 'DELETE_MEMBER_UPLOADS');
+};
+
+/**
+ * Apenas o Administrador Técnico pode conceder ou revogar a permissão de baixar as listas
+ * de inscritos, reconfirmados e membros que não fizeram reconfirmação.
+ */
+export const canGrantExportEnrollmentReconfLists = (actorRole: RoleType): boolean => {
+  return actorRole === 'admin_tecnico';
+};
+
+/**
+ * Verifica pela Grelha de Permissões se o cargo pode baixar as listas oficiais
+ * de inscritos, reconfirmados e membros sem reconfirmação.
+ */
+export const hasExportEnrollmentReconfListsPermission = (
+  role: RoleType,
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>
+): boolean => {
+  if (role === 'admin_tecnico') return true;
+  if (permissionsMatrix?.[role] && Array.isArray(permissionsMatrix[role].members)) {
+    return permissionsMatrix[role].members.includes('EXPORT_ENROLLMENT_RECONF_LISTS');
+  }
+  return hasPermission(role, 'members', 'EXPORT_ENROLLMENT_RECONF_LISTS');
 };

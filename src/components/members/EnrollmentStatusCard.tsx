@@ -19,7 +19,7 @@ import { useClub } from '../../context/ClubContext';
 import { Modal } from '../common/Modal';
 import { MemberRegistrationForm } from './MemberRegistrationForm';
 import { Member, MemberEnrollmentRequest, UserAccount } from '../../types';
-import { formatDateAO, formatDateTimeAO } from '../../utils/date';
+import { evaluateIdentityCardValidity, formatDateAO, formatDateTimeAO } from '../../utils/date';
 import {
   getEnrollmentPhaseInfo,
   resolveMemberDocumentationStatus,
@@ -70,6 +70,12 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
   const [isResubmitModalOpen, setIsResubmitModalOpen] = useState(false);
 
   const docStatus = registeredMember ? resolveMemberDocumentationStatus(registeredMember) : null;
+  const memberBiValidity = registeredMember
+    ? evaluateIdentityCardValidity(registeredMember.identityCardExpiryDate)
+    : null;
+  const requestBiValidity = request
+    ? evaluateIdentityCardValidity(request.identityCardExpiryDate)
+    : null;
   const docUpdaterRole = registeredMember?.documentationUpdatedByRole
     ? ROLE_LABELS[registeredMember.documentationUpdatedByRole]?.label ||
       registeredMember.documentationUpdatedByRole
@@ -235,6 +241,27 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
                 </strong>
               </div>
             )}
+            {registeredMember.identityCardExpiryDate && (
+              <div>
+                Validade do B.I.:{' '}
+                <strong
+                  className={
+                    memberBiValidity?.isExpired
+                      ? 'text-rose-700 dark:text-rose-400'
+                      : memberBiValidity?.isExpiringSoon
+                      ? 'text-amber-700 dark:text-amber-400'
+                      : 'text-slate-900 dark:text-white'
+                  }
+                >
+                  {formatDateAO(registeredMember.identityCardExpiryDate)}
+                  {memberBiValidity?.isExpired
+                    ? ' (B.I. Expirado)'
+                    : memberBiValidity?.isExpiringSoon
+                    ? ` (${memberBiValidity.label})`
+                    : ''}
+                </strong>
+              </div>
+            )}
             {registeredMember.enrollmentProtocol && (
               <div className="sm:col-span-2">
                 Origem: Registo automático da inscrição{' '}
@@ -242,6 +269,16 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
               </div>
             )}
           </div>
+
+          {memberBiValidity?.isExpired && (
+            <div className="p-3 rounded-lg border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-900 dark:text-rose-200 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-700 dark:text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold">Bilhete de Identidade Expirado:</span> O B.I. registado na ficha expirou em{' '}
+                <strong>{formatDateAO(registeredMember.identityCardExpiryDate)}</strong>. Atualize o documento na Secretaria ou durante a Reconfirmação de Dados.
+              </div>
+            </div>
+          )}
 
           {reconfirmationInfo?.isReconfirmationOpen &&
             registeredMember.status !== 'arquivado' &&
@@ -681,6 +718,7 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
                       birthDate: request.birthDate,
                       gender: request.gender,
                       identityCardNumber: request.identityCardNumber,
+                      identityCardExpiryDate: request.identityCardExpiryDate || '',
                       phone: request.phone,
                       email: request.email,
                       address: request.address,
@@ -755,6 +793,21 @@ export const EnrollmentStatusCard: React.FC<EnrollmentStatusCardProps> = ({
             <div>
               Submetida em: <strong className="text-slate-900 dark:text-white">{formatDateAO(request.submittedAt)}</strong>
             </div>
+            {request.identityCardExpiryDate && (
+              <div>
+                Validade do B.I.:{' '}
+                <strong
+                  className={
+                    requestBiValidity?.isExpired
+                      ? 'text-rose-700 dark:text-rose-400'
+                      : 'text-slate-900 dark:text-white'
+                  }
+                >
+                  {formatDateAO(request.identityCardExpiryDate)}
+                  {requestBiValidity?.isExpired ? ' (Expirado)' : ''}
+                </strong>
+              </div>
+            )}
             {request.documentDeliveryMethod && (
               <div className="sm:col-span-2">
                 Documentos (B.I. e Fotografia):{' '}

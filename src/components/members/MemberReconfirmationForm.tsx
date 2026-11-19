@@ -2,8 +2,8 @@ import React from 'react';
 import { Member } from '../../types';
 import { MemberReconfirmationInput, MemberRegistrationFormData } from '../../services/enrollmentService';
 import { MemberRegistrationForm } from './MemberRegistrationForm';
-import { CheckCircle2 } from 'lucide-react';
-import { formatDateTimeAO } from '../../utils/date';
+import { AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { evaluateIdentityCardValidity, formatDateAO, formatDateTimeAO } from '../../utils/date';
 
 interface MemberReconfirmationFormProps {
   member: Member;
@@ -29,6 +29,7 @@ export const MemberReconfirmationForm: React.FC<MemberReconfirmationFormProps> =
   const alreadyReconfirmedThisPeriod = Boolean(
     currentPeriodId && member.lastReconfirmedPeriodId === currentPeriodId
   );
+  const biValidity = evaluateIdentityCardValidity(member.identityCardExpiryDate);
 
   const initialData: Partial<MemberRegistrationFormData> = {
     manualNumber: member.manualNumber,
@@ -36,6 +37,7 @@ export const MemberReconfirmationForm: React.FC<MemberReconfirmationFormProps> =
     birthDate: member.birthDate,
     gender: member.gender,
     identityCardNumber: member.identityCardNumber,
+    identityCardExpiryDate: member.identityCardExpiryDate || '',
     phone: member.phone,
     email: member.email,
     address: member.address,
@@ -64,6 +66,7 @@ export const MemberReconfirmationForm: React.FC<MemberReconfirmationFormProps> =
       birthDate: data.birthDate,
       gender: data.gender,
       identityCardNumber: data.identityCardNumber,
+      identityCardExpiryDate: data.identityCardExpiryDate,
       phone: data.phone,
       email: data.email,
       address: data.address,
@@ -123,6 +126,16 @@ export const MemberReconfirmationForm: React.FC<MemberReconfirmationFormProps> =
           Utilize o formulário oficial abaixo para revisar e atualizar os seus dados e documentos. Este é o mesmo formulário de inscrição do clube.
         </p>
       </div>
+
+      {biValidity.isExpired && (
+        <div className="p-3 rounded-xl border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/50 text-rose-900 dark:text-rose-200 text-xs flex items-start gap-2">
+          <AlertTriangle className="w-4 h-4 text-rose-700 dark:text-rose-400 shrink-0 mt-0.5" />
+          <div>
+            <span className="font-bold">B.I. Expirado:</span> O seu Bilhete de Identidade expirou em{' '}
+            <strong>{formatDateAO(member.identityCardExpiryDate)}</strong>. Atualize a data de validade e anexe o documento renovado se já tiver tratado.
+          </div>
+        </div>
+      )}
 
       <MemberRegistrationForm
         mode="self_enrollment"

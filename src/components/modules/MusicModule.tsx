@@ -39,6 +39,7 @@ export const MusicModule: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<MusicItem | null>(null);
   const [selectedSongToView, setSelectedSongToView] = useState<MusicItem | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<MusicItem | null>(null);
 
   const [form, setForm] = useState({
     title: '',
@@ -127,8 +128,9 @@ export const MusicModule: React.FC = () => {
   };
 
   const handleDelete = (id: string) => {
-    if (window.confirm('Tem certeza que deseja remover este hino do repertório oficial?')) {
-      deleteMusicItem(id);
+    const target = musicList.find((m) => m.id === id);
+    if (target) {
+      setItemToDelete(target);
     }
   };
 
@@ -412,6 +414,41 @@ export const MusicModule: React.FC = () => {
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-lg text-xs"
               >
                 Fechar
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {itemToDelete && (
+        <Modal
+          isOpen={Boolean(itemToDelete)}
+          onClose={() => setItemToDelete(null)}
+          title="Remover Hino do Repertório"
+          description="Esta operação remove permanentemente o cântico do acervo musical."
+          maxWidth="sm"
+        >
+          <div className="space-y-4 text-xs">
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-900">
+              Tem certeza que deseja remover o hino <strong>{itemToDelete.title}</strong> do repertório oficial?
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setItemToDelete(null)}
+                className="px-3 py-1.5 text-slate-600 hover:text-slate-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteMusicItem(itemToDelete.id);
+                  setItemToDelete(null);
+                }}
+                className="px-4 py-1.5 font-semibold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs"
+              >
+                Sim, Remover
               </button>
             </div>
           </div>

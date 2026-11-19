@@ -1056,8 +1056,10 @@ export const AuditAndAdminModule: React.FC = () => {
                           p.action === 'WAIVE_QUOTA_DEBT' ||
                           p.action === 'APPROVE_ENROLLMENT' ||
                           p.action === 'MANAGE_ENROLLMENT_PERIOD' ||
+                          p.action === 'MANAGE_RECONFIRMATION_PERIOD' ||
                           p.action === 'APPROVE_MEMBER_ACCOUNT' ||
-                          p.action === 'DELETE_MEMBER_UPLOADS';
+                          p.action === 'DELETE_MEMBER_UPLOADS' ||
+                          p.action === 'EXPORT_ENROLLMENT_RECONF_LISTS';
                         const isDisplayedChecked = isDeleteUploadsExclusive
                           ? (selectedRoleForRBAC === 'diretor' || selectedRoleForRBAC === 'secretario') && hasThisPerm
                           : hasThisPerm;
@@ -1082,7 +1084,7 @@ export const AuditAndAdminModule: React.FC = () => {
                               <span className="text-[10px] text-slate-400">(Exclusivo Diretor e Secretário)</span>
                             )}
                             {(!isDeleteUploadsExclusive || isRoleEligibleForDeleteUploads) &&
-                              (p.action === 'WAIVE_QUOTA_DEBT' || p.action === 'APPROVE_ENROLLMENT' || p.action === 'MANAGE_ENROLLMENT_PERIOD' || p.action === 'APPROVE_MEMBER_ACCOUNT' || p.action === 'DELETE_MEMBER_UPLOADS') &&
+                              (p.action === 'WAIVE_QUOTA_DEBT' || p.action === 'APPROVE_ENROLLMENT' || p.action === 'MANAGE_ENROLLMENT_PERIOD' || p.action === 'MANAGE_RECONFIRMATION_PERIOD' || p.action === 'APPROVE_MEMBER_ACCOUNT' || p.action === 'DELETE_MEMBER_UPLOADS' || p.action === 'EXPORT_ENROLLMENT_RECONF_LISTS') &&
                               currentUser.role !== 'admin_tecnico' && (
                                 <span className="text-[10px] text-slate-400">(Apenas Admin)</span>
                               )}

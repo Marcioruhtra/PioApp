@@ -14,13 +14,29 @@ import {
   MemberCategory,
   MemberDocumentationStatus,
   MemberEnrollmentRequest,
+  ModuleName,
+  PermissionAction,
   RoleType,
   UserAccount,
 } from '../types';
-import { generateManualNumber, getNowISOString, getTodayISODate } from '../utils/date';
+import {
+  evaluateIdentityCardValidity,
+  formatDateAO,
+  formatDateTimeAO,
+  generateManualNumber,
+  getNowISOString,
+  getTodayISODate,
+} from '../utils/date';
 import { isMemberNumberUnique, findPotentialDuplicateMember } from './storageService';
 import { sanitizeMemberIntegrity } from './memberIntegrityService';
-import { syncMemberChangesToUsers, isPendingMemberAccountConfirmation } from './accountSyncService';
+import {
+  getMemberTeamLabel,
+  syncMemberChangesToUsers,
+  isPendingMemberAccountConfirmation,
+} from './accountSyncService';
+import { hasExportEnrollmentReconfListsPermission } from './permissionService';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 export interface MemberRegistrationFormData {
   manualNumber: string;
@@ -28,6 +44,7 @@ export interface MemberRegistrationFormData {
   birthDate: string;
   gender: 'M' | 'F';
   identityCardNumber: string;
+  identityCardExpiryDate: string;
   phone: string;
   email: string;
   address: string;
@@ -93,6 +110,7 @@ export function validateRegistrationFields(
 ): { valid: boolean; error?: string; resolvedManualNumber?: string } {
   const cleanName = (data.fullName || '').trim();
   const cleanBI = (data.identityCardNumber || '').trim().toUpperCase();
+  const cleanBiExpiry = (data.identityCardExpiryDate || '').trim();
   const cleanBirth = (data.birthDate || '').trim();
   const cleanPhone = (data.phone || '').trim();
   const cleanEmail = (data.email || '').trim().toLowerCase();
@@ -121,6 +139,9 @@ export function validateRegistrationFields(
   }
   if (!cleanBI) {
     return { valid: false, error: 'O Número do Bilhete de Identidade (B.I.) angolano é obrigatório.' };
+  }
+  if (!cleanBiExpiry) {
+    return { valid: false, error: 'A Data de Validade do Bilhete de Identidade (B.I.) é obrigatória.' };
   }
   if (!cleanPhone) {
     return { valid: false, error: 'O Telefone Principal é obrigatório.' };
@@ -417,6 +438,7 @@ export function buildEnrollmentRequest(
     birthDate: data.birthDate,
     gender: data.gender,
     identityCardNumber: normalizeIdentityCardNumber(data.identityCardNumber),
+    identityCardExpiryDate: (data.identityCardExpiryDate || '').trim() || undefined,
     phone: cleanPhone,
     email: data.email.trim(),
     address: data.address.trim(),
@@ -535,6 +557,7 @@ export function buildApprovedMemberFromEnrollment(
     birthDate: req.birthDate,
     gender: req.gender,
     identityCardNumber: req.identityCardNumber,
+    identityCardExpiryDate: (req.identityCardExpiryDate || '').trim() || undefined,
     phone: req.phone,
     email: req.email,
     address: req.address,
@@ -1062,11 +1085,14 @@ export function validateEnrollmentScheduleInput(
 
 export interface EnrollmentAvailabilityStatus {
   isCurrentlyOpen: boolean;
+  isPeriodOpen: boolean;
+  isEnrollmentsOpen: boolean;
   status: 'abertas' | 'agendadas' | 'encerradas';
   statusLabel: string;
   reasonLabel: string;
   openLabel?: string;
   closeLabel?: string;
+  enableEnrollments: boolean;
   enableReconfirmation: boolean;
   isReconfirmationOpen: boolean;
   periodId?: string;
@@ -1081,16 +1107,34 @@ export function evaluateEnrollmentAvailability(
   if (!config) {
     return {
       isCurrentlyOpen: true,
+      isPeriodOpen: true,
+      isEnrollmentsOpen: true,
       status: 'abertas',
       statusLabel: 'Inscrições Abertas',
       reasonLabel: 'As inscrições no clube estão atualmente abertas.',
+      enableEnrollments: true,
       enableReconfirmation: false,
       isReconfirmationOpen: false,
     };
   }
 
   const enableReconfirmation = Boolean(config.enableReconfirmation);
-  const periodLabel = enableReconfirmation ? 'Inscrições e Reconfirmação' : 'Inscrições';
+  const enableEnrollments =
+    config.enableEnrollments !== undefined ? Boolean(config.enableEnrollments) : true;
+
+  const periodLabel =
+    enableEnrollments && enableReconfirmation
+      ? 'Inscrições e Reconfirmação'
+      : enableReconfirmation
+      ? 'Reconfirmação de Dados'
+      : 'Inscrições';
+
+  const openSubjectLabel =
+    enableEnrollments && enableReconfirmation
+      ? 'inscrições e reconfirmações'
+      : enableReconfirmation
+      ? 'reconfirmações de dados'
+      : 'inscrições';
 
   const openLabel = config.openDate
     ? formatScheduleDateTimeLabel(config.openDate, config.openTime, '00:00')
@@ -1099,14 +1143,20 @@ export function evaluateEnrollmentAvailability(
     ? formatScheduleDateTimeLabel(config.closeDate, config.closeTime, '23:59')
     : undefined;
 
-  if (!config.isOpen) {
+  if (!config.isOpen || (!enableEnrollments && !enableReconfirmation)) {
     return {
       isCurrentlyOpen: false,
+      isPeriodOpen: false,
+      isEnrollmentsOpen: false,
       status: 'encerradas',
-      statusLabel: `${periodLabel} Encerradas`,
-      reasonLabel: `As ${enableReconfirmation ? 'inscrições e reconfirmações' : 'inscrições'} foram encerradas pela Direção do Clube.`,
+      statusLabel:
+        enableReconfirmation && !enableEnrollments
+          ? 'Reconfirmação Encerrada'
+          : `${periodLabel} Encerradas`,
+      reasonLabel: `As ${openSubjectLabel} foram encerradas pela Direção do Clube.`,
       openLabel,
       closeLabel,
+      enableEnrollments,
       enableReconfirmation,
       isReconfirmationOpen: false,
       periodId: config.periodId,
@@ -1128,13 +1178,18 @@ export function evaluateEnrollmentAvailability(
     : null;
 
   if (openAt && now.getTime() < openAt.getTime()) {
+    const futureVerb = enableReconfirmation && !enableEnrollments ? 'abrirá' : 'abrirão';
+    const closeVerb = enableReconfirmation && !enableEnrollments ? 'encerra' : 'encerram';
     return {
       isCurrentlyOpen: false,
+      isPeriodOpen: false,
+      isEnrollmentsOpen: false,
       status: 'agendadas',
       statusLabel: 'Abertura Agendada',
-      reasonLabel: `${periodLabel} abrirão em ${openLabel}${closeLabel ? ` e encerram em ${closeLabel}` : ''}.`,
+      reasonLabel: `${periodLabel} ${futureVerb} em ${openLabel}${closeLabel ? ` e ${closeVerb} em ${closeLabel}` : ''}.`,
       openLabel,
       closeLabel,
+      enableEnrollments,
       enableReconfirmation,
       isReconfirmationOpen: false,
       periodId: config.periodId,
@@ -1146,11 +1201,17 @@ export function evaluateEnrollmentAvailability(
   if (closeAt && now.getTime() >= closeAt.getTime()) {
     return {
       isCurrentlyOpen: false,
+      isPeriodOpen: false,
+      isEnrollmentsOpen: false,
       status: 'encerradas',
-      statusLabel: `${periodLabel} Encerradas`,
-      reasonLabel: `O período estipulado de ${enableReconfirmation ? 'inscrições e reconfirmação' : 'inscrições'} encerrou em ${closeLabel}.`,
+      statusLabel:
+        enableReconfirmation && !enableEnrollments
+          ? 'Reconfirmação Encerrada'
+          : `${periodLabel} Encerradas`,
+      reasonLabel: `O período estipulado de ${openSubjectLabel} encerrou em ${closeLabel}.`,
       openLabel,
       closeLabel,
+      enableEnrollments,
       enableReconfirmation,
       isReconfirmationOpen: false,
       periodId: config.periodId,
@@ -1159,15 +1220,31 @@ export function evaluateEnrollmentAvailability(
     };
   }
 
+  const openStatusLabel =
+    enableEnrollments && enableReconfirmation
+      ? 'Inscrições e Reconfirmação Abertas'
+      : enableReconfirmation
+      ? 'Reconfirmação Aberta'
+      : 'Inscrições Abertas';
+
+  const openReasonLabel = closeLabel
+    ? enableReconfirmation && !enableEnrollments
+      ? `Reconfirmação de dados aberta até ${closeLabel} (novas inscrições encerradas).`
+      : `${periodLabel} abertas até ${closeLabel}.`
+    : enableReconfirmation && !enableEnrollments
+    ? 'Apenas a reconfirmação de dados dos membros está aberta (novas inscrições permanecem encerradas).'
+    : `As ${openSubjectLabel} no clube estão atualmente abertas.`;
+
   return {
-    isCurrentlyOpen: true,
+    isCurrentlyOpen: enableEnrollments,
+    isPeriodOpen: true,
+    isEnrollmentsOpen: enableEnrollments,
     status: 'abertas',
-    statusLabel: `${periodLabel} Abertas`,
-    reasonLabel: closeLabel
-      ? `${periodLabel} abertas até ${closeLabel}.`
-      : `As ${enableReconfirmation ? 'inscrições e reconfirmações de dados' : 'inscrições'} no clube estão atualmente abertas.`,
+    statusLabel: openStatusLabel,
+    reasonLabel: openReasonLabel,
     openLabel,
     closeLabel,
+    enableEnrollments,
     enableReconfirmation,
     isReconfirmationOpen: enableReconfirmation,
     periodId: config.periodId,
@@ -1181,6 +1258,7 @@ export interface MemberReconfirmationInput {
   birthDate: string;
   gender: 'M' | 'F';
   identityCardNumber: string;
+  identityCardExpiryDate: string;
   phone: string;
   email: string;
   address: string;
@@ -1282,6 +1360,7 @@ export function applyMemberReconfirmation(params: {
   const cleanName = (data.fullName || '').trim();
   const cleanBirth = (data.birthDate || '').trim();
   const cleanBI = normalizeIdentityCardNumber(data.identityCardNumber);
+  const cleanBiExpiry = (data.identityCardExpiryDate || '').trim();
   const cleanPhone = (data.phone || '').trim();
   const cleanEmail = (data.email || '').trim().toLowerCase();
   const cleanAddress = (data.address || '').trim();
@@ -1301,6 +1380,9 @@ export function applyMemberReconfirmation(params: {
   }
   if (!cleanBI) {
     return { success: false, error: 'O Número do Bilhete de Identidade (B.I.) é obrigatório.' };
+  }
+  if (!cleanBiExpiry) {
+    return { success: false, error: 'A Data de Validade do Bilhete de Identidade (B.I.) é obrigatória.' };
   }
   if (!cleanPhone) {
     return { success: false, error: 'O Telefone Principal é obrigatório.' };
@@ -1374,6 +1456,7 @@ export function applyMemberReconfirmation(params: {
     birthDate: cleanBirth,
     gender: data.gender,
     identityCardNumber: cleanBI,
+    identityCardExpiryDate: cleanBiExpiry,
     phone: cleanPhone,
     email: cleanEmail,
     address: cleanAddress,
@@ -1588,6 +1671,7 @@ export function buildResubmittedEnrollmentRequest(
     birthDate: data.birthDate,
     gender: data.gender,
     identityCardNumber: normalizeIdentityCardNumber(data.identityCardNumber),
+    identityCardExpiryDate: (data.identityCardExpiryDate || '').trim() || undefined,
     phone: cleanPhone,
     email: data.email.trim(),
     address: data.address.trim(),
@@ -1642,5 +1726,632 @@ export function buildResubmittedEnrollmentRequest(
     submittedByUserId: submittedByUserId || rejectedReq.submittedByUserId,
   };
 }
+
+/**
+ * Retorna os membros registados elegíveis (ativos ou inativos) que ainda não realizaram
+ * a reconfirmação de dados no período identificado em `enrollmentConfig.periodId`.
+ */
+export function getPendingReconfirmationMembers(
+  members: Member[],
+  enrollmentConfig?: EnrollmentScheduleConfig
+): Member[] {
+  const periodId = enrollmentConfig?.periodId;
+  if (!periodId) return [];
+
+  return (members || [])
+    .filter(
+      (m) =>
+        (m.status === 'ativo' || m.status === 'inativo') &&
+        m.lastReconfirmedPeriodId !== periodId &&
+        m.enrolledPeriodId !== periodId
+    )
+    .sort((a, b) => String(a.fullName || '').localeCompare(String(b.fullName || ''), 'pt'));
+}
+
+export type EnrollmentReconfirmationExportType =
+  | 'inscritos'
+  | 'reconfirmados'
+  | 'nao_reconfirmados';
+
+function escapeCsvCell(value: unknown): string {
+  const raw = value === null || value === undefined ? '' : String(value);
+  const sanitized = raw.replace(/\r?\n|\r/g, ' ').trim();
+  return `"${sanitized.replace(/"/g, '""')}"`;
+}
+
+function buildCsvContent(headers: string[], rows: Array<Array<unknown>>): string {
+  const lines = [
+    headers.map(escapeCsvCell).join(';'),
+    ...rows.map((row) => row.map(escapeCsvCell).join(';')),
+  ];
+  return `\uFEFF${lines.join('\n')}`;
+}
+
+function formatGenderLabel(gender?: 'M' | 'F'): string {
+  return gender === 'F' ? 'Feminino' : 'Masculino';
+}
+
+function formatCategoryLabel(category?: MemberCategory): string {
+  if (category === 'lider') return 'Líder';
+  if (category === 'embaixador') return 'Embaixador';
+  return 'Aspirante';
+}
+
+function formatEnrollmentStatusLabel(status: MemberEnrollmentRequest['status']): string {
+  if (status === 'aprovado') return 'Inscrição validada';
+  if (status === 'em_analise') return 'Em análise';
+  if (status === 'rejeitado') return 'Inscrição recusada';
+  return 'Pendente';
+}
+
+/**
+ * Retorna os registos de membros/candidatos que submeteram inscrição (ordenados alfabeticamente).
+ */
+export function getEnrolledMembersForExport(
+  enrollmentRequests: MemberEnrollmentRequest[]
+): MemberEnrollmentRequest[] {
+  return (enrollmentRequests || [])
+    .filter((req) => Boolean(req && !req.memberDeletedAt))
+    .slice()
+    .sort((a, b) => String(a.fullName || '').localeCompare(String(b.fullName || ''), 'pt'));
+}
+
+/**
+ * Retorna os membros registados que concluíram a reconfirmação de dados no período corrente/último
+ * (ou todos os que já possuam registo de reconfirmação caso não haja periodId configurado).
+ */
+export function getReconfirmedMembersForExport(
+  members: Member[],
+  enrollmentConfig?: EnrollmentScheduleConfig
+): Member[] {
+  const periodId = enrollmentConfig?.periodId;
+  return (members || [])
+    .filter((m) => {
+      if (!m || m.status === 'transferido') return false;
+      if (periodId) {
+        return m.lastReconfirmedPeriodId === periodId;
+      }
+      return Boolean(m.lastReconfirmedAt) || (m.reconfirmationCount || 0) > 0;
+    })
+    .slice()
+    .sort((a, b) => String(a.fullName || '').localeCompare(String(b.fullName || ''), 'pt'));
+}
+
+/**
+ * Retorna os membros registados que NÃO efetuaram reconfirmação no período corrente/último:
+ * - Durante o período: membros elegíveis (ativos ou inativos) ainda pendentes;
+ * - Após encerramento/liquidação do período: inclui também membros arquivados por falta de reconfirmação.
+ */
+export function getNonReconfirmedMembersForExport(
+  members: Member[],
+  enrollmentConfig?: EnrollmentScheduleConfig
+): Member[] {
+  const periodId = enrollmentConfig?.periodId;
+  if (!periodId) return [];
+
+  const isPeriodFinalized = enrollmentConfig?.finalizedPeriodId === periodId;
+  const openedAtMs = enrollmentConfig?.openedAt ? Date.parse(enrollmentConfig.openedAt) : NaN;
+
+  return (members || [])
+    .filter((m) => {
+      if (!m) return false;
+      if (m.lastReconfirmedPeriodId === periodId || m.enrolledPeriodId === periodId) {
+        return false;
+      }
+      if (m.status === 'ativo' || m.status === 'inativo') {
+        return true;
+      }
+      if (
+        isPeriodFinalized &&
+        m.status === 'arquivado' &&
+        m.archiveReason === 'Não efetuou a reconfirmação obrigatória de dados no período estipulado'
+      ) {
+        const archivedMs = m.archivedAt ? Date.parse(m.archivedAt) : NaN;
+        if (Number.isFinite(openedAtMs) && Number.isFinite(archivedMs)) {
+          return archivedMs >= openedAtMs;
+        }
+        return true;
+      }
+      return false;
+    })
+    .slice()
+    .sort((a, b) => String(a.fullName || '').localeCompare(String(b.fullName || ''), 'pt'));
+}
+
+export interface EnrollmentReconfirmationExportResult {
+  success: boolean;
+  error?: string;
+  filename?: string;
+  csvContent?: string;
+  rowsCount?: number;
+  listLabel?: string;
+}
+
+/**
+ * Gera o conteúdo CSV oficial das listas de Inscrição, Reconfirmação ou Não Reconfirmados,
+ * validando estritamente a permissão EXPORT_ENROLLMENT_RECONF_LISTS na Grelha de Permissões.
+ */
+export function buildEnrollmentAndReconfirmationCsv(params: {
+  listType: EnrollmentReconfirmationExportType;
+  actorRole: RoleType;
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>;
+  enrollmentRequests?: MemberEnrollmentRequest[];
+  members?: Member[];
+  enrollmentConfig?: EnrollmentScheduleConfig;
+  users?: UserAccount[];
+  currentYear?: number;
+  now?: Date;
+}): EnrollmentReconfirmationExportResult {
+  const {
+    listType,
+    actorRole,
+    permissionsMatrix,
+    enrollmentRequests = [],
+    members = [],
+    enrollmentConfig,
+    users = [],
+  } = params;
+  const now = params.now || new Date();
+  const yearTag = params.currentYear || now.getFullYear();
+
+  if (!hasExportEnrollmentReconfListsPermission(actorRole, permissionsMatrix)) {
+    return {
+      success: false,
+      error:
+        'Sem permissão na Grelha de Permissões (Baixar Listas de Inscrição e Reconfirmação) atribuída pelo Administrador.',
+    };
+  }
+
+  if (listType === 'inscritos') {
+    const list = getEnrolledMembersForExport(enrollmentRequests);
+    const headers = [
+      'Protocolo',
+      'Estado_Inscricao',
+      'Matricula_Proposta',
+      'Nome_Completo',
+      'Categoria',
+      'Equipa',
+      'Sexo',
+      'Data_Nascimento',
+      'Numero_BI',
+      'Validade_BI',
+      'Estado_BI',
+      'Telefone',
+      'Email',
+      'Municipio_Bairro',
+      'Encarregado',
+      'Telefone_Encarregado',
+      'Entrega_Documentos',
+      'Data_Submissao',
+      'Data_Analise',
+    ];
+
+    const rows = list.map((req) => {
+      const biStatus = evaluateIdentityCardValidity(req.identityCardExpiryDate, now);
+      return [
+        req.protocolNumber,
+        formatEnrollmentStatusLabel(req.status),
+        req.manualNumber || '',
+        req.fullName,
+        formatCategoryLabel(req.category),
+        req.unitOrTeam || '',
+        formatGenderLabel(req.gender),
+        formatDateAO(req.birthDate),
+        req.identityCardNumber,
+        req.identityCardExpiryDate ? formatDateAO(req.identityCardExpiryDate) : 'Não informada',
+        biStatus.label,
+        req.phone,
+        req.email,
+        req.address,
+        req.guardianName || '',
+        req.guardianPhone || '',
+        req.documentDeliveryMethod === 'anexar_digital' ? 'Anexado no Sistema' : 'Presencial na Secretaria',
+        req.submittedAt ? formatDateTimeAO(req.submittedAt) : '',
+        req.reviewedAt ? formatDateTimeAO(req.reviewedAt) : '',
+      ];
+    });
+
+    return {
+      success: true,
+      filename: `Lista_Inscritos_${yearTag}.csv`,
+      csvContent: buildCsvContent(headers, rows),
+      rowsCount: list.length,
+      listLabel: 'Lista dos que fizeram Inscrição',
+    };
+  }
+
+  if (listType === 'reconfirmados') {
+    const list = getReconfirmedMembersForExport(members, enrollmentConfig);
+    const headers = [
+      'Matricula',
+      'Nome_Completo',
+      'Estado_Membro',
+      'Categoria',
+      'Equipa',
+      'Sexo',
+      'Data_Nascimento',
+      'Numero_BI',
+      'Validade_BI',
+      'Estado_BI',
+      'Telefone',
+      'Email',
+      'Municipio_Bairro',
+      'Encarregado',
+      'Telefone_Encarregado',
+      'Data_Reconfirmacao',
+      'Total_Reconfirmacoes',
+      'Estado_Documentacao',
+    ];
+
+    const rows = list.map((m) => {
+      const biStatus = evaluateIdentityCardValidity(m.identityCardExpiryDate, now);
+      return [
+        m.manualNumber,
+        m.fullName,
+        m.status === 'ativo' ? 'Ativo' : m.status === 'inativo' ? 'Inativo' : m.status,
+        formatCategoryLabel(m.category),
+        getMemberTeamLabel(m, users),
+        formatGenderLabel(m.gender),
+        formatDateAO(m.birthDate),
+        m.identityCardNumber,
+        m.identityCardExpiryDate ? formatDateAO(m.identityCardExpiryDate) : 'Não informada',
+        biStatus.label,
+        m.phone,
+        m.email || '',
+        m.address,
+        m.guardianName || '',
+        m.guardianPhone || '',
+        m.lastReconfirmedAt ? formatDateTimeAO(m.lastReconfirmedAt) : '',
+        m.reconfirmationCount || 1,
+        resolveMemberDocumentationStatus(m) === 'regularizado' ? 'Regularizada' : 'Falta Documento',
+      ];
+    });
+
+    return {
+      success: true,
+      filename: `Lista_Reconfirmados_${yearTag}.csv`,
+      csvContent: buildCsvContent(headers, rows),
+      rowsCount: list.length,
+      listLabel: 'Lista dos que fizeram Reconfirmação',
+    };
+  }
+
+  if (listType === 'nao_reconfirmados') {
+    const list = getNonReconfirmedMembersForExport(members, enrollmentConfig);
+    const headers = [
+      'Matricula',
+      'Nome_Completo',
+      'Estado_Atual',
+      'Categoria',
+      'Equipa',
+      'Sexo',
+      'Data_Nascimento',
+      'Numero_BI',
+      'Validade_BI',
+      'Estado_BI',
+      'Telefone',
+      'Email',
+      'Municipio_Bairro',
+      'Encarregado',
+      'Telefone_Encarregado',
+      'Ultima_Reconfirmacao',
+      'Observacao',
+    ];
+
+    const rows = list.map((m) => {
+      const biStatus = evaluateIdentityCardValidity(m.identityCardExpiryDate, now);
+      const statusText =
+        m.status === 'arquivado'
+          ? 'Arquivado (Sem Reconfirmação)'
+          : m.status === 'ativo'
+          ? 'Ativo (Pendente)'
+          : 'Inativo (Pendente)';
+      return [
+        m.manualNumber,
+        m.fullName,
+        statusText,
+        formatCategoryLabel(m.category),
+        getMemberTeamLabel(m, users),
+        formatGenderLabel(m.gender),
+        formatDateAO(m.birthDate),
+        m.identityCardNumber,
+        m.identityCardExpiryDate ? formatDateAO(m.identityCardExpiryDate) : 'Não informada',
+        biStatus.label,
+        m.phone,
+        m.email || '',
+        m.address,
+        m.guardianName || '',
+        m.guardianPhone || '',
+        m.lastReconfirmedAt ? formatDateTimeAO(m.lastReconfirmedAt) : 'Nunca reconfirmou',
+        m.status === 'arquivado' ? m.archiveReason || '' : 'Aguarda reconfirmação de dados',
+      ];
+    });
+
+    return {
+      success: true,
+      filename: `Lista_Nao_Reconfirmados_${yearTag}.csv`,
+      csvContent: buildCsvContent(headers, rows),
+      rowsCount: list.length,
+      listLabel: 'Lista dos que não fizeram Reconfirmação',
+    };
+  }
+
+  return {
+    success: false,
+    error: 'Tipo de lista inválido para exportação.',
+  };
+}
+
+export interface EnrollmentReconfirmationPdfResult {
+  success: boolean;
+  error?: string;
+  filename?: string;
+  pdfBytes?: ArrayBuffer;
+  rowsCount?: number;
+  listLabel?: string;
+}
+
+function toPdfSafeText(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/\r?\n|\r/g, ' ')
+    .replace(/[—–]/g, '-')
+    .replace(/·/g, '/')
+    .replace(/[«»]/g, '"')
+    .trim();
+}
+
+/**
+ * Gera um relatório oficial em PDF (A4 Horizontal) com a lista de Inscrição, Reconfirmação
+ * ou Não Reconfirmados, validando estritamente a permissão EXPORT_ENROLLMENT_RECONF_LISTS.
+ */
+export function buildEnrollmentAndReconfirmationPdf(params: {
+  listType: EnrollmentReconfirmationExportType;
+  actorRole: RoleType;
+  actorName?: string;
+  clubName?: string;
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>;
+  enrollmentRequests?: MemberEnrollmentRequest[];
+  members?: Member[];
+  enrollmentConfig?: EnrollmentScheduleConfig;
+  users?: UserAccount[];
+  currentYear?: number;
+  now?: Date;
+}): EnrollmentReconfirmationPdfResult {
+  const {
+    listType,
+    actorRole,
+    actorName = 'Secretaria',
+    clubName = "Clube de Embaixadores Pioneiros D'Alvorada",
+    permissionsMatrix,
+    enrollmentRequests = [],
+    members = [],
+    enrollmentConfig,
+    users = [],
+  } = params;
+  const now = params.now || new Date();
+  const yearTag = params.currentYear || now.getFullYear();
+
+  if (!hasExportEnrollmentReconfListsPermission(actorRole, permissionsMatrix)) {
+    return {
+      success: false,
+      error:
+        'Sem permissão na Grelha de Permissões (Baixar Listas em PDF de Inscrição e Reconfirmação) atribuída pelo Administrador.',
+    };
+  }
+
+  let listLabel = '';
+  let documentTitle = '';
+  let filename = '';
+  let headers: string[] = [];
+  let rows: string[][] = [];
+
+  if (listType === 'inscritos') {
+    const list = getEnrolledMembersForExport(enrollmentRequests);
+    listLabel = 'Lista dos que fizeram Inscrição';
+    documentTitle = 'LISTA OFICIAL DOS QUE FIZERAM INSCRIÇÃO';
+    filename = `Lista_Inscritos_${yearTag}.pdf`;
+    headers = [
+      '#',
+      'Protocolo',
+      'Estado',
+      'Matrícula',
+      'Nome Completo',
+      'Categoria',
+      'B.I. / Validade',
+      'Telefone',
+      'E-mail',
+      'Submissão',
+    ];
+    rows = list.map((req, idx) => {
+      const biStatus = evaluateIdentityCardValidity(req.identityCardExpiryDate, now);
+      const biExpiryText = req.identityCardExpiryDate
+        ? `${formatDateAO(req.identityCardExpiryDate)} (${biStatus.isExpired ? 'Expirado' : 'Válido'})`
+        : 'Validade não inf.';
+      return [
+        String(idx + 1),
+        toPdfSafeText(req.protocolNumber),
+        toPdfSafeText(formatEnrollmentStatusLabel(req.status)),
+        toPdfSafeText(req.manualNumber || '-'),
+        toPdfSafeText(req.fullName),
+        toPdfSafeText(formatCategoryLabel(req.category)),
+        toPdfSafeText(`${req.identityCardNumber} / ${biExpiryText}`),
+        toPdfSafeText(req.phone),
+        toPdfSafeText(req.email),
+        toPdfSafeText(req.submittedAt ? formatDateTimeAO(req.submittedAt) : '-'),
+      ];
+    });
+  } else if (listType === 'reconfirmados') {
+    const list = getReconfirmedMembersForExport(members, enrollmentConfig);
+    listLabel = 'Lista dos que fizeram Reconfirmação';
+    documentTitle = 'LISTA OFICIAL DOS QUE FIZERAM RECONFIRMAÇÃO';
+    filename = `Lista_Reconfirmados_${yearTag}.pdf`;
+    headers = [
+      '#',
+      'Matrícula',
+      'Nome Completo',
+      'Estado',
+      'Categoria',
+      'Equipa',
+      'B.I. / Validade',
+      'Telefone',
+      'Data Reconfirmação',
+    ];
+    rows = list.map((m, idx) => {
+      const biStatus = evaluateIdentityCardValidity(m.identityCardExpiryDate, now);
+      const biExpiryText = m.identityCardExpiryDate
+        ? `${formatDateAO(m.identityCardExpiryDate)} (${biStatus.isExpired ? 'Expirado' : 'Válido'})`
+        : 'Validade não inf.';
+      return [
+        String(idx + 1),
+        toPdfSafeText(m.manualNumber),
+        toPdfSafeText(m.fullName),
+        toPdfSafeText(m.status === 'ativo' ? 'Ativo' : m.status === 'inativo' ? 'Inativo' : m.status),
+        toPdfSafeText(formatCategoryLabel(m.category)),
+        toPdfSafeText(getMemberTeamLabel(m, users)),
+        toPdfSafeText(`${m.identityCardNumber} / ${biExpiryText}`),
+        toPdfSafeText(m.phone),
+        toPdfSafeText(m.lastReconfirmedAt ? formatDateTimeAO(m.lastReconfirmedAt) : '-'),
+      ];
+    });
+  } else if (listType === 'nao_reconfirmados') {
+    const list = getNonReconfirmedMembersForExport(members, enrollmentConfig);
+    listLabel = 'Lista dos que não fizeram Reconfirmação';
+    documentTitle = 'LISTA OFICIAL DOS QUE NÃO FIZERAM RECONFIRMAÇÃO';
+    filename = `Lista_Nao_Reconfirmados_${yearTag}.pdf`;
+    headers = [
+      '#',
+      'Matrícula',
+      'Nome Completo',
+      'Estado Atual',
+      'Categoria',
+      'Equipa',
+      'B.I. / Validade',
+      'Telefone',
+      'Observação',
+    ];
+    rows = list.map((m, idx) => {
+      const biStatus = evaluateIdentityCardValidity(m.identityCardExpiryDate, now);
+      const biExpiryText = m.identityCardExpiryDate
+        ? `${formatDateAO(m.identityCardExpiryDate)} (${biStatus.isExpired ? 'Expirado' : 'Válido'})`
+        : 'Validade não inf.';
+      const statusText =
+        m.status === 'arquivado'
+          ? 'Arquivado (Sem Reconf.)'
+          : m.status === 'ativo'
+          ? 'Ativo (Pendente)'
+          : 'Inativo (Pendente)';
+      return [
+        String(idx + 1),
+        toPdfSafeText(m.manualNumber),
+        toPdfSafeText(m.fullName),
+        toPdfSafeText(statusText),
+        toPdfSafeText(formatCategoryLabel(m.category)),
+        toPdfSafeText(getMemberTeamLabel(m, users)),
+        toPdfSafeText(`${m.identityCardNumber} / ${biExpiryText}`),
+        toPdfSafeText(m.phone),
+        toPdfSafeText(m.status === 'arquivado' ? m.archiveReason || 'Sem reconfirmação' : 'Aguarda reconfirmação'),
+      ];
+    });
+  } else {
+    return {
+      success: false,
+      error: 'Tipo de lista inválido para exportação em PDF.',
+    };
+  }
+
+  const doc = new jsPDF({
+    orientation: 'landscape',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  // Faixa de cabeçalho institucional
+  doc.setFillColor(30, 58, 138);
+  doc.rect(0, 0, pageWidth, 24, 'F');
+
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.text(toPdfSafeText(clubName).toUpperCase(), 14, 10);
+
+  doc.setFontSize(10);
+  doc.text(toPdfSafeText(documentTitle), 14, 17.5);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.text(
+    toPdfSafeText(`Ano: ${yearTag}  |  Total: ${rows.length} registo(s)`),
+    pageWidth - 14,
+    10,
+    { align: 'right' }
+  );
+  doc.text(
+    toPdfSafeText(`Emitido em: ${formatDateTimeAO(now.toISOString())}  |  Por: ${actorName}`),
+    pageWidth - 14,
+    17.5,
+    { align: 'right' }
+  );
+
+  autoTable(doc, {
+    head: [headers],
+    body: rows,
+    startY: 29,
+    margin: { top: 29, right: 10, bottom: 16, left: 10 },
+    theme: 'grid',
+    styles: {
+      font: 'helvetica',
+      fontSize: 7.5,
+      cellPadding: 2,
+      textColor: [30, 41, 59],
+      lineColor: [203, 213, 225],
+      lineWidth: 0.2,
+      overflow: 'linebreak',
+    },
+    headStyles: {
+      fillColor: [30, 58, 138],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+      fontSize: 7.5,
+    },
+    alternateRowStyles: {
+      fillColor: [248, 250, 252],
+    },
+    columnStyles: {
+      0: { cellWidth: 8, halign: 'center' },
+    },
+    didDrawPage: (data) => {
+      const pageCount = doc.getNumberOfPages();
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text(
+        toPdfSafeText(`Secretaria Institucional - ${clubName}`),
+        10,
+        pageHeight - 7
+      );
+      doc.text(
+        toPdfSafeText(`Página ${data.pageNumber} de ${pageCount}`),
+        pageWidth - 10,
+        pageHeight - 7,
+        { align: 'right' }
+      );
+    },
+  });
+
+  const pdfBytes = doc.output('arraybuffer');
+
+  return {
+    success: true,
+    filename,
+    pdfBytes,
+    rowsCount: rows.length,
+    listLabel,
+  };
+}
+
 
 

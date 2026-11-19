@@ -20,13 +20,25 @@ import {
   CheckSquare,
   Layers,
   Briefcase,
+  Gift,
+  RefreshCw,
+  AlertTriangle,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import { formatKz } from '../../utils/currency';
-import { formatDateAO } from '../../utils/date';
+import {
+  formatDateAO,
+  getCurrentWeekWindow,
+  getExpiredIdentityCardMembers,
+  getWeeklyBirthdayMembers,
+} from '../../utils/date';
 import { ROLE_LABELS } from '../../services/permissionService';
 import { ModuleName } from '../../types';
 import { isDirectionMember } from '../../services/accountSyncService';
+import {
+  evaluateEnrollmentAvailability,
+  getPendingReconfirmationMembers,
+} from '../../services/enrollmentService';
 
 interface DashboardModuleProps {
   onNavigate: (module: ModuleName) => void;
@@ -47,7 +59,9 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
   // Tesouraria (visível apenas para papéis com permissão treasury:VIEW)
   const canViewTreasury = can('treasury', 'VIEW');
   const totalBalanceCents = state.accounts.reduce((acc, curr) => acc + curr.currentBalanceInCents, 0);
-  const totalIncomeCents = state.receipts.filter((r) => !r.isCancelled).reduce((acc, r) => acc + r.amountPaidInCents, 0);
+  const totalIncomeCents = state.receipts
+    .filter((r) => !r.isCancelled && r.status !== 'anulado')
+    .reduce((acc, r) => acc + r.amountPaidInCents, 0);
   const totalExpenseCents = state.expenses.filter((e) => e.status === 'pago').reduce((acc, e) => acc + e.amountInCents, 0);
 
   const pendingExpensesCount = state.expenses.filter((e) => e.status === 'solicitado').length;
@@ -136,6 +150,17 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
   const activitiesWithMinuteCount = state.activities.filter((act) => Boolean(act.minute)).length;
   const ongoingActivitiesCount = state.activities.filter((act) => act.stage !== 'encerrado').length;
   const closedActivitiesCount = state.activities.filter((act) => act.stage === 'encerrado').length;
+
+  const canViewMembers = can('members', 'VIEW');
+  const nowRef = new Date();
+  const weekWindow = getCurrentWeekWindow(nowRef);
+  const weeklyBirthdays = canViewMembers ? getWeeklyBirthdayMembers(state.members, nowRef) : [];
+  const expiredBiMembers = canViewMembers ? getExpiredIdentityCardMembers(state.members, nowRef) : [];
+  const enrollmentAvailability = evaluateEnrollmentAvailability(state.settings.enrollmentConfig, nowRef);
+  const pendingReconfirmationMembers =
+    canViewMembers && enrollmentAvailability.enableReconfirmation && state.settings.enrollmentConfig?.periodId
+      ? getPendingReconfirmationMembers(state.members, state.settings.enrollmentConfig)
+      : [];
 
   return (
     <div className="space-y-6 w-full max-w-full min-w-0">
@@ -302,6 +327,169 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
           </div>
         )}
       </div>
+
+      {/* Acompanhamento Rápido de Membros: Aniversariantes da Semana, Sem Reconfirmação e B.I. Expirados */}
+      {canViewMembers && (
+        <div
+          className={`grid grid-cols-1 ${
+            expiredBiMembers.length > 0 && pendingReconfirmationMembers.length > 0
+              ? 'lg:grid-cols-3'
+              : expiredBiMembers.length > 0 || pendingReconfirmationMembers.length > 0
+              ? 'lg:grid-cols-2'
+              : ''
+          } gap-4 w-full max-w-full min-w-0`}
+        >
+          {/* Cartão: Aniversariantes da Semana */}
+          <div className="bg-white rounded-xl border border-indigo-200 shadow-xs overflow-hidden flex flex-col">
+            <div className="px-4 py-3 border-b border-indigo-100 bg-indigo-50/70 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Gift className="w-4 h-4 text-indigo-700 shrink-0" />
+                <div className="min-w-0">
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-indigo-950 truncate">
+                    Aniversariantes da Semana ({weeklyBirthdays.length})
+                  </h2>
+                  <p className="text-[10px] text-indigo-800/80">
+                    {weekWindow.startLabel} a {weekWindow.endLabel}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onNavigate('members')}
+                className="text-[11px] font-bold text-indigo-900 hover:underline shrink-0 cursor-pointer"
+              >
+                Abrir Membros
+              </button>
+            </div>
+            <div className="p-3 divide-y divide-slate-100 text-xs flex-1">
+              {weeklyBirthdays.length === 0 ? (
+                <p className="text-slate-400 italic py-2 text-center">
+                  Sem aniversariantes registados nesta semana.
+                </p>
+              ) : (
+                weeklyBirthdays.slice(0, 5).map((entry) => (
+                  <div key={entry.member.id} className="py-2 first:pt-0 last:pb-0 flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-slate-900 truncate flex items-center gap-1.5">
+                        <span className="truncate">{entry.member.fullName}</span>
+                        {entry.isToday && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-indigo-700 text-white shrink-0">
+                            Hoje!
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        {entry.weekdayLabel} ({entry.dayMonthLabel})
+                        {entry.turningAge !== null ? ` · ${entry.turningAge} anos` : ''}
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-mono text-slate-500 shrink-0">
+                      {entry.member.manualNumber}
+                    </span>
+                  </div>
+                ))
+              )}
+              {weeklyBirthdays.length > 5 && (
+                <p className="pt-2 text-[10px] text-indigo-800 font-semibold">
+                  +{weeklyBirthdays.length - 5} outro(s) aniversariante(s) esta semana
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Cartão: Pendentes de Reconfirmação */}
+          {pendingReconfirmationMembers.length > 0 && (
+            <div className="bg-white rounded-xl border border-amber-200 shadow-xs overflow-hidden flex flex-col">
+              <div className="px-4 py-3 border-b border-amber-100 bg-amber-50/70 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <RefreshCw className="w-4 h-4 text-amber-700 shrink-0" />
+                  <div className="min-w-0">
+                    <h2 className="text-xs font-bold uppercase tracking-wider text-amber-950 truncate">
+                      Sem Reconfirmação ({pendingReconfirmationMembers.length})
+                    </h2>
+                    <p className="text-[10px] text-amber-800/80">
+                      Aguardam confirmação de dados no período atual
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('members')}
+                  className="text-[11px] font-bold text-amber-900 hover:underline shrink-0 cursor-pointer"
+                >
+                  Ver Lista
+                </button>
+              </div>
+              <div className="p-3 divide-y divide-slate-100 text-xs flex-1">
+                {pendingReconfirmationMembers.slice(0, 5).map((m) => (
+                  <div key={m.id} className="py-2 first:pt-0 last:pb-0 flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-slate-900 truncate">{m.fullName}</div>
+                      <div className="text-[10px] text-slate-500 capitalize">
+                        {m.category} · {m.unitOrTeam || 'Sem equipa'}
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-mono text-slate-500 shrink-0">
+                      {m.manualNumber}
+                    </span>
+                  </div>
+                ))}
+                {pendingReconfirmationMembers.length > 5 && (
+                  <p className="pt-2 text-[10px] text-amber-800 font-semibold">
+                    +{pendingReconfirmationMembers.length - 5} outro(s) membro(s) pendente(s)
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Cartão: B.I. Expirados */}
+          {expiredBiMembers.length > 0 && (
+            <div className="bg-white rounded-xl border border-rose-200 shadow-xs overflow-hidden flex flex-col">
+              <div className="px-4 py-3 border-b border-rose-100 bg-rose-50/70 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0" />
+                  <div className="min-w-0">
+                    <h2 className="text-xs font-bold uppercase tracking-wider text-rose-950 truncate">
+                      B.I. Expirados ({expiredBiMembers.length})
+                    </h2>
+                    <p className="text-[10px] text-rose-800/80">
+                      Bilhetes de Identidade com validade ultrapassada
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('members')}
+                  className="text-[11px] font-bold text-rose-900 hover:underline shrink-0 cursor-pointer"
+                >
+                  Regularizar
+                </button>
+              </div>
+              <div className="p-3 divide-y divide-slate-100 text-xs flex-1">
+                {expiredBiMembers.slice(0, 5).map(({ member }) => (
+                  <div key={member.id} className="py-2 first:pt-0 last:pb-0 flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-slate-900 truncate">{member.fullName}</div>
+                      <div className="text-[10px] text-rose-700 font-semibold">
+                        Expirado em {formatDateAO(member.identityCardExpiryDate)}
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-mono text-slate-500 shrink-0">
+                      {member.identityCardNumber}
+                    </span>
+                  </div>
+                ))}
+                {expiredBiMembers.length > 5 && (
+                  <p className="pt-2 text-[10px] text-rose-800 font-semibold">
+                    +{expiredBiMembers.length - 5} outro(s) com B.I. expirado
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Painel Específico de Progresso das Equipas & Monitorização de Atividades (Diretor-associado e Direção) */}
       {canSuperviseTeams && (

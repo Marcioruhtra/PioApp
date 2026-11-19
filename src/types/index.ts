@@ -33,8 +33,10 @@ export type PermissionAction =
   | 'VIEW_DOSSIER_360'
   | 'APPROVE_ENROLLMENT'
   | 'MANAGE_ENROLLMENT_PERIOD'
+  | 'MANAGE_RECONFIRMATION_PERIOD'
   | 'APPROVE_MEMBER_ACCOUNT'
-  | 'DELETE_MEMBER_UPLOADS';
+  | 'DELETE_MEMBER_UPLOADS'
+  | 'EXPORT_ENROLLMENT_RECONF_LISTS';
 
 export type ModuleName =
   | 'dashboard'
@@ -122,6 +124,7 @@ export interface Member {
   birthDate: string; // AAAA-MM-DD
   gender: 'M' | 'F';
   identityCardNumber: string; // B.I. Angolano (ex: 007849312LA041)
+  identityCardExpiryDate?: string; // Data de validade do B.I. (AAAA-MM-DD)
   phone: string;
   email?: string;
   address: string; // Município/Bairro (ex: Luanda, Talatona)
@@ -206,6 +209,8 @@ export interface PaymentReceipt {
   cancelledAt?: string;
   cancelledByUserId?: string;
   activityId?: string;
+  accountId?: string;
+  accountName?: string;
 }
 
 export interface TreasuryAccount {
@@ -555,6 +560,7 @@ export interface QuotaDebtWaiver {
 export interface EnrollmentScheduleConfig {
   isOpen: boolean;
   periodId?: string; // Identificador único do período de inscrições
+  enableEnrollments?: boolean; // Permite novas inscrições no clube durante este período (predefinição: true quando omitido por compatibilidade)
   enableReconfirmation?: boolean; // Permite que membros registados/inscritos façam reconfirmação de dados e documentos
   openedAt?: string; // Timestamp da abertura deste período
   openDate?: string; // AAAA-MM-DD
@@ -765,6 +771,7 @@ export interface MemberEnrollmentRequest {
   birthDate: string; // AAAA-MM-DD
   gender: 'M' | 'F';
   identityCardNumber: string;
+  identityCardExpiryDate?: string; // Data de validade do B.I. (AAAA-MM-DD)
   phone: string;
   email?: string;
   address: string;

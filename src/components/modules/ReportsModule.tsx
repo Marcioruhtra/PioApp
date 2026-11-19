@@ -56,7 +56,7 @@ export const ReportsModule: React.FC = () => {
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Relatorio_Clube_DAlvorada_${reportType}_2026.csv`);
+    link.setAttribute('download', `Relatorio_Clube_DAlvorada_${reportType}_${state.settings.currentYear}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -218,20 +218,33 @@ export const ReportsModule: React.FC = () => {
                   <th className="py-2.5 px-3">Valor Kz</th>
                   <th className="py-2.5 px-3">Método</th>
                   <th className="py-2.5 px-3">Data</th>
+                  <th className="py-2.5 px-3">Estado</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
-                {state.receipts.map((r) => (
-                  <tr key={r.id}>
-                    <td className="py-2.5 px-3 font-mono font-bold">{r.receiptNumber}</td>
-                    <td className="py-2.5 px-3 font-semibold">{r.memberName}</td>
-                    <td className="py-2.5 px-3">{r.feeTitle}</td>
-                    <td className="py-2.5 px-3">{r.periodLabel}</td>
-                    <td className="py-2.5 px-3 font-bold text-slate-900">{formatKz(r.amountPaidInCents)}</td>
-                    <td className="py-2.5 px-3 capitalize">{r.paymentMethod.replace('_', ' ')}</td>
-                    <td className="py-2.5 px-3">{formatDateAO(r.paidAt)}</td>
-                  </tr>
-                ))}
+                {state.receipts.map((r) => {
+                  const isVoid = Boolean(r.isCancelled || r.status === 'anulado');
+                  return (
+                    <tr key={r.id} className={isVoid ? 'opacity-60 bg-rose-50/30' : ''}>
+                      <td className="py-2.5 px-3 font-mono font-bold">{r.receiptNumber}</td>
+                      <td className="py-2.5 px-3 font-semibold">{r.memberName}</td>
+                      <td className="py-2.5 px-3">{r.feeTitle}</td>
+                      <td className="py-2.5 px-3">{r.periodLabel}</td>
+                      <td className={`py-2.5 px-3 font-bold ${isVoid ? 'line-through text-rose-700' : 'text-slate-900'}`}>
+                        {formatKz(r.amountPaidInCents)}
+                      </td>
+                      <td className="py-2.5 px-3 capitalize">{r.paymentMethod.replace(/_/g, ' ')}</td>
+                      <td className="py-2.5 px-3">{formatDateAO(r.paidAt)}</td>
+                      <td className="py-2.5 px-3 font-bold">
+                        {isVoid ? (
+                          <span className="text-rose-700">Anulado</span>
+                        ) : (
+                          <span className="text-emerald-700">Válido</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

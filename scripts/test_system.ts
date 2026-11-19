@@ -29,10 +29,14 @@ import {
   hasApproveEnrollmentPermission,
   canGrantManageEnrollmentPeriod,
   hasManageEnrollmentPeriodPermission,
+  canGrantManageReconfirmationPeriod,
+  hasManageReconfirmationPeriodPermission,
   canGrantApproveMemberAccount,
   hasApproveMemberAccountPermission,
   canGrantDeleteMemberUploads,
   hasDeleteMemberUploadsPermission,
+  canGrantExportEnrollmentReconfLists,
+  hasExportEnrollmentReconfListsPermission,
   canExecuteMemberDeletion,
   ACTION_LABELS,
   sanitizeRoleType,
@@ -46,6 +50,7 @@ import {
   validateRegistrationFields,
   validateEnrollmentSubmission,
   buildEnrollmentRequest,
+  buildResubmittedEnrollmentRequest,
   buildApprovedMemberFromEnrollment,
   markEnrollmentReviewed,
   startEnrollmentReview,
@@ -58,9 +63,21 @@ import {
   findMemberForReconfirmation,
   applyMemberReconfirmation,
   finalizeEndedEnrollmentPeriod,
+  getPendingReconfirmationMembers,
+  getEnrolledMembersForExport,
+  getReconfirmedMembersForExport,
+  getNonReconfirmedMembersForExport,
+  buildEnrollmentAndReconfirmationCsv,
+  buildEnrollmentAndReconfirmationPdf,
 } from '../src/services/enrollmentService';
 import { formatKz } from '../src/utils/currency';
-import { formatDateAO, calculateAgeYears } from '../src/utils/date';
+import {
+  formatDateAO,
+  calculateAgeYears,
+  evaluateIdentityCardValidity,
+  getWeeklyBirthdayMembers,
+  getExpiredIdentityCardMembers,
+} from '../src/utils/date';
 import { INACTIVITY_TIMEOUT_MS, isSessionInactive, getRemainingInactivityMs } from '../src/utils/inactivity';
 import { buildMemberDossierData } from '../src/utils/memberDossier';
 import { getDocumentPreviewKind, dataUrlToBlob } from '../src/utils/fileUpload';
@@ -86,11 +103,19 @@ import {
   isInstitutionalAccountRecord,
 } from '../src/services/accountSyncService';
 import {
+  DEFAULT_QUOTA_FEE_ID,
   countChargeableSundays,
   calculateMemberQuotaSummary,
   calculateClubQuotaTotals,
+  getRubricsCatalogFees,
+  getSelectableInstitutionalFees,
+  isFixedQuotaRubric,
   hasConfigureQuotaPermission,
   hasWaiveQuotaDebtPermission,
+  resolveReceiptTargetAccountId,
+  reverseReceiptFromTreasuryAccounts,
+  calculateMonthlyFiscalSummary,
+  isIsoDateInFiscalMonth,
 } from '../src/services/quotaService';
 import {
   cleanOperatorDisplayName,
@@ -1627,6 +1652,7 @@ function runTests() {
     birthDate: '2012-05-10',
     gender: 'M',
     identityCardNumber: '008812345LA049',
+    identityCardExpiryDate: '2030-05-10',
     phone: '+244 924 777 888',
     email: 'emanuel.kandimba@clubedalvorada.ao',
     address: 'Rua da Missão, Talatona, Luanda',
@@ -1739,6 +1765,7 @@ function runTests() {
     birthDate: '2014-03-14',
     gender: 'F',
     identityCardNumber: '009988777LA041',
+    identityCardExpiryDate: '2030-03-14',
     phone: '+244 925 333 444',
     email: 'joana.vemba@clubedalvorada.ao',
     address: 'Kilamba, Bloco F, Luanda',
@@ -1863,6 +1890,7 @@ function runTests() {
     birthDate: '2011-07-19',
     gender: 'M',
     identityCardNumber: '005544332LA045',
+    identityCardExpiryDate: '2030-07-19',
     phone: '+244 926 111 999',
     email: 'samuel.nzinga@clubedalvorada.ao',
     address: 'Viana, Luanda',
@@ -3086,6 +3114,7 @@ function runTests() {
     birthDate: resurrectedMemberCandidate.birthDate,
     gender: resurrectedMemberCandidate.gender,
     identityCardNumber: '008877665LA041',
+    identityCardExpiryDate: '2030-01-01',
     phone: '+244 923 888 777',
     email: 'lucas.eliminado@clubedalvorada.ao',
     address: 'Luanda, Angola',
@@ -3198,6 +3227,7 @@ function runTests() {
     birthDate: '2004-08-22',
     gender: 'F',
     identityCardNumber: '004455667LA049',
+    identityCardExpiryDate: '2030-08-22',
     phone: '+244 927 654 321',
     email: 'beatriz.kaputo@clubedalvorada.ao',
     address: 'Maianga, Luanda',
@@ -3750,6 +3780,7 @@ function runTests() {
       birthDate: '2005-05-10',
       gender: 'M',
       identityCardNumber: memNotReconfirmed.identityCardNumber, // duplicado proposital
+      identityCardExpiryDate: '2030-05-10',
       phone: '923999888',
       email: 'joao.atualizado@clube.ao',
       address: 'Luanda - Ingombota',
@@ -3773,6 +3804,7 @@ function runTests() {
       birthDate: '2005-05-10',
       gender: 'M',
       identityCardNumber: memExistingReconf.identityCardNumber,
+      identityCardExpiryDate: '2030-05-10',
       phone: '923999888',
       email: 'joao.atualizado@clube.ao',
       address: 'Luanda - Ingombota',
@@ -4022,6 +4054,7 @@ function runTests() {
       birthDate: '2005-01-10',
       gender: 'M',
       identityCardNumber: '005001001LA041',
+      identityCardExpiryDate: '2030-01-10',
       phone: '923500001',
       email: 'membro1@clube.ao',
       address: 'Luanda - Nova Morada',
@@ -4082,6 +4115,797 @@ function runTests() {
       u2Reactivated?.active === true &&
       u2Reactivated?.deactivatedByArchive === undefined,
     "Ao desarquivar o membro pelo método normal, a sua conta de login é automaticamente ativada sem autorização prévia do Administrador"
+  );
+
+  // =========================================================================
+  // TESTE 51: Abertura Separada de Reconfirmações sem Abrir Inscrições & Permissão RBAC
+  // =========================================================================
+  console.log("\n=== TESTE 51: Abertura Separada de Reconfirmações (Sem Inscrições) & Permissão RBAC ===");
+
+  assert(
+    PERMISSION_CATALOG.some((p) => p.module === 'members' && p.action === 'MANAGE_RECONFIRMATION_PERIOD') &&
+      Boolean(ACTION_LABELS.MANAGE_RECONFIRMATION_PERIOD),
+    "Catálogo RBAC e rótulos incluem a permissão MANAGE_RECONFIRMATION_PERIOD"
+  );
+
+  assert(
+    canGrantManageReconfirmationPeriod('admin_tecnico') === true &&
+      canGrantManageReconfirmationPeriod('diretor') === false &&
+      canGrantManageReconfirmationPeriod('secretario') === false,
+    "Apenas o Administrador Técnico pode conceder ou revogar a permissão de abrir/encerrar reconfirmações"
+  );
+
+  const syncedReconfPerms = syncPermissionsMatrix();
+  assert(
+    hasManageReconfirmationPeriodPermission('admin_tecnico', syncedReconfPerms) === true &&
+      hasManageReconfirmationPeriodPermission('diretor', syncedReconfPerms) === true &&
+      hasManageReconfirmationPeriodPermission('secretario', syncedReconfPerms) === false,
+    "Diretor e Administrador possuem MANAGE_RECONFIRMATION_PERIOD por padrão; outros cargos não"
+  );
+
+  const matrixWithoutEnrollOnlyReconf = JSON.parse(JSON.stringify(syncedReconfPerms));
+  matrixWithoutEnrollOnlyReconf.diretor.members = matrixWithoutEnrollOnlyReconf.diretor.members.filter(
+    (a: string) => a !== 'MANAGE_ENROLLMENT_PERIOD'
+  );
+  const reSyncedOnlyReconf = syncPermissionsMatrix(matrixWithoutEnrollOnlyReconf);
+  assert(
+    hasManageEnrollmentPeriodPermission('diretor', reSyncedOnlyReconf) === false &&
+      hasManageReconfirmationPeriodPermission('diretor', reSyncedOnlyReconf) === true,
+    "Diretor mantém permissão para abrir reconfirmações separadamente mesmo sem permissão de abrir inscrições"
+  );
+
+  const reconfOnlyOpenConfig: EnrollmentScheduleConfig = {
+    isOpen: true,
+    periodId: 'PER-51-RECONF-ONLY',
+    enableEnrollments: false,
+    enableReconfirmation: true,
+    openedAt: '2026-06-01T08:00:00.000Z',
+    openDate: '2026-06-01',
+    openTime: '08:00',
+    closeDate: '2026-06-15',
+    closeTime: '23:59',
+  };
+
+  const evalReconfOnlyOpen = evaluateEnrollmentAvailability(
+    reconfOnlyOpenConfig,
+    new Date(2026, 5, 5, 10, 0, 0)
+  );
+  assert(
+    evalReconfOnlyOpen.status === 'abertas' &&
+      evalReconfOnlyOpen.isPeriodOpen === true &&
+      evalReconfOnlyOpen.isEnrollmentsOpen === false &&
+      evalReconfOnlyOpen.isCurrentlyOpen === false &&
+      evalReconfOnlyOpen.isReconfirmationOpen === true &&
+      evalReconfOnlyOpen.statusLabel === 'Reconfirmação Aberta',
+    "Quando apenas a reconfirmação está aberta (enableEnrollments=false), inscrições permanecem bloqueadas/ocultas e reconfirmação fica aberta"
+  );
+
+  const evalReconfOnlyClosed = evaluateEnrollmentAvailability(
+    reconfOnlyOpenConfig,
+    new Date(2026, 5, 16, 0, 0, 0)
+  );
+  const finalizeReconfOnly = finalizeEndedEnrollmentPeriod({
+    members: [
+      { ...memberT50_1, lastReconfirmedPeriodId: 'PER-51-RECONF-ONLY' },
+      memberT50_2,
+    ],
+    config: reconfOnlyOpenConfig,
+    now: new Date(2026, 5, 16, 0, 0, 0),
+  });
+  assert(
+    evalReconfOnlyClosed.status === 'encerradas' &&
+      evalReconfOnlyClosed.isPeriodOpen === false &&
+      evalReconfOnlyClosed.isEnrollmentsOpen === false &&
+      evalReconfOnlyClosed.isReconfirmationOpen === false &&
+      finalizeReconfOnly.hasChanges === true &&
+      finalizeReconfOnly.members.find((m) => m.id === 'MEM-T50-1')?.status === 'ativo' &&
+      finalizeReconfOnly.members.find((m) => m.id === 'MEM-T50-2')?.status === 'arquivado',
+    "Quando o período exclusivo de reconfirmação encerra, membros não reconfirmados são arquivados automaticamente"
+  );
+
+  // =========================================================================
+  // 52. LISTAS RÁPIDAS (SEM RECONFIRMAÇÃO + ANIVERSARIANTES DA SEMANA) E VALIDADE DO B.I.
+  // =========================================================================
+  console.log("\n52. Teste de Validade do B.I., Lista de Pendentes de Reconfirmação e Aniversariantes da Semana:");
+
+  // 52.1 Validação de campo obrigatório e propagação nos 3 fluxos (Inscrição, Reenvio, Secretaria, Reconfirmação)
+  const missingBiExpirySelf = validateRegistrationFields(
+    { ...minimalValidSelfAspirant, identityCardExpiryDate: '' },
+    'self_enrollment'
+  );
+  const missingBiExpirySec = validateRegistrationFields(
+    { ...minimalValidSelfAspirant, manualNumber: 'EBX-7770314', unitOrTeam: 'Unidade Águia', identityCardExpiryDate: '' },
+    'secretary'
+  );
+  assert(
+    !missingBiExpirySelf.valid && !missingBiExpirySec.valid,
+    "Validade do B.I. é obrigatória tanto na inscrição como no registo pela Secretaria"
+  );
+
+  const biReq = buildEnrollmentRequest(
+    { ...minimalValidSelfAspirant, identityCardExpiryDate: '2029-11-20' },
+    'EBX-7770314',
+    2026,
+    []
+  );
+  const biResub = buildResubmittedEnrollmentRequest(
+    { ...biReq, status: 'rejeitado' },
+    { ...minimalValidSelfAspirant, identityCardExpiryDate: '2031-02-15' },
+    'EBX-7770314',
+    2026,
+    [biReq]
+  );
+  const biApproved = buildApprovedMemberFromEnrollment(biResub, [], 2026, { unitOrTeam: 'Unidade Águia' });
+  assert(
+    biReq.identityCardExpiryDate === '2029-11-20' &&
+      biResub.identityCardExpiryDate === '2031-02-15' &&
+      biApproved.member?.identityCardExpiryDate === '2031-02-15',
+    "Validade do B.I. é propagada da inscrição/reenvio para a ficha oficial do membro aprovado"
+  );
+
+  const reconfMissingExpiry = applyMemberReconfirmation({
+    member: memberT50_1,
+    existingMembers: [memberT50_1],
+    periodId: 'PER-52',
+    users: [],
+    data: {
+      fullName: memberT50_1.fullName,
+      birthDate: memberT50_1.birthDate,
+      gender: memberT50_1.gender,
+      identityCardNumber: memberT50_1.identityCardNumber,
+      identityCardExpiryDate: '',
+      phone: memberT50_1.phone,
+      email: memberT50_1.email || 'm1@clube.ao',
+      address: memberT50_1.address,
+      allergiesOrMedicalNotes: 'Nenhuma',
+      investitureDate: '2024-01-01',
+    },
+  });
+  const reconfUpdatedExpiry = applyMemberReconfirmation({
+    member: memberT50_1,
+    existingMembers: [memberT50_1],
+    periodId: 'PER-52',
+    users: [],
+    data: {
+      fullName: memberT50_1.fullName,
+      birthDate: memberT50_1.birthDate,
+      gender: memberT50_1.gender,
+      identityCardNumber: memberT50_1.identityCardNumber,
+      identityCardExpiryDate: '2032-08-10',
+      phone: memberT50_1.phone,
+      email: memberT50_1.email || 'm1@clube.ao',
+      address: memberT50_1.address,
+      allergiesOrMedicalNotes: 'Nenhuma',
+      investitureDate: '2024-01-01',
+    },
+  });
+  assert(
+    reconfMissingExpiry.success === false &&
+      reconfUpdatedExpiry.success === true &&
+      reconfUpdatedExpiry.updatedMember?.identityCardExpiryDate === '2032-08-10',
+    "Reconfirmação exige e atualiza a data de validade do B.I. na ficha do membro"
+  );
+
+  // 52.2 Avaliação de validade e expiração do B.I.
+  const refDate52 = new Date(2026, 4, 15, 12, 0, 0); // 2026-05-15 (Sexta-feira)
+  const biExpiredEval = evaluateIdentityCardValidity('2026-05-14', refDate52);
+  const biTodayEval = evaluateIdentityCardValidity('2026-05-15', refDate52);
+  const biSoonEval = evaluateIdentityCardValidity('2026-06-01', refDate52);
+  const biValidEval = evaluateIdentityCardValidity('2028-01-01', refDate52);
+  const biEmptyEval = evaluateIdentityCardValidity('', refDate52);
+  assert(
+    biExpiredEval.isExpired === true &&
+      biExpiredEval.status === 'expirado' &&
+      biTodayEval.isExpired === false &&
+      biTodayEval.isExpiringSoon === true &&
+      biTodayEval.label === 'Expira hoje' &&
+      biSoonEval.isExpiringSoon === true &&
+      biValidEval.status === 'valido' &&
+      biEmptyEval.status === 'nao_informada',
+    "evaluateIdentityCardValidity identifica corretamente B.I. expirado, a expirar hoje/breve, válido e não informado"
+  );
+
+  const expiredList52 = getExpiredIdentityCardMembers(
+    [
+      { ...memberT50_1, id: 'EX1', fullName: 'Bruno Expirado', identityCardExpiryDate: '2026-01-10', status: 'ativo' },
+      { ...memberT50_1, id: 'EX2', fullName: 'Ana Mais Antiga', identityCardExpiryDate: '2025-12-01', status: 'inativo' },
+      { ...memberT50_1, id: 'EX3', fullName: 'Carlos Arquivado', identityCardExpiryDate: '2024-01-01', status: 'arquivado' },
+      { ...memberT50_1, id: 'EX4', fullName: 'Dina Valida', identityCardExpiryDate: '2028-05-15', status: 'ativo' },
+    ],
+    refDate52
+  );
+  assert(
+    expiredList52.length === 2 &&
+      expiredList52[0].member.id === 'EX2' &&
+      expiredList52[1].member.id === 'EX1',
+    "getExpiredIdentityCardMembers lista membros não arquivados com B.I. expirado ordenados do mais expirado"
+  );
+
+  // 52.3 Aniversariantes da Semana (Segunda 2026-05-11 a Domingo 2026-05-17) + viragem de ano + 29/02
+  const weekMembers52 = [
+    { ...memberT50_1, id: 'B1', fullName: 'Zeca Hoje', birthDate: '2010-05-15', status: 'ativo' as const },
+    { ...memberT50_1, id: 'B2', fullName: 'Alice Segunda', birthDate: '2012-05-11', status: 'ativo' as const },
+    { ...memberT50_1, id: 'B3', fullName: 'Pedro Domingo', birthDate: '2008-05-17', status: 'inativo' as const },
+    { ...memberT50_1, id: 'B4', fullName: 'Marta Arquivada', birthDate: '2010-05-13', status: 'arquivado' as const },
+    { ...memberT50_1, id: 'B5', fullName: 'Lucas Fora Semana', birthDate: '2010-05-18', status: 'ativo' as const },
+  ];
+  const weekBirthdays52 = getWeeklyBirthdayMembers(weekMembers52, refDate52);
+  assert(
+    weekBirthdays52.length === 3 &&
+      weekBirthdays52[0].member.id === 'B2' &&
+      weekBirthdays52[1].member.id === 'B1' &&
+      weekBirthdays52[1].isToday === true &&
+      weekBirthdays52[1].turningAge === 16 &&
+      weekBirthdays52[2].member.id === 'B3',
+    "getWeeklyBirthdayMembers filtra aniversariantes de Segunda a Domingo, destaca o aniversariante do dia e ignora arquivados"
+  );
+
+  // Viragem de ano (2025-12-29 a 2026-01-04) com referência 2025-12-31
+  const wrapBirthdays52 = getWeeklyBirthdayMembers(
+    [
+      { ...memberT50_1, id: 'W1', fullName: 'Ano Novo', birthDate: '2011-01-02', status: 'ativo' as const },
+      { ...memberT50_1, id: 'W2', fullName: 'Fim Ano', birthDate: '2010-12-29', status: 'ativo' as const },
+    ],
+    new Date(2025, 11, 31, 10, 0, 0)
+  );
+  assert(
+    wrapBirthdays52.length === 2 &&
+      wrapBirthdays52[0].member.id === 'W2' &&
+      wrapBirthdays52[1].member.id === 'W1' &&
+      wrapBirthdays52[1].turningAge === 15,
+    "getWeeklyBirthdayMembers funciona corretamente na semana de viragem de ano (Dezembro -> Janeiro)"
+  );
+
+  // 52.4 Lista rápida de membros que ainda não fizeram Reconfirmação
+  const pendingList52 = getPendingReconfirmationMembers(
+    [
+      { ...memberT50_1, id: 'P1', fullName: 'Zeca Pendente', status: 'ativo', lastReconfirmedPeriodId: 'OLD' },
+      { ...memberT50_1, id: 'P2', fullName: 'Ana Pendente', status: 'inativo', lastReconfirmedPeriodId: undefined },
+      { ...memberT50_1, id: 'P3', fullName: 'Bruno Reconfirmado', status: 'ativo', lastReconfirmedPeriodId: 'PER-52' },
+      { ...memberT50_1, id: 'P4', fullName: 'Carla Recem Admitida', status: 'ativo', enrolledPeriodId: 'PER-52' },
+      { ...memberT50_1, id: 'P5', fullName: 'Daniel Arquivado', status: 'arquivado' },
+    ],
+    { isOpen: true, periodId: 'PER-52', enableReconfirmation: true, enableEnrollments: false }
+  );
+  assert(
+    pendingList52.length === 2 &&
+      pendingList52[0].id === 'P2' &&
+      pendingList52[1].id === 'P1',
+    "getPendingReconfirmationMembers retorna ordenados apenas membros elegíveis que ainda não reconfirmaram neste período"
+  );
+
+  // ============================================================================
+  console.log("\n[TESTE 53] RBAC e Download de Listas de Inscrição, Reconfirmação e Não Reconfirmados...");
+  // ============================================================================
+  assert(
+    PERMISSION_CATALOG.some((p) => p.module === 'members' && p.action === 'EXPORT_ENROLLMENT_RECONF_LISTS') &&
+      Boolean(ACTION_LABELS.EXPORT_ENROLLMENT_RECONF_LISTS),
+    "Catálogo RBAC e rótulos incluem a permissão EXPORT_ENROLLMENT_RECONF_LISTS"
+  );
+
+  assert(
+    canGrantExportEnrollmentReconfLists('admin_tecnico') === true &&
+      canGrantExportEnrollmentReconfLists('diretor') === false &&
+      canGrantExportEnrollmentReconfLists('secretario') === false,
+    "Apenas o Administrador Técnico pode conceder ou revogar EXPORT_ENROLLMENT_RECONF_LISTS na grelha"
+  );
+
+  assert(
+    hasExportEnrollmentReconfListsPermission('secretario', ROLE_PERMISSIONS_MATRIX) === true &&
+      hasExportEnrollmentReconfListsPermission('diretor', ROLE_PERMISSIONS_MATRIX) === true &&
+      hasExportEnrollmentReconfListsPermission('admin_tecnico', ROLE_PERMISSIONS_MATRIX) === true &&
+      hasExportEnrollmentReconfListsPermission('tesoureiro', ROLE_PERMISSIONS_MATRIX) === false &&
+      hasExportEnrollmentReconfListsPermission('membro', ROLE_PERMISSIONS_MATRIX) === false,
+    "Secretário, Diretor e Administrador têm EXPORT_ENROLLMENT_RECONF_LISTS por padrão; outros cargos não"
+  );
+
+  // Migração de matriz antiga sem EXPORT_ENROLLMENT_RECONF_LISTS
+  const legacyNoExportListsMatrix = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  legacyNoExportListsMatrix.admin_tecnico.members = legacyNoExportListsMatrix.admin_tecnico.members.filter(
+    (a: string) => a !== 'EXPORT_ENROLLMENT_RECONF_LISTS'
+  );
+  legacyNoExportListsMatrix.secretario.members = legacyNoExportListsMatrix.secretario.members.filter(
+    (a: string) => a !== 'EXPORT_ENROLLMENT_RECONF_LISTS'
+  );
+  const migratedExportListsMatrix = syncPermissionsMatrix(legacyNoExportListsMatrix);
+  assert(
+    hasExportEnrollmentReconfListsPermission('secretario', migratedExportListsMatrix) === true &&
+      migratedExportListsMatrix.admin_tecnico.members.includes('EXPORT_ENROLLMENT_RECONF_LISTS'),
+    "syncPermissionsMatrix migra matrizes antigas concedendo EXPORT_ENROLLMENT_RECONF_LISTS ao Administrador e Secretário"
+  );
+
+  // Revogação pelo Administrador persiste após sincronização
+  const revokedExportListsMatrix = JSON.parse(JSON.stringify(migratedExportListsMatrix));
+  revokedExportListsMatrix.secretario.members = revokedExportListsMatrix.secretario.members.filter(
+    (a: string) => a !== 'EXPORT_ENROLLMENT_RECONF_LISTS'
+  );
+  const syncedRevokedExportListsMatrix = syncPermissionsMatrix(revokedExportListsMatrix);
+  assert(
+    hasExportEnrollmentReconfListsPermission('secretario', syncedRevokedExportListsMatrix) === false,
+    "Revogação de EXPORT_ENROLLMENT_RECONF_LISTS do Secretário pelo Administrador persiste e bloqueia acesso"
+  );
+
+  const exportConfig53 = {
+    isOpen: true,
+    periodId: 'PER-53',
+    openedAt: '2026-05-01T08:00:00.000Z',
+    enableEnrollments: true,
+    enableReconfirmation: true,
+  };
+  const exportRequests53: MemberEnrollmentRequest[] = [
+    {
+      id: 'INS-2026-001',
+      protocolNumber: 'INS-2026-001',
+      manualNumber: 'EMB-5301',
+      fullName: 'Carlos "Teste"; Silva',
+      birthDate: '2011-03-10',
+      gender: 'M',
+      identityCardNumber: '001122334LA053',
+      identityCardExpiryDate: '2029-01-01',
+      phone: '923000111',
+      email: 'carlos53@clube.ao',
+      address: 'Viana, Luanda',
+      category: 'embaixador',
+      emergencyContact: { name: 'Pai', relationship: 'Pai', phone: '923000111' },
+      allergiesOrMedicalNotes: 'Nenhuma',
+      documentDeliveryMethod: 'presencial',
+      status: 'pendente',
+      submittedAt: '2026-05-02T10:00:00.000Z',
+    },
+    {
+      id: 'INS-2026-002',
+      protocolNumber: 'INS-2026-002',
+      manualNumber: 'EMB-5302',
+      fullName: 'Ana Inscrita',
+      birthDate: '2010-04-12',
+      gender: 'F',
+      identityCardNumber: '009988776LA053',
+      identityCardExpiryDate: '2025-01-01',
+      phone: '923000222',
+      email: 'ana53@clube.ao',
+      address: 'Cazenga',
+      category: 'aspirante',
+      emergencyContact: { name: 'Mãe', relationship: 'Mãe', phone: '923000222' },
+      allergiesOrMedicalNotes: 'Nenhuma',
+      documentDeliveryMethod: 'anexar_digital',
+      status: 'aprovado',
+      submittedAt: '2026-05-02T11:00:00.000Z',
+      reviewedAt: '2026-05-03T12:00:00.000Z',
+    },
+    {
+      id: 'INS-2026-003',
+      protocolNumber: 'INS-2026-003',
+      manualNumber: 'EMB-5303',
+      fullName: 'Removido',
+      birthDate: '2010-01-01',
+      gender: 'M',
+      identityCardNumber: '000000001LA053',
+      phone: '923000333',
+      email: 'rem@clube.ao',
+      address: 'Luanda',
+      category: 'aspirante',
+      emergencyContact: { name: 'Tio', relationship: 'Tio', phone: '923000333' },
+      allergiesOrMedicalNotes: 'Nenhuma',
+      documentDeliveryMethod: 'presencial',
+      status: 'aprovado',
+      submittedAt: '2026-05-02T11:00:00.000Z',
+      memberDeletedAt: '2026-05-04T09:00:00.000Z',
+    },
+  ];
+  const exportMembers53 = [
+    {
+      ...memberT50_1,
+      id: 'E53-1',
+      fullName: 'Beatriz Reconfirmada',
+      status: 'ativo' as const,
+      lastReconfirmedPeriodId: 'PER-53',
+      lastReconfirmedAt: '2026-05-03T09:30:00.000Z',
+      reconfirmationCount: 1,
+    },
+    {
+      ...memberT50_1,
+      id: 'E53-2',
+      fullName: 'Diogo Sem Reconfirmacao',
+      status: 'ativo' as const,
+      lastReconfirmedPeriodId: 'PER-OLD',
+      enrolledPeriodId: undefined,
+    },
+    {
+      ...memberT50_1,
+      id: 'E53-3',
+      fullName: 'Eva Recem Inscrita',
+      status: 'ativo' as const,
+      enrolledPeriodId: 'PER-53',
+    },
+  ];
+
+  // Secretário SEM permissão é bloqueado na camada de serviço (PDF e CSV)
+  const deniedCsv53 = buildEnrollmentAndReconfirmationCsv({
+    listType: 'inscritos',
+    actorRole: 'secretario',
+    permissionsMatrix: syncedRevokedExportListsMatrix,
+    enrollmentRequests: exportRequests53,
+    members: exportMembers53,
+    enrollmentConfig: exportConfig53,
+  });
+  const deniedPdf53 = buildEnrollmentAndReconfirmationPdf({
+    listType: 'inscritos',
+    actorRole: 'secretario',
+    permissionsMatrix: syncedRevokedExportListsMatrix,
+    enrollmentRequests: exportRequests53,
+    members: exportMembers53,
+    enrollmentConfig: exportConfig53,
+  });
+  assert(
+    deniedCsv53.success === false &&
+      Boolean(deniedCsv53.error) &&
+      deniedPdf53.success === false &&
+      Boolean(deniedPdf53.error),
+    "Exportação em PDF bloqueia Secretário quando permissão foi revogada na Grelha pelo Administrador"
+  );
+
+  // Secretário COM permissão baixa as 3 listas em PDF oficial (%PDF-)
+  const pdfInscritos53 = buildEnrollmentAndReconfirmationPdf({
+    listType: 'inscritos',
+    actorRole: 'secretario',
+    actorName: 'Secretário Teste',
+    permissionsMatrix: migratedExportListsMatrix,
+    enrollmentRequests: exportRequests53,
+    members: exportMembers53,
+    enrollmentConfig: exportConfig53,
+    currentYear: 2026,
+    now: refDate52,
+  });
+  const pdfReconf53 = buildEnrollmentAndReconfirmationPdf({
+    listType: 'reconfirmados',
+    actorRole: 'secretario',
+    actorName: 'Secretário Teste',
+    permissionsMatrix: migratedExportListsMatrix,
+    enrollmentRequests: exportRequests53,
+    members: exportMembers53,
+    enrollmentConfig: exportConfig53,
+    currentYear: 2026,
+    now: refDate52,
+  });
+  const pdfNaoReconf53 = buildEnrollmentAndReconfirmationPdf({
+    listType: 'nao_reconfirmados',
+    actorRole: 'secretario',
+    actorName: 'Secretário Teste',
+    permissionsMatrix: migratedExportListsMatrix,
+    enrollmentRequests: exportRequests53,
+    members: exportMembers53,
+    enrollmentConfig: exportConfig53,
+    currentYear: 2026,
+    now: refDate52,
+  });
+
+  const readPdfHeader = (buf?: ArrayBuffer) =>
+    buf ? new TextDecoder('ascii').decode(new Uint8Array(buf).slice(0, 5)) : '';
+
+  assert(
+    pdfInscritos53.success === true &&
+      pdfInscritos53.filename === 'Lista_Inscritos_2026.pdf' &&
+      pdfInscritos53.rowsCount === 2 &&
+      readPdfHeader(pdfInscritos53.pdfBytes) === '%PDF-' &&
+      pdfReconf53.success === true &&
+      pdfReconf53.filename === 'Lista_Reconfirmados_2026.pdf' &&
+      pdfReconf53.rowsCount === 1 &&
+      readPdfHeader(pdfReconf53.pdfBytes) === '%PDF-' &&
+      pdfNaoReconf53.success === true &&
+      pdfNaoReconf53.filename === 'Lista_Nao_Reconfirmados_2026.pdf' &&
+      pdfNaoReconf53.rowsCount === 1 &&
+      readPdfHeader(pdfNaoReconf53.pdfBytes) === '%PDF-',
+    "Secretário autorizado gera PDFs válidos (%PDF-) das listas de Inscritos, Reconfirmados e Não Reconfirmados"
+  );
+
+  // Após encerramento/liquidação do período, quem foi arquivado por não reconfirmar continua na lista de Não Reconfirmados
+  const finalizedExportState53 = finalizeEndedEnrollmentPeriod({
+    members: exportMembers53,
+    enrollmentRequests: exportRequests53,
+    config: { ...exportConfig53, isOpen: false },
+    now: new Date('2026-05-10T10:00:00.000Z'),
+  });
+  const nonReconfAfterClose53 = getNonReconfirmedMembersForExport(
+    finalizedExportState53.members,
+    finalizedExportState53.config
+  );
+  const reconfAfterClose53 = getReconfirmedMembersForExport(
+    finalizedExportState53.members,
+    finalizedExportState53.config
+  );
+  assert(
+    finalizedExportState53.hasChanges === true &&
+      nonReconfAfterClose53.length === 1 &&
+      nonReconfAfterClose53[0].id === 'E53-2' &&
+      nonReconfAfterClose53[0].status === 'arquivado' &&
+      reconfAfterClose53.length === 1 &&
+      reconfAfterClose53[0].id === 'E53-1',
+    "Mesmo após encerramento e arquivamento automático, a lista de Não Reconfirmados preserva os membros que falharam a reconfirmação"
+  );
+
+  // ============================================================================
+  console.log("\n[TESTE 54] Separação da Quota Regular (Cada Domingo) das Rubricas Financeiras e Presença em Taxa / Quota Institucional...");
+  // ============================================================================
+  const sampleFees54 = [
+    {
+      id: DEFAULT_QUOTA_FEE_ID,
+      title: 'Quota Regular (Cada Domingo)',
+      category: 'quota_diaria' as const,
+      periodicity: 'diaria' as const,
+      amountInCents: 50000,
+      targetCategory: 'todas' as const,
+      active: true,
+      year: 2026,
+    },
+    {
+      id: 'FEE-CUSTOM-01',
+      title: 'Taxa Anual de Inscrição e Seguro 2026',
+      category: 'outro' as const,
+      periodicity: 'anual' as const,
+      amountInCents: 500000,
+      targetCategory: 'todas' as const,
+      active: true,
+      year: 2026,
+    },
+  ];
+  const rubricsOnly54 = getRubricsCatalogFees(sampleFees54, state.settings);
+  assert(
+    rubricsOnly54.length === 1 &&
+      rubricsOnly54[0].id === 'FEE-CUSTOM-01' &&
+      !rubricsOnly54.some((f) => f.title === 'Quota Regular (Cada Domingo)') &&
+      isFixedQuotaRubric(sampleFees54[0], state.settings, sampleFees54) === true &&
+      isFixedQuotaRubric(sampleFees54[1], state.settings, sampleFees54) === false,
+    "getRubricsCatalogFees exclui 'Quota Regular (Cada Domingo)' da lista de Rubricas Financeiras mantendo as demais rubricas"
+  );
+
+  const selectableWithBase54 = getSelectableInstitutionalFees(sampleFees54, {
+    ...state.settings,
+    quotaConfig: {
+      ...state.settings.quotaConfig!,
+      amountInCents: 75000,
+      frequency: 'domingo',
+      activeQuotaFeeId: DEFAULT_QUOTA_FEE_ID,
+      cycleStartDate: '2026-01-01',
+      respectMemberJoinDate: true,
+    },
+  });
+  assert(
+    selectableWithBase54.length === 2 &&
+      selectableWithBase54[0].id === DEFAULT_QUOTA_FEE_ID &&
+      selectableWithBase54[0].title === 'Quota Regular (Cada Domingo)' &&
+      selectableWithBase54[0].amountInCents === 75000 &&
+      selectableWithBase54[1].id === 'FEE-CUSTOM-01',
+    "getSelectableInstitutionalFees inclui 'Quota Regular (Cada Domingo)' sem duplicações e com valor atualizado da aba Quotas"
+  );
+
+  const cleanEmptyDbFees54 = getSelectableInstitutionalFees([], {
+    ...state.settings,
+    quotaConfig: {
+      amountInCents: 50000,
+      frequency: 'domingo',
+      cycleStartDate: '2026-01-01',
+      respectMemberJoinDate: true,
+      activeQuotaFeeId: DEFAULT_QUOTA_FEE_ID,
+    },
+  });
+  assert(
+    cleanEmptyDbFees54.length === 1 &&
+      cleanEmptyDbFees54[0].id === DEFAULT_QUOTA_FEE_ID &&
+      cleanEmptyDbFees54[0].title === 'Quota Regular (Cada Domingo)' &&
+      cleanEmptyDbFees54[0].amountInCents === 50000,
+    "Mesmo com a lista de rubricas vazia (base limpa), 'Quota Regular (Cada Domingo)' aparece sempre em 'Taxa / Quota Institucional'"
+  );
+
+  // =========================================================================
+  // TESTE 55: Cancelamento de Recibo deduz automaticamente na Conta Selecionada e Disponibilidade Geral
+  // =========================================================================
+  console.log("\n[TESTE 55] Anulação de recibo com dedução automática na conta selecionada e Disponibilidade Geral...");
+  const testAccounts55 = [
+    {
+      id: 'ACC-1',
+      name: 'Caixa Física Principal',
+      type: 'caixa' as const,
+      initialBalanceInCents: 150000,
+      currentBalanceInCents: 150000,
+      active: true,
+    },
+    {
+      id: 'ACC-2',
+      name: 'Conta Bancária BAI',
+      type: 'banco' as const,
+      initialBalanceInCents: 500000,
+      currentBalanceInCents: 500000,
+      active: true,
+    },
+    {
+      id: 'ACC-CUSTOM-BFA',
+      name: 'Conta Reserva BFA',
+      type: 'banco' as const,
+      initialBalanceInCents: 300000,
+      currentBalanceInCents: 300000,
+      active: true,
+    },
+  ];
+  const initialGeneralAvailability55 = testAccounts55.reduce(
+    (sum, acc) => sum + acc.currentBalanceInCents,
+    0
+  );
+
+  // Cenário A: Recibo emitido para conta específica selecionada (ACC-CUSTOM-BFA)
+  const receiptSpecificAccount55: Pick<
+    PaymentReceipt,
+    'accountId' | 'accountName' | 'paymentMethod' | 'notes' | 'amountPaidInCents'
+  > = {
+    accountId: 'ACC-CUSTOM-BFA',
+    accountName: 'Conta Reserva BFA',
+    paymentMethod: 'multicaixa_express',
+    notes: 'Pagamento de quota',
+    amountPaidInCents: 75000,
+  };
+  const reversalSpecific55 = reverseReceiptFromTreasuryAccounts(
+    receiptSpecificAccount55,
+    testAccounts55
+  );
+  const newGeneralAfterSpecific55 = reversalSpecific55.updatedAccounts.reduce(
+    (sum, acc) => sum + acc.currentBalanceInCents,
+    0
+  );
+  const bfaAfter55 = reversalSpecific55.updatedAccounts.find((a) => a.id === 'ACC-CUSTOM-BFA')!;
+  const baiUntouched55 = reversalSpecific55.updatedAccounts.find((a) => a.id === 'ACC-2')!;
+  const caixaUntouched55 = reversalSpecific55.updatedAccounts.find((a) => a.id === 'ACC-1')!;
+  assert(
+    reversalSpecific55.targetAccountId === 'ACC-CUSTOM-BFA' &&
+      bfaAfter55.currentBalanceInCents === 225000 &&
+      baiUntouched55.currentBalanceInCents === 500000 &&
+      caixaUntouched55.currentBalanceInCents === 150000 &&
+      newGeneralAfterSpecific55 === initialGeneralAvailability55 - 75000,
+    "Anulação de recibo deduz exatamente o montante da conta selecionada (ACC-CUSTOM-BFA) e reduz na Disponibilidade Geral sem afetar outras contas"
+  );
+
+  // Cenário B: Recibo em numerário creditado intencionalmente numa conta bancária selecionada
+  const receiptCashToBank55: Pick<
+    PaymentReceipt,
+    'accountId' | 'accountName' | 'paymentMethod' | 'notes' | 'amountPaidInCents'
+  > = {
+    accountId: 'ACC-2',
+    accountName: 'Conta Bancária BAI',
+    paymentMethod: 'numerario',
+    amountPaidInCents: 50000,
+  };
+  const reversalCashToBank55 = reverseReceiptFromTreasuryAccounts(
+    receiptCashToBank55,
+    testAccounts55
+  );
+  assert(
+    reversalCashToBank55.targetAccountId === 'ACC-2' &&
+      reversalCashToBank55.updatedAccounts.find((a) => a.id === 'ACC-2')!.currentBalanceInCents === 450000 &&
+      reversalCashToBank55.updatedAccounts.find((a) => a.id === 'ACC-1')!.currentBalanceInCents === 150000,
+    "Respeita a conta selecionada mesmo quando o método de pagamento (numerário) difere do tipo da conta"
+  );
+
+  // Cenário C: Recibo legado sem accountId (resolução por accountName, notas ou fallback em base limpa ACC-1/ACC-2)
+  assert(
+    resolveReceiptTargetAccountId(
+      { accountName: 'Conta Reserva BFA', paymentMethod: 'transferencia_bancaria' },
+      testAccounts55
+    ) === 'ACC-CUSTOM-BFA' &&
+      resolveReceiptTargetAccountId(
+        { paymentMethod: 'transferencia_bancaria', notes: 'Depositado em Conta Reserva BFA' },
+        testAccounts55
+      ) === 'ACC-CUSTOM-BFA' &&
+      resolveReceiptTargetAccountId(
+        { paymentMethod: 'numerario' },
+        testAccounts55
+      ) === 'ACC-1' &&
+      resolveReceiptTargetAccountId(
+        { paymentMethod: 'multicaixa_express' },
+        testAccounts55
+      ) === 'ACC-2',
+    "Recibos legados sem accountId resolvem corretamente via nome da conta, notas ou fallback inteligente para bases limpas (ACC-1/ACC-2)"
+  );
+
+  // =========================================================================
+  // TESTE 56: Fecho Fiscal Mensal Filtra Estritamente pelo Mês/Ano e Exclui Anulados
+  // =========================================================================
+  console.log("\n[TESTE 56] Cálculo rigoroso de Fecho Fiscal Mensal (ano/mês, recibos anulados e despesas liquidadas)...");
+  const testReceipts56: PaymentReceipt[] = [
+    {
+      id: 'R-MAR-1',
+      receiptNumber: 'REC-2026-0001',
+      memberId: 'MEM-1',
+      memberName: 'Membro 1',
+      feeDefinitionId: DEFAULT_QUOTA_FEE_ID,
+      feeTitle: 'Quota Regular (Cada Domingo)',
+      periodLabel: 'Março 2026',
+      amountPaidInCents: 200000,
+      paymentMethod: 'multicaixa_express',
+      treasurerUserId: 'U-1',
+      treasurerName: 'Tesoureiro',
+      paidAt: '2026-03-10T10:00:00.000Z',
+      status: 'confirmado',
+    },
+    {
+      id: 'R-MAR-VOID',
+      receiptNumber: 'REC-2026-0002',
+      memberId: 'MEM-2',
+      memberName: 'Membro 2',
+      feeDefinitionId: DEFAULT_QUOTA_FEE_ID,
+      feeTitle: 'Quota Regular (Cada Domingo)',
+      periodLabel: 'Março 2026',
+      amountPaidInCents: 90000,
+      paymentMethod: 'numerario',
+      treasurerUserId: 'U-1',
+      treasurerName: 'Tesoureiro',
+      paidAt: '2026-03-15T10:00:00.000Z',
+      status: 'anulado',
+      isCancelled: true,
+    },
+    {
+      id: 'R-APR-1',
+      receiptNumber: 'REC-2026-0003',
+      memberId: 'MEM-3',
+      memberName: 'Membro 3',
+      feeDefinitionId: DEFAULT_QUOTA_FEE_ID,
+      feeTitle: 'Quota Regular (Cada Domingo)',
+      periodLabel: 'Abril 2026',
+      amountPaidInCents: 350000,
+      paymentMethod: 'numerario',
+      treasurerUserId: 'U-1',
+      treasurerName: 'Tesoureiro',
+      paidAt: '2026-04-02T10:00:00.000Z',
+      status: 'confirmado',
+    },
+  ];
+  const testExpenses56: ExpenseRequest[] = [
+    {
+      id: 'EXP-2026-001',
+      title: 'Material Março',
+      description: 'Compra',
+      category: 'Material',
+      amountInCents: 50000,
+      requestedByUserId: 'U-1',
+      requestedByName: 'Tesoureiro',
+      status: 'pago',
+      createdAt: '2026-03-01T10:00:00.000Z',
+      paidAt: '2026-03-18T10:00:00.000Z',
+    },
+    {
+      id: 'EXP-2026-002',
+      title: 'Pendente Março',
+      description: 'Não paga',
+      category: 'Material',
+      amountInCents: 80000,
+      requestedByUserId: 'U-1',
+      requestedByName: 'Tesoureiro',
+      status: 'aprovado',
+      createdAt: '2026-03-20T10:00:00.000Z',
+    },
+    {
+      id: 'EXP-2026-003',
+      title: 'Despesa Abril',
+      description: 'Mês seguinte',
+      category: 'Logística',
+      amountInCents: 120000,
+      requestedByUserId: 'U-1',
+      requestedByName: 'Tesoureiro',
+      status: 'pago',
+      createdAt: '2026-04-03T10:00:00.000Z',
+      paidAt: '2026-04-05T10:00:00.000Z',
+    },
+  ];
+
+  const marSummary56 = calculateMonthlyFiscalSummary(testReceipts56, testExpenses56, 2026, 3);
+  const aprSummary56 = calculateMonthlyFiscalSummary(testReceipts56, testExpenses56, 2026, 4);
+  assert(
+    isIsoDateInFiscalMonth('2026-03-10T10:00:00.000Z', 2026, 3) === true &&
+      isIsoDateInFiscalMonth('2026-04-02T10:00:00.000Z', 2026, 3) === false &&
+      marSummary56.totalIncomeInCents === 200000 &&
+      marSummary56.totalExpenseInCents === 50000 &&
+      marSummary56.closingBalanceInCents === 150000 &&
+      aprSummary56.totalIncomeInCents === 350000 &&
+      aprSummary56.totalExpenseInCents === 120000 &&
+      aprSummary56.closingBalanceInCents === 230000,
+    "Fecho Mensal calcula exclusivamente receitas válidas e despesas pagas do mês/ano alvo"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");

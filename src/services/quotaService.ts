@@ -1,5 +1,6 @@
 import {
   ClubSettings,
+  ExpenseRequest,
   FeeDefinition,
   Member,
   ModuleName,
@@ -8,6 +9,7 @@ import {
   QuotaConfig,
   QuotaDebtWaiver,
   RoleType,
+  TreasuryAccount,
 } from '../types';
 import { ROLE_PERMISSIONS_MATRIX, hasPermission } from './permissionService';
 
@@ -493,5 +495,238 @@ export function calculateClubQuotaTotals(summaries: MemberQuotaSummary[]): ClubQ
     overdueCount,
     inDebtCount,
     complianceRatePercent,
+  };
+}
+
+/**
+ * Identifica se uma definição de taxa corresponde à Quota Regular fixa (gerida exclusivamente na aba Quotas),
+ * não devendo aparecer na gestão geral de "Rubricas Financeiras".
+ */
+export function isFixedQuotaRubric(
+  fee?: Partial<FeeDefinition> | null,
+  settings?: Partial<ClubSettings>,
+  fees: FeeDefinition[] = []
+): boolean {
+  if (!fee) return false;
+  if (fee.id === DEFAULT_QUOTA_FEE_ID) return true;
+
+  const activeQuotaFeeId = settings?.quotaConfig?.activeQuotaFeeId;
+  if (activeQuotaFeeId && fee.id === activeQuotaFeeId) return true;
+
+  const titleLower = (fee.title || '').trim().toLowerCase();
+  if (
+    titleLower === 'quota regular (cada domingo)' ||
+    titleLower === 'quota regular (mensal)'
+  ) {
+    return true;
+  }
+
+  const resolvedConfig = resolveQuotaConfig(settings, fees);
+  if (resolvedConfig.activeQuotaFeeId && fee.id === resolvedConfig.activeQuotaFeeId) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Constrói a opção fixa da Quota Regular ("Quota Regular (Cada Domingo)" / "Quota Regular (Mensal)")
+ * com o valor oficial definido na configuração de Quotas, mesmo em bases limpas onde a rubrica
+ * não tenha sido gravada em `state.fees`.
+ */
+export function buildFixedQuotaFeeDefinition(
+  settings?: Partial<ClubSettings>,
+  fees: FeeDefinition[] = []
+): FeeDefinition {
+  const quotaConfig = resolveQuotaConfig(settings, fees);
+  const feeId = quotaConfig.activeQuotaFeeId || DEFAULT_QUOTA_FEE_ID;
+  const existingFixed = (fees || []).find(
+    (f) => f && (f.id === feeId || f.id === DEFAULT_QUOTA_FEE_ID)
+  );
+  const isMonthly = quotaConfig.frequency === 'mensal';
+  const defaultTitle = isMonthly
+    ? 'Quota Regular (Mensal)'
+    : 'Quota Regular (Cada Domingo)';
+
+  return {
+    id: existingFixed?.id || feeId,
+    title:
+      !existingFixed || existingFixed.id === DEFAULT_QUOTA_FEE_ID
+        ? defaultTitle
+        : existingFixed.title,
+    category: isMonthly ? 'quota_mensal' : 'quota_diaria',
+    periodicity: isMonthly ? 'mensal' : 'diaria',
+    amountInCents: quotaConfig.amountInCents,
+    targetCategory: existingFixed?.targetCategory || 'todas',
+    active: true,
+    year: settings?.currentYear || new Date().getFullYear(),
+  };
+}
+
+/**
+ * Retorna apenas as rubricas geridas na aba "Rubricas Financeiras",
+ * omitindo a quota fixa ("Quota Regular (Cada Domingo)") que possui aba própria.
+ */
+export function getRubricsCatalogFees(
+  fees: FeeDefinition[] = [],
+  settings?: Partial<ClubSettings>
+): FeeDefinition[] {
+  return (fees || []).filter((fee) => !isFixedQuotaRubric(fee, settings, fees));
+}
+
+/**
+ * Retorna a lista completa de opções para "Taxa / Quota Institucional" (e Portal do Membro),
+ * garantindo que a Quota Regular fixa ("Quota Regular (Cada Domingo)") esteja SEMPRE presente
+ * sem duplicações, seguida das demais rubricas configuradas.
+ */
+export function getSelectableInstitutionalFees(
+  fees: FeeDefinition[] = [],
+  settings?: Partial<ClubSettings>
+): FeeDefinition[] {
+  const fixedQuota = buildFixedQuotaFeeDefinition(settings, fees);
+  const regularRubrics = getRubricsCatalogFees(fees, settings).filter(
+    (fee) => fee.id !== fixedQuota.id
+  );
+  return [fixedQuota, ...regularRubrics];
+}
+
+/**
+ * Resolve a conta institucional exata associada a um recibo:
+ * 1) `receipt.accountId` salvo na emissão/regularização/aprovação;
+ * 2) `receipt.accountName` ou menção de conta nas notas;
+ * 3) Fallback por método de pagamento respeitando IDs reais (inclusive bases limpas como ACC-1).
+ */
+export function resolveReceiptTargetAccountId(
+  receipt: Pick<PaymentReceipt, 'accountId' | 'accountName' | 'paymentMethod' | 'notes'>,
+  accounts: TreasuryAccount[] = []
+): string | undefined {
+  if (!Array.isArray(accounts) || accounts.length === 0) return undefined;
+
+  if (receipt.accountId) {
+    const exactById = accounts.find((acc) => acc.id === receipt.accountId);
+    if (exactById) return exactById.id;
+  }
+
+  if (receipt.accountName) {
+    const cleanName = receipt.accountName.trim().toLowerCase();
+    const exactByName = accounts.find((acc) => acc.name.trim().toLowerCase() === cleanName);
+    if (exactByName) return exactByName.id;
+  }
+
+  if (receipt.notes) {
+    const noteLower = receipt.notes.toLowerCase();
+    const matchedInNotes = accounts.find((acc) =>
+      noteLower.includes(acc.name.trim().toLowerCase())
+    );
+    if (matchedInNotes) return matchedInNotes.id;
+  }
+
+  if (receipt.paymentMethod === 'numerario') {
+    return (
+      accounts.find((acc) => acc.id === 'ACC-01')?.id ||
+      accounts.find((acc) => acc.type === 'caixa' && acc.active)?.id ||
+      accounts.find((acc) => acc.type === 'caixa')?.id ||
+      accounts.find((acc) => acc.active)?.id ||
+      accounts[0]?.id
+    );
+  }
+
+  return (
+    accounts.find((acc) => acc.id === 'ACC-02')?.id ||
+    accounts.find((acc) => acc.type === 'banco' && acc.active)?.id ||
+    accounts.find((acc) => acc.type === 'banco')?.id ||
+    accounts.find((acc) => acc.active)?.id ||
+    accounts[0]?.id
+  );
+}
+
+/**
+ * Estorna o valor de um recibo anulado da conta exata em que foi lançado
+ * (deduzindo automaticamente do saldo da conta selecionada e da Disponibilidade Geral).
+ */
+export function reverseReceiptFromTreasuryAccounts(
+  receipt: Pick<PaymentReceipt, 'accountId' | 'accountName' | 'paymentMethod' | 'notes' | 'amountPaidInCents'>,
+  accounts: TreasuryAccount[] = []
+): {
+  updatedAccounts: TreasuryAccount[];
+  targetAccountId?: string;
+  targetAccountName?: string;
+} {
+  const targetAccountId = resolveReceiptTargetAccountId(receipt, accounts);
+  if (!targetAccountId) {
+    return { updatedAccounts: accounts };
+  }
+
+  let targetAccountName: string | undefined;
+  const updatedAccounts = accounts.map((acc) => {
+    if (acc.id === targetAccountId) {
+      targetAccountName = acc.name;
+      return {
+        ...acc,
+        currentBalanceInCents: acc.currentBalanceInCents - receipt.amountPaidInCents,
+      };
+    }
+    return acc;
+  });
+
+  return { updatedAccounts, targetAccountId, targetAccountName };
+}
+
+/**
+ * Verifica se uma data ISO pertence exatamente ao ano e mês (1-12) do fecho fiscal.
+ */
+export function isIsoDateInFiscalMonth(
+  dateStr: string | undefined,
+  year: number,
+  month: number
+): boolean {
+  if (!dateStr || typeof dateStr !== 'string') return false;
+  const trimmed = dateStr.trim();
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})/);
+  if (isoMatch) {
+    return Number(isoMatch[1]) === year && Number(isoMatch[2]) === month;
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() + 1 === month;
+}
+
+/**
+ * Calcula receitas, despesas pagas e saldo apurado estritamente para o mês/ano fiscal alvo,
+ * excluindo recibos anulados e despesas não liquidadas.
+ */
+export function calculateMonthlyFiscalSummary(
+  receipts: PaymentReceipt[] = [],
+  expenses: ExpenseRequest[] = [],
+  year: number,
+  month: number
+): {
+  totalIncomeInCents: number;
+  totalExpenseInCents: number;
+  closingBalanceInCents: number;
+} {
+  const totalIncomeInCents = (receipts || [])
+    .filter(
+      (r) =>
+        r &&
+        !r.isCancelled &&
+        r.status !== 'anulado' &&
+        isIsoDateInFiscalMonth(r.paidAt, year, month)
+    )
+    .reduce((acc, curr) => acc + Math.max(0, Math.round(curr.amountPaidInCents || 0)), 0);
+
+  const totalExpenseInCents = (expenses || [])
+    .filter(
+      (e) =>
+        e &&
+        e.status === 'pago' &&
+        isIsoDateInFiscalMonth(e.paidAt || e.createdAt, year, month)
+    )
+    .reduce((acc, curr) => acc + Math.max(0, Math.round(curr.amountInCents || 0)), 0);
+
+  return {
+    totalIncomeInCents,
+    totalExpenseInCents,
+    closingBalanceInCents: totalIncomeInCents - totalExpenseInCents,
   };
 }
