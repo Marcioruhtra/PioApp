@@ -1,7 +1,20 @@
 /**
  * Utilitário para processamento e compressão de comprovativos (Imagens e PDFs)
  * Evita sobrecarga de memória, erros de quota do LocalStorage e do Firestore.
+ * Limite máximo atualizado para 2 MB por ficheiro.
  */
+
+export const MAX_UPLOAD_FILE_BYTES = 2 * 1024 * 1024; // 2 MB
+
+export function validateUploadFileSize(file: File): { valid: boolean; error?: string } {
+  if (file.size > MAX_UPLOAD_FILE_BYTES) {
+    return {
+      valid: false,
+      error: 'O ficheiro excede o limite máximo de 2 MB. Por favor selecione um ficheiro mais leve.',
+    };
+  }
+  return { valid: true };
+}
 
 export interface ProcessedFile {
   fileName: string;
@@ -11,6 +24,10 @@ export interface ProcessedFile {
 }
 
 export async function processProofFile(file: File): Promise<ProcessedFile> {
+  if (file.size > MAX_UPLOAD_FILE_BYTES) {
+    throw new Error('O ficheiro excede o limite máximo de 2 MB. Por favor selecione um ficheiro mais leve.');
+  }
+
   const isImage = file.type.startsWith('image/');
   const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
 
@@ -81,12 +98,6 @@ export async function processProofFile(file: File): Promise<ProcessedFile> {
   }
 
   if (isPdf) {
-    if (file.size > 500 * 1024) {
-      throw new Error(
-        'O ficheiro PDF é superior a 500 KB. Para evitar lentidão, utilize uma captura de ecrã/foto do comprovativo ou um PDF mais leve.'
-      );
-    }
-
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onerror = () => reject(new Error('Falha ao ler o ficheiro PDF.'));
@@ -104,10 +115,6 @@ export async function processProofFile(file: File): Promise<ProcessedFile> {
   }
 
   // Outros formatos
-  if (file.size > 400 * 1024) {
-    throw new Error('O ficheiro é demasiado pesado (máximo 400 KB).');
-  }
-
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Falha ao ler o ficheiro.'));
@@ -129,9 +136,15 @@ export async function processProofFile(file: File): Promise<ProcessedFile> {
  * comprimindo para JPEG (~25-45KB) para preservar o armazenamento e sincronização no Firestore.
  */
 export async function processProfilePhoto(file: File): Promise<string> {
+  if (file.size > MAX_UPLOAD_FILE_BYTES) {
+    throw new Error('A imagem excede o limite máximo de 2 MB. Por favor selecione um ficheiro mais leve.');
+  }
+
   if (!file.type.startsWith('image/')) {
     throw new Error('Por favor selecione um ficheiro de imagem válido (JPEG, PNG ou WebP).');
   }
+
+
 
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

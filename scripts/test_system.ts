@@ -80,7 +80,7 @@ import {
 } from '../src/utils/date';
 import { INACTIVITY_TIMEOUT_MS, isSessionInactive, getRemainingInactivityMs } from '../src/utils/inactivity';
 import { buildMemberDossierData } from '../src/utils/memberDossier';
-import { getDocumentPreviewKind, dataUrlToBlob } from '../src/utils/fileUpload';
+import { getDocumentPreviewKind, dataUrlToBlob, MAX_UPLOAD_FILE_BYTES, validateUploadFileSize } from '../src/utils/fileUpload';
 import { sanitizeMemberIntegrity } from '../src/services/memberIntegrityService';
 import {
   syncMemberChangesToUsers,
@@ -4931,6 +4931,26 @@ function runTests() {
       cleaned57.specialties.length === 0 &&
       cleaned57.trainingProgress.length === 0,
     "Botão 'Limpar dados da nuvem' apaga corretamente todos os módulos, medalhas e respetivos requisitos (trainingProgress)"
+  );
+
+  // =========================================================================
+  // TESTE 58: Limite de Upload de Ficheiros até 2 MB (Permite 1.5MB e rejeita > 2MB)
+  // =========================================================================
+  console.log("\n[TESTE 58] Verificação do limite de upload de ficheiros até 2 MB...");
+  assert(
+    MAX_UPLOAD_FILE_BYTES === 2 * 1024 * 1024,
+    "MAX_UPLOAD_FILE_BYTES está configurado exatamente para 2 MB (2.097.152 bytes)"
+  );
+
+  const mockFile1_5MB = { size: 1.5 * 1024 * 1024, name: 'documento.pdf', type: 'application/pdf' } as File;
+  const mockFile2_1MB = { size: 2.1 * 1024 * 1024, name: 'muito_pesado.pdf', type: 'application/pdf' } as File;
+
+  const val1 = validateUploadFileSize(mockFile1_5MB);
+  const val2 = validateUploadFileSize(mockFile2_1MB);
+
+  assert(
+    val1.valid === true && val2.valid === false && Boolean(val2.error),
+    "validateUploadFileSize aceita ficheiros até 2 MB (ex: 1.5 MB) e rejeita ficheiros acima de 2 MB (ex: 2.1 MB)"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");
