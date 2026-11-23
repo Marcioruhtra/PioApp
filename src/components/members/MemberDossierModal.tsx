@@ -65,12 +65,12 @@ const CATEGORY_DISPLAY: Record<MemberCategory, string> = {
 };
 
 const ACTIVITY_TYPE_LABELS: Record<string, string> = {
-  reuniao_regular: 'Reunião Regular',
+  reuniao_regular: 'Actividades Normais',
   acampamento: 'Acampamento',
   civica: 'Cívica',
   formacao: 'Formação',
   social: 'Social',
-  diretoria: 'Diretoria',
+  diretoria: 'Reunião da Comissão',
 };
 
 export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({

@@ -4,6 +4,9 @@ import {
   FeeDefinition,
   Member,
   ModuleName,
+  MonthlyClosing,
+  MonthlyClosingAccountSnapshot,
+  PaymentProofReport,
   PaymentReceipt,
   PermissionAction,
   QuotaConfig,
@@ -728,5 +731,206 @@ export function calculateMonthlyFiscalSummary(
     totalIncomeInCents,
     totalExpenseInCents,
     closingBalanceInCents: totalIncomeInCents - totalExpenseInCents,
+  };
+}
+
+export function extractYearMonthFromIso(
+  dateStr?: string
+): { year: number; month: number } | null {
+  if (!dateStr || typeof dateStr !== 'string') return null;
+  const trimmed = dateStr.trim();
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})/);
+  if (isoMatch) {
+    const year = Number(isoMatch[1]);
+    const month = Number(isoMatch[2]);
+    if (year > 0 && month >= 1 && month <= 12) {
+      return { year, month };
+    }
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return {
+    year: parsed.getUTCFullYear(),
+    month: parsed.getUTCMonth() + 1,
+  };
+}
+
+export function isFiscalPeriodLocked(
+  monthlyClosings: MonthlyClosing[] = [],
+  year: number,
+  month: number
+): boolean {
+  return (monthlyClosings || []).some(
+    (c) => c.year === year && c.month === month && !c.isReopened
+  );
+}
+
+export function isDateInLockedFiscalPeriod(
+  monthlyClosings: MonthlyClosing[] = [],
+  dateStr?: string
+): { locked: boolean; year?: number; month?: number; closing?: MonthlyClosing } {
+  const ym = extractYearMonthFromIso(dateStr);
+  if (!ym) return { locked: false };
+  const closing = (monthlyClosings || []).find(
+    (c) => c.year === ym.year && c.month === ym.month && !c.isReopened
+  );
+  if (!closing) return { locked: false, year: ym.year, month: ym.month };
+  return { locked: true, year: ym.year, month: ym.month, closing };
+}
+
+function isDateOnOrBeforeFiscalMonthEnd(
+  dateStr: string | undefined,
+  year: number,
+  month: number
+): boolean {
+  const ym = extractYearMonthFromIso(dateStr);
+  if (!ym) return false;
+  return ym.year < year || (ym.year === year && ym.month <= month);
+}
+
+export interface MonthlyReconciliationPreview {
+  year: number;
+  month: number;
+  totalIncomeInCents: number;
+  totalExpenseInCents: number;
+  closingBalanceInCents: number;
+  receiptsCount: number;
+  cancelledReceiptsCount: number;
+  expensesCount: number;
+  pendingProofsCount: number;
+  pendingExpensesCount: number;
+  systemAccountsBalanceInCents: number;
+  reconciledPhysicalBalanceInCents: number;
+  varianceInCents: number;
+  reconciliationStatus: 'conciliado' | 'divergente';
+  accountSnapshots: MonthlyClosingAccountSnapshot[];
+}
+
+export function calculateMonthlyReconciliationPreview(params: {
+  receipts?: PaymentReceipt[];
+  expenses?: ExpenseRequest[];
+  accounts?: TreasuryAccount[];
+  paymentProofs?: PaymentProofReport[];
+  year: number;
+  month: number;
+  verifiedBalancesByAccountId?: Record<string, number>;
+}): MonthlyReconciliationPreview {
+  const {
+    receipts = [],
+    expenses = [],
+    accounts = [],
+    paymentProofs = [],
+    year,
+    month,
+    verifiedBalancesByAccountId = {},
+  } = params;
+
+  const {
+    totalIncomeInCents,
+    totalExpenseInCents,
+    closingBalanceInCents,
+  } = calculateMonthlyFiscalSummary(receipts, expenses, year, month);
+
+  const periodValidReceipts = (receipts || []).filter(
+    (r) =>
+      r &&
+      !r.isCancelled &&
+      r.status !== 'anulado' &&
+      isIsoDateInFiscalMonth(r.paidAt, year, month)
+  );
+  const cancelledReceiptsCount = (receipts || []).filter(
+    (r) =>
+      r &&
+      (r.isCancelled || r.status === 'anulado') &&
+      isIsoDateInFiscalMonth(r.paidAt, year, month)
+  ).length;
+
+  const periodPaidExpenses = (expenses || []).filter(
+    (e) =>
+      e &&
+      e.status === 'pago' &&
+      isIsoDateInFiscalMonth(e.paidAt || e.createdAt, year, month)
+  );
+
+  const pendingProofsCount = (paymentProofs || []).filter(
+    (p) =>
+      p &&
+      p.status === 'submetido' &&
+      isDateOnOrBeforeFiscalMonthEnd(p.paymentDate || p.createdAt, year, month)
+  ).length;
+
+  const pendingExpensesCount = (expenses || []).filter(
+    (e) =>
+      e &&
+      (e.status === 'solicitado' || e.status === 'aprovado') &&
+      isDateOnOrBeforeFiscalMonthEnd(e.createdAt, year, month)
+  ).length;
+
+  const accountSnapshots: MonthlyClosingAccountSnapshot[] = (accounts || []).map((acc) => {
+    const incomeInPeriodInCents = periodValidReceipts
+      .filter((r) => {
+        const resolvedId = resolveReceiptTargetAccountId(r, accounts);
+        return resolvedId ? resolvedId === acc.id : false;
+      })
+      .reduce((sum, r) => sum + Math.max(0, Math.round(r.amountPaidInCents || 0)), 0);
+
+    const expenseInPeriodInCents = periodPaidExpenses
+      .filter((e) => {
+        if (e.accountId) return e.accountId === acc.id;
+        const fallbackAcc = accounts.find((a) => a.active) || accounts[0];
+        return fallbackAcc ? fallbackAcc.id === acc.id : false;
+      })
+      .reduce((sum, e) => sum + Math.max(0, Math.round(e.amountInCents || 0)), 0);
+
+    const systemBalanceInCents = Math.round(acc.currentBalanceInCents || 0);
+    const hasCustomVerified =
+      Object.prototype.hasOwnProperty.call(verifiedBalancesByAccountId, acc.id) &&
+      typeof verifiedBalancesByAccountId[acc.id] === 'number' &&
+      !Number.isNaN(verifiedBalancesByAccountId[acc.id]);
+
+    const verifiedBalanceInCents = hasCustomVerified
+      ? Math.round(verifiedBalancesByAccountId[acc.id])
+      : systemBalanceInCents;
+
+    return {
+      accountId: acc.id,
+      accountName: acc.name,
+      accountType: acc.type,
+      incomeInPeriodInCents,
+      expenseInPeriodInCents,
+      netMovementInPeriodInCents: incomeInPeriodInCents - expenseInPeriodInCents,
+      systemBalanceInCents,
+      verifiedBalanceInCents,
+      differenceInCents: verifiedBalanceInCents - systemBalanceInCents,
+    };
+  });
+
+  const systemAccountsBalanceInCents = accountSnapshots.reduce(
+    (sum, s) => sum + s.systemBalanceInCents,
+    0
+  );
+  const reconciledPhysicalBalanceInCents = accountSnapshots.reduce(
+    (sum, s) => sum + s.verifiedBalanceInCents,
+    0
+  );
+  const varianceInCents =
+    reconciledPhysicalBalanceInCents - systemAccountsBalanceInCents;
+
+  return {
+    year,
+    month,
+    totalIncomeInCents,
+    totalExpenseInCents,
+    closingBalanceInCents,
+    receiptsCount: periodValidReceipts.length,
+    cancelledReceiptsCount,
+    expensesCount: periodPaidExpenses.length,
+    pendingProofsCount,
+    pendingExpensesCount,
+    systemAccountsBalanceInCents,
+    reconciledPhysicalBalanceInCents,
+    varianceInCents,
+    reconciliationStatus: varianceInCents === 0 ? 'conciliado' : 'divergente',
+    accountSnapshots,
   };
 }

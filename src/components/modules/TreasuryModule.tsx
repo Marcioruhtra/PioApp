@@ -47,12 +47,15 @@ import {
   DEFAULT_QUOTA_FEE_ID,
   calculateClubQuotaTotals,
   calculateMemberQuotaSummary,
+  calculateMonthlyReconciliationPreview,
   getRubricsCatalogFees,
   getSelectableInstitutionalFees,
   getTodayISODate,
+  isFiscalPeriodLocked,
   MemberQuotaSummary,
   resolveQuotaConfig,
 } from '../../services/quotaService';
+import { MonthlyClosing } from '../../types';
 import { Modal } from '../common/Modal';
 import { EmptyState } from '../common/EmptyState';
 import { PrintDocumentModal } from '../common/PrintDocumentModal';
@@ -100,6 +103,11 @@ export const TreasuryModule: React.FC = () => {
   const [isReopenModalOpen, setIsReopenModalOpen] = useState(false);
   const [selectedClosingId, setSelectedClosingId] = useState<string | null>(null);
   const [reopenReason, setReopenReason] = useState('');
+  const [reopenModalError, setReopenModalError] = useState<string | null>(null);
+  const [closingModalError, setClosingModalError] = useState<string | null>(null);
+  const [verifiedBalanceStrs, setVerifiedBalanceStrs] = useState<Record<string, string>>({});
+  const [reconciliationNotes, setReconciliationNotes] = useState('');
+  const [expandedClosingIds, setExpandedClosingIds] = useState<Record<string, boolean>>({});
   const [selectedReceiptToCancel, setSelectedReceiptToCancel] = useState<PaymentReceipt | null>(null);
   const [cancelReason, setCancelReason] = useState('');
   const [printedDocument, setPrintedDocument] = useState<OfficialDocument | null>(null);
@@ -221,9 +229,106 @@ export const TreasuryModule: React.FC = () => {
     accountId: state.accounts.find((a) => a.active)?.id || state.accounts[0]?.id || '',
   });
 
-  // Fecho Mensal
-  const [closingMonth, setClosingMonth] = useState(3);
+  // Fecho Mensal e Reconciliação
+  const [closingMonth, setClosingMonth] = useState(() => new Date().getMonth() + 1);
   const [closingYear, setClosingYear] = useState(state.settings.currentYear);
+
+  const verifiedBalancesByAccountId = useMemo(() => {
+    const result: Record<string, number> = {};
+    for (const acc of state.accounts) {
+      const raw = verifiedBalanceStrs[acc.id];
+      if (raw !== undefined && raw.trim() !== '') {
+        const normalized = Number(raw.replace(/\s+/g, '').replace(',', '.'));
+        if (!Number.isNaN(normalized) && normalized >= 0) {
+          result[acc.id] = Math.round(normalized * 100);
+        }
+      }
+    }
+    return result;
+  }, [state.accounts, verifiedBalanceStrs]);
+
+  const closingPreview = useMemo(
+    () =>
+      calculateMonthlyReconciliationPreview({
+        receipts: state.receipts,
+        expenses: state.expenses,
+        accounts: state.accounts,
+        paymentProofs: state.paymentProofs,
+        year: closingYear,
+        month: closingMonth,
+        verifiedBalancesByAccountId,
+      }),
+    [
+      state.receipts,
+      state.expenses,
+      state.accounts,
+      state.paymentProofs,
+      closingYear,
+      closingMonth,
+      verifiedBalancesByAccountId,
+    ]
+  );
+
+  const isSelectedPeriodLocked = useMemo(
+    () => isFiscalPeriodLocked(state.monthlyClosings, closingYear, closingMonth),
+    [state.monthlyClosings, closingYear, closingMonth]
+  );
+
+  const selectedPeriodWasReopened = useMemo(
+    () =>
+      !isSelectedPeriodLocked &&
+      state.monthlyClosings.some(
+        (c) => c.year === closingYear && c.month === closingMonth && c.isReopened
+      ),
+    [state.monthlyClosings, closingYear, closingMonth, isSelectedPeriodLocked]
+  );
+
+  const sortedClosings = useMemo(
+    () =>
+      [...state.monthlyClosings].sort((a, b) => {
+        if (b.year !== a.year) return b.year - a.year;
+        if (b.month !== a.month) return b.month - a.month;
+        return new Date(b.closedAt).getTime() - new Date(a.closedAt).getTime();
+      }),
+    [state.monthlyClosings]
+  );
+
+  const handlePrintClosingReport = (closing: MonthlyClosing) => {
+    setPrintedDocument({
+      id: `DOC-CLS-${closing.id}`,
+      documentNumber: closing.id,
+      documentType: 'mapa_financeiro',
+      title: `Mapa Financeiro e Reconciliação - ${getMonthNamePT(closing.month)} ${closing.year}`,
+      year: closing.year,
+      issuedByUserId: closing.closedByUserId || currentUser.id,
+      issuedByName: closing.closedByName || currentUser.name,
+      issuedByRole: 'tesoureiro',
+      issuedAt: closing.closedAt,
+      contentData: {
+        isMonthlyClosing: true,
+        closingId: closing.id,
+        month: closing.month,
+        year: closing.year,
+        periodLabel: `${getMonthNamePT(closing.month)} de ${closing.year}`,
+        totalIncomeInCents: closing.totalIncomeInCents,
+        totalExpenseInCents: closing.totalExpenseInCents,
+        closingBalanceInCents: closing.closingBalanceInCents,
+        systemAccountsBalanceInCents:
+          closing.systemAccountsBalanceInCents ??
+          state.accounts.reduce((s, a) => s + a.currentBalanceInCents, 0),
+        reconciledPhysicalBalanceInCents:
+          closing.reconciledPhysicalBalanceInCents ??
+          closing.systemAccountsBalanceInCents ??
+          state.accounts.reduce((s, a) => s + a.currentBalanceInCents, 0),
+        varianceInCents: closing.varianceInCents ?? 0,
+        reconciliationStatus: closing.reconciliationStatus ?? 'conciliado',
+        reconciliationNotes: closing.reconciliationNotes || '',
+        accountSnapshots: closing.accountSnapshots || [],
+        isReopened: Boolean(closing.isReopened),
+      },
+      isCancelled: false,
+    });
+  };
 
   // Cálculos Gerais em Inteiros (Cêntimos)
   const totalBalanceCents = useMemo(
@@ -1623,79 +1728,500 @@ export const TreasuryModule: React.FC = () => {
 
       {/* CONTEÚDO 5: Fecho Mensal e Reconciliação */}
       {activeTab === 'closings' && (
-        <div className="space-y-4 w-full max-w-full min-w-0">
-          <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 w-full max-w-full min-w-0">
+        <div className="space-y-5 w-full max-w-full min-w-0">
+          {/* 1. Barra de Controlo do Período & Estado Fiscal */}
+          <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4 w-full max-w-full min-w-0">
             <div>
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                Histórico de Fechos Fiscais Mensais
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                O fecho mensal congela os lançamentos do período. A reabertura é uma operação crítica que exige autorização da Direção.
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                  Fecho Mensal e Reconciliação Bancária / Caixa
+                </h3>
+                {isSelectedPeriodLocked ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded bg-slate-900 text-white">
+                    <Lock className="w-3 h-3" />
+                    Período Encerrado
+                  </span>
+                ) : selectedPeriodWasReopened ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded bg-amber-100 text-amber-900">
+                    <Unlock className="w-3 h-3" />
+                    Reaberto para Retificação
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-100 text-emerald-900">
+                    <Unlock className="w-3 h-3" />
+                    Período em Aberto
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                Selecione o mês e o ano fiscal para conferir receitas, despesas liquidadas, pendências e conciliar os saldos reais antes do encerramento definitivo.
               </p>
             </div>
 
-            {can('treasury', 'ARCHIVE') && (
-              <button
-                onClick={() => setIsCloseMonthModalOpen(true)}
-                className="px-3 py-2 text-xs font-semibold bg-blue-900 hover:bg-blue-800 text-white rounded-lg transition-colors self-start sm:self-auto shrink-0"
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <select
+                value={closingMonth}
+                onChange={(e) => {
+                  setClosingMonth(Number(e.target.value));
+                  setClosingModalError(null);
+                }}
+                aria-label="Mês fiscal"
+                className="px-3 py-2 text-xs font-semibold border border-slate-200 rounded-lg bg-white text-slate-800"
               >
-                Executar Fecho Mensal
-              </button>
+                {Array.from({ length: 12 }, (_, idx) => idx + 1).map((m) => (
+                  <option key={m} value={m}>
+                    {getMonthNamePT(m)}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={closingYear}
+                onChange={(e) => {
+                  setClosingYear(Number(e.target.value));
+                  setClosingModalError(null);
+                }}
+                aria-label="Ano fiscal"
+                className="px-3 py-2 text-xs font-semibold border border-slate-200 rounded-lg bg-white text-slate-800"
+              >
+                {[
+                  state.settings.currentYear - 1,
+                  state.settings.currentYear,
+                  state.settings.currentYear + 1,
+                ].map((yr) => (
+                  <option key={yr} value={yr}>
+                    {yr}
+                  </option>
+                ))}
+              </select>
+
+              {can('treasury', 'ARCHIVE') && (
+                <button
+                  onClick={() => {
+                    setClosingModalError(null);
+                    setIsCloseMonthModalOpen(true);
+                  }}
+                  disabled={isSelectedPeriodLocked}
+                  className="px-3.5 py-2 text-xs font-semibold bg-blue-900 hover:bg-blue-800 disabled:bg-slate-300 disabled:text-slate-600 text-white rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>
+                    {isSelectedPeriodLocked
+                      ? 'Período Já Encerrado'
+                      : 'Executar Fecho e Reconciliação'}
+                  </span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 2. Resumo Contabilístico do Período Selecionado */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Receitas · {getMonthNamePT(closingMonth)}/{closingYear}
+              </div>
+              <div className="text-lg font-black text-emerald-700 mt-1 font-mono">
+                {formatKz(closingPreview.totalIncomeInCents)}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                {closingPreview.receiptsCount} recibo(s) válido(s)
+                {closingPreview.cancelledReceiptsCount > 0 &&
+                  ` · ${closingPreview.cancelledReceiptsCount} anulado(s)`}
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Despesas Pagas · {getMonthNamePT(closingMonth)}
+              </div>
+              <div className="text-lg font-black text-rose-700 mt-1 font-mono">
+                {formatKz(closingPreview.totalExpenseInCents)}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                {closingPreview.expensesCount} pagamento(s) liquidado(s)
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Resultado Líquido do Mês
+              </div>
+              <div
+                className={`text-lg font-black mt-1 font-mono ${
+                  closingPreview.closingBalanceInCents >= 0
+                    ? 'text-blue-900'
+                    : 'text-rose-700'
+                }`}
+              >
+                {formatKz(closingPreview.closingBalanceInCents)}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                Receitas menos despesas do período
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Conciliação Bancária / Caixa
+              </div>
+              <div
+                className={`text-lg font-black mt-1 font-mono ${
+                  closingPreview.varianceInCents === 0
+                    ? 'text-emerald-700'
+                    : 'text-amber-700'
+                }`}
+              >
+                {closingPreview.varianceInCents === 0
+                  ? 'Conciliado'
+                  : formatKz(closingPreview.varianceInCents)}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                Conferido: {formatKz(closingPreview.reconciledPhysicalBalanceInCents)}
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Checklist Pré-Fecho de Pendências */}
+          {(closingPreview.pendingProofsCount > 0 || closingPreview.pendingExpensesCount > 0) ? (
+            <div className="p-4 rounded-xl border border-amber-200 bg-amber-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-bold">Pendências detetadas até ao final de {getMonthNamePT(closingMonth)}/{closingYear}</div>
+                  <p className="text-[11px] text-amber-800 mt-0.5">
+                    {closingPreview.pendingProofsCount > 0 &&
+                      `${closingPreview.pendingProofsCount} comprovativo(s) por validar na aba Comprovativos. `}
+                    {closingPreview.pendingExpensesCount > 0 &&
+                      `${closingPreview.pendingExpensesCount} solicitação(ões) de despesa em aberto (por aprovar ou pagar). `}
+                    Recomenda-se regularizar antes de encerrar o mês fiscal.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/70 flex items-center gap-2 text-xs text-emerald-900">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>
+                Sem comprovativos pendentes ou despesas por liquidar até ao final de{' '}
+                <strong>{getMonthNamePT(closingMonth)}/{closingYear}</strong>.
+              </span>
+            </div>
+          )}
+
+          {/* 4. Mapa Interativo de Reconciliação por Conta */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden w-full max-w-full min-w-0">
+            <div className="px-4 sm:px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                  Conferência de Contas · {getMonthNamePT(closingMonth)} de {closingYear}
+                </h4>
+                <p className="text-[11px] text-slate-500">
+                  Compare os saldos do sistema com o extrato bancário e contagem física do caixa antes de fechar o mês.
+                </p>
+              </div>
+              {Object.keys(verifiedBalanceStrs).length > 0 && !isSelectedPeriodLocked && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVerifiedBalanceStrs({});
+                    setReconciliationNotes('');
+                  }}
+                  className="text-[11px] font-semibold text-blue-900 hover:underline self-start sm:self-auto cursor-pointer"
+                >
+                  Igualar todos ao saldo do sistema
+                </button>
+              )}
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[700px] text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-500 text-[10px] uppercase tracking-wider bg-slate-50/60">
+                    <th className="py-2.5 px-4">Conta Financeira</th>
+                    <th className="py-2.5 px-4 text-right">Entradas Mês</th>
+                    <th className="py-2.5 px-4 text-right">Saídas Mês</th>
+                    <th className="py-2.5 px-4 text-right">Saldo Sistema</th>
+                    <th className="py-2.5 px-4 text-right">Saldo Real Conferido (Kz)</th>
+                    <th className="py-2.5 px-4 text-right">Diferença</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {closingPreview.accountSnapshots.map((snap) => {
+                    const defaultKz = (snap.systemBalanceInCents / 100).toFixed(2);
+                    const inputVal =
+                      verifiedBalanceStrs[snap.accountId] !== undefined
+                        ? verifiedBalanceStrs[snap.accountId]
+                        : defaultKz;
+
+                    return (
+                      <tr key={snap.accountId} className="hover:bg-slate-50/70">
+                        <td className="py-3 px-4">
+                          <div className="font-bold text-slate-900">{snap.accountName}</div>
+                          <div className="text-[10px] uppercase text-slate-500">{snap.accountType}</div>
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono text-emerald-700 font-semibold">
+                          +{formatKz(snap.incomeInPeriodInCents)}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono text-rose-700 font-semibold">
+                          -{formatKz(snap.expenseInPeriodInCents)}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono font-bold text-slate-900">
+                          {formatKz(snap.systemBalanceInCents)}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          {!isSelectedPeriodLocked && can('treasury', 'ARCHIVE') ? (
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={inputVal}
+                              onChange={(e) =>
+                                setVerifiedBalanceStrs((prev) => ({
+                                  ...prev,
+                                  [snap.accountId]: e.target.value,
+                                }))
+                              }
+                              className="w-36 px-2.5 py-1.5 text-right font-mono text-xs border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-900 bg-white"
+                            />
+                          ) : (
+                            <span className="font-mono font-semibold text-slate-700">
+                              {formatKz(snap.verifiedBalanceInCents)}
+                            </span>
+                          )}
+                        </td>
+                        <td
+                          className={`py-3 px-4 text-right font-mono font-bold ${
+                            snap.differenceInCents === 0
+                              ? 'text-emerald-700'
+                              : 'text-amber-700'
+                          }`}
+                        >
+                          {formatKz(snap.differenceInCents)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  <tr className="bg-slate-50 font-bold border-t border-slate-200">
+                    <td colSpan={3} className="py-3 px-4 text-right uppercase text-[11px] text-slate-700">
+                      Totais Consolidados
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono text-slate-900">
+                      {formatKz(closingPreview.systemAccountsBalanceInCents)}
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono text-blue-950">
+                      {formatKz(closingPreview.reconciledPhysicalBalanceInCents)}
+                    </td>
+                    <td
+                      className={`py-3 px-4 text-right font-mono ${
+                        closingPreview.varianceInCents === 0
+                          ? 'text-emerald-700'
+                          : 'text-rose-700'
+                      }`}
+                    >
+                      {formatKz(closingPreview.varianceInCents)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {!isSelectedPeriodLocked && can('treasury', 'ARCHIVE') && (
+              <div className="p-4 border-t border-slate-100 bg-slate-50/40 space-y-2">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Notas de Reconciliação / Justificação de Divergências
+                  {closingPreview.varianceInCents !== 0 && (
+                    <span className="text-rose-600 ml-1">* (Obrigatório devido à diferença detetada)</span>
+                  )}
+                </label>
+                <textarea
+                  rows={2}
+                  value={reconciliationNotes}
+                  onChange={(e) => setReconciliationNotes(e.target.value)}
+                  placeholder="Ex: Conferido com extrato bancário e contagem física do caixa..."
+                  className="w-full p-2.5 text-xs border border-slate-200 rounded-lg bg-white focus:ring-1 focus:ring-blue-900"
+                />
+              </div>
             )}
           </div>
 
+          {/* 5. Histórico de Fechos Fiscais Mensais */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden w-full max-w-full min-w-0">
-            <div className="divide-y divide-slate-100">
-              {state.monthlyClosings.map((closing, index) => (
-                <div key={`${closing.id}-${index}`} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 transition-colors">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs font-bold text-slate-900">{closing.id}</span>
-                      <h4 className="text-xs font-bold text-slate-800">
-                        {getMonthNamePT(closing.month)} de {closing.year}
-                      </h4>
-                      {closing.isReopened && (
-                        <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded">
-                          Reaberto
-                        </span>
+            <div className="px-4 sm:px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                Histórico de Fechos Fiscais Mensais ({sortedClosings.length})
+              </h3>
+            </div>
+
+            {sortedClosings.length === 0 ? (
+              <div className="p-6 text-center text-xs text-slate-500">
+                Ainda não existem fechos fiscais mensais registados no sistema.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {sortedClosings.map((closing, index) => {
+                  const isExpanded = Boolean(expandedClosingIds[closing.id]);
+                  const hasSnapshots =
+                    Array.isArray(closing.accountSnapshots) &&
+                    closing.accountSnapshots.length > 0;
+
+                  return (
+                    <div key={`${closing.id}-${index}`} className="p-4 hover:bg-slate-50/60 transition-colors space-y-3">
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono text-xs font-bold text-slate-900">{closing.id}</span>
+                            <h4 className="text-xs font-bold text-slate-800">
+                              {getMonthNamePT(closing.month)} de {closing.year}
+                            </h4>
+                            {closing.isReopened ? (
+                              <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded">
+                                Reaberto
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded inline-flex items-center gap-1">
+                                <Lock className="w-2.5 h-2.5" />
+                                Encerrado
+                              </span>
+                            )}
+                            {closing.reconciliationStatus && (
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                                  closing.reconciliationStatus === 'conciliado'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : 'bg-rose-100 text-rose-800'
+                                }`}
+                              >
+                                {closing.reconciliationStatus === 'conciliado'
+                                  ? 'Conciliado (0,00 Kz)'
+                                  : `Divergência: ${formatKz(closing.varianceInCents || 0)}`}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="text-[11px] text-slate-500 mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <span>Receitas: <strong className="text-slate-700">{formatKz(closing.totalIncomeInCents)}</strong></span>
+                            <span>·</span>
+                            <span>Despesas: <strong className="text-slate-700">{formatKz(closing.totalExpenseInCents)}</strong></span>
+                            {typeof closing.reconciledPhysicalBalanceInCents === 'number' && (
+                              <>
+                                <span>·</span>
+                                <span>Saldo Conferido: <strong className="text-slate-700">{formatKz(closing.reconciledPhysicalBalanceInCents)}</strong></span>
+                              </>
+                            )}
+                            <span>·</span>
+                            <span>Encerrado por: {closing.closedByName} em {formatDateAO(closing.closedAt)}</span>
+                          </div>
+
+                          {closing.reconciliationNotes && (
+                            <p className="text-[11px] text-slate-600 mt-1">
+                              <strong>Notas da Reconciliação:</strong> {closing.reconciliationNotes}
+                            </p>
+                          )}
+                          {closing.reopenReason && (
+                            <p className="text-[11px] text-amber-900 mt-1">
+                              <strong>Motivo da reabertura:</strong> {closing.reopenReason}
+                              {closing.reopenedByName ? ` (${closing.reopenedByName})` : ''}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between lg:justify-end gap-2 w-full lg:w-auto">
+                          <div className="text-left lg:text-right mr-2">
+                            <div className="text-sm font-black text-slate-900 font-mono">
+                              {formatKz(closing.closingBalanceInCents)}
+                            </div>
+                            <div className="text-[10px] text-slate-500">Resultado Apurado</div>
+                          </div>
+
+                          {hasSnapshots && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedClosingIds((prev) => ({
+                                  ...prev,
+                                  [closing.id]: !prev[closing.id],
+                                }))
+                              }
+                              className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded transition-colors cursor-pointer"
+                            >
+                              {isExpanded ? 'Ocultar Contas' : 'Detalhe Contas'}
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => handlePrintClosingReport(closing)}
+                            className="px-2.5 py-1.5 text-xs font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 rounded inline-flex items-center gap-1 transition-colors cursor-pointer"
+                            title="Imprimir Mapa Financeiro e Reconciliação"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>Imprimir Mapa</span>
+                          </button>
+
+                          {!closing.isReopened && can('treasury', 'REOPEN') && (
+                            <button
+                              onClick={() => {
+                                setSelectedClosingId(closing.id);
+                                setReopenModalError(null);
+                                setIsReopenModalOpen(true);
+                              }}
+                              className="px-2.5 py-1.5 text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 rounded transition-colors shrink-0 cursor-pointer"
+                              title="Reabrir Mês Fiscal (Apenas Direção)"
+                            >
+                              Reabrir Mês
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {isExpanded && hasSnapshots && (
+                        <div className="mt-2 border border-slate-200 rounded-lg overflow-x-auto bg-slate-50/50">
+                          <table className="w-full min-w-[580px] text-left text-[11px] border-collapse">
+                            <thead>
+                              <tr className="border-b border-slate-200 text-slate-500 uppercase text-[10px]">
+                                <th className="py-2 px-3">Conta</th>
+                                <th className="py-2 px-3 text-right">Entradas</th>
+                                <th className="py-2 px-3 text-right">Saídas</th>
+                                <th className="py-2 px-3 text-right">Saldo Sistema</th>
+                                <th className="py-2 px-3 text-right">Conferido</th>
+                                <th className="py-2 px-3 text-right">Diferença</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-200/70">
+                              {closing.accountSnapshots!.map((snap) => (
+                                <tr key={snap.accountId}>
+                                  <td className="py-1.5 px-3 font-semibold text-slate-800">{snap.accountName}</td>
+                                  <td className="py-1.5 px-3 text-right font-mono text-emerald-700">
+                                    {formatKz(snap.incomeInPeriodInCents)}
+                                  </td>
+                                  <td className="py-1.5 px-3 text-right font-mono text-rose-700">
+                                    {formatKz(snap.expenseInPeriodInCents)}
+                                  </td>
+                                  <td className="py-1.5 px-3 text-right font-mono font-semibold text-slate-900">
+                                    {formatKz(snap.systemBalanceInCents)}
+                                  </td>
+                                  <td className="py-1.5 px-3 text-right font-mono font-semibold text-blue-950">
+                                    {formatKz(snap.verifiedBalanceInCents)}
+                                  </td>
+                                  <td
+                                    className={`py-1.5 px-3 text-right font-mono font-bold ${
+                                      snap.differenceInCents === 0 ? 'text-emerald-700' : 'text-rose-700'
+                                    }`}
+                                  >
+                                    {formatKz(snap.differenceInCents)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       )}
                     </div>
-                    <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap items-center gap-2 sm:gap-3">
-                      <span>Receitas: {formatKz(closing.totalIncomeInCents)}</span>
-                      <span>·</span>
-                      <span>Despesas: {formatKz(closing.totalExpenseInCents)}</span>
-                      <span>·</span>
-                      <span>Encerrado por: {closing.closedByName}</span>
-                    </div>
-                    {closing.reopenReason && (
-                      <p className="text-[11px] text-amber-900 mt-1">
-                        Motivo da reabertura: {closing.reopenReason}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-between sm:justify-end gap-3 w-full sm:w-auto">
-                    <div className="text-left sm:text-right">
-                      <div className="text-sm font-black text-slate-900">{formatKz(closing.closingBalanceInCents)}</div>
-                      <div className="text-[10px] text-slate-500">Saldo Apurado</div>
-                    </div>
-
-                    {!closing.isReopened && can('treasury', 'REOPEN') && (
-                      <button
-                        onClick={() => {
-                          setSelectedClosingId(closing.id);
-                          setIsReopenModalOpen(true);
-                        }}
-                        className="px-2.5 py-1 text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 rounded transition-colors shrink-0"
-                        title="Reabrir Mês Fiscal (Apenas Direção)"
-                      >
-                        Reabrir Mês
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1939,7 +2465,10 @@ export const TreasuryModule: React.FC = () => {
       {isReopenModalOpen && (
         <Modal
           isOpen={isReopenModalOpen}
-          onClose={() => setIsReopenModalOpen(false)}
+          onClose={() => {
+            setIsReopenModalOpen(false);
+            setReopenModalError(null);
+          }}
           title="Reabertura Autorizada de Mês Fiscal"
           description="Operação crítica: a reabertura exige autorização da Direção e fundamentação gravada em auditoria."
           maxWidth="md"
@@ -1949,6 +2478,12 @@ export const TreasuryModule: React.FC = () => {
               Esta ação destranca o período fiscal para retificação de lançamentos. O evento será integralmente auditado.
             </div>
 
+            {reopenModalError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs">
+                {reopenModalError}
+              </div>
+            )}
+
             <div>
               <label className="block text-slate-700 font-semibold mb-1">
                 Motivo e Justificação da Reabertura <span className="text-rose-500">*</span>
@@ -1957,7 +2492,10 @@ export const TreasuryModule: React.FC = () => {
                 rows={3}
                 placeholder="Ex: Regularização de comprovativo bancário pendente referente a Março..."
                 value={reopenReason}
-                onChange={(e) => setReopenReason(e.target.value)}
+                onChange={(e) => {
+                  setReopenReason(e.target.value);
+                  setReopenModalError(null);
+                }}
                 className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
                 required
               />
@@ -1966,7 +2504,10 @@ export const TreasuryModule: React.FC = () => {
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 type="button"
-                onClick={() => setIsReopenModalOpen(false)}
+                onClick={() => {
+                  setIsReopenModalOpen(false);
+                  setReopenModalError(null);
+                }}
                 className="px-3 py-1.5 text-slate-600 hover:text-slate-900"
               >
                 Cancelar
@@ -1979,14 +2520,15 @@ export const TreasuryModule: React.FC = () => {
                     if (res.success) {
                       setIsReopenModalOpen(false);
                       setReopenReason('');
+                      setReopenModalError(null);
                       setSelectedClosingId(null);
                       showFeedback('success', 'Mês fiscal reaberto com sucesso.');
                     } else {
-                      showFeedback('error', res.error || 'Erro ao reabrir fecho fiscal.');
+                      setReopenModalError(res.error || 'Erro ao reabrir fecho fiscal.');
                     }
                   }
                 }}
-                className="px-4 py-1.5 font-semibold text-white bg-amber-700 hover:bg-amber-800 rounded shadow-xs"
+                className="px-4 py-1.5 font-semibold text-white bg-amber-700 hover:bg-amber-800 rounded shadow-xs cursor-pointer"
               >
                 Autorizar Reabertura
               </button>
@@ -2204,32 +2746,111 @@ export const TreasuryModule: React.FC = () => {
           setProofRejectError(null);
         }}
       />
-      {/* MODAL: Fecho Mensal */}
+      {/* MODAL: Fecho Mensal e Reconciliação */}
       {isCloseMonthModalOpen && (
         <Modal
           isOpen={isCloseMonthModalOpen}
-          onClose={() => setIsCloseMonthModalOpen(false)}
-          title="Executar Fecho Mensal"
-          description={`Encerrar operações financeiras de ${getMonthNamePT(closingMonth)} de ${closingYear}.`}
-          maxWidth="sm"
+          onClose={() => {
+            setIsCloseMonthModalOpen(false);
+            setClosingModalError(null);
+          }}
+          title="Confirmar Fecho Mensal e Reconciliação"
+          description={`Encerramento e bloqueio de lançamentos de ${getMonthNamePT(closingMonth)} de ${closingYear}.`}
+          maxWidth="md"
         >
           <div className="space-y-4 text-xs">
-            <p>Tem certeza que deseja encerrar o fecho mensal? Esta ação não pode ser revertida facilmente.</p>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setIsCloseMonthModalOpen(false)} className="px-3 py-1.5 text-slate-600">Cancelar</button>
+            {closingModalError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs">
+                {closingModalError}
+              </div>
+            )}
+
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Receitas ({closingPreview.receiptsCount} recibos):</span>
+                <span className="font-mono font-bold text-emerald-700">
+                  {formatKz(closingPreview.totalIncomeInCents)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Despesas Liquidadas ({closingPreview.expensesCount}):</span>
+                <span className="font-mono font-bold text-rose-700">
+                  {formatKz(closingPreview.totalExpenseInCents)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t border-slate-200">
+                <span className="font-bold text-slate-800">Resultado Líquido do Período:</span>
+                <span className="font-mono font-black text-blue-950">
+                  {formatKz(closingPreview.closingBalanceInCents)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t border-slate-200">
+                <span className="text-slate-600">Saldo Sistema vs Conferido:</span>
+                <span className="font-mono font-semibold text-slate-900">
+                  {formatKz(closingPreview.systemAccountsBalanceInCents)} /{' '}
+                  {formatKz(closingPreview.reconciledPhysicalBalanceInCents)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Diferença de Reconciliação:</span>
+                <span
+                  className={`font-mono font-bold ${
+                    closingPreview.varianceInCents === 0
+                      ? 'text-emerald-700'
+                      : 'text-rose-700'
+                  }`}
+                >
+                  {formatKz(closingPreview.varianceInCents)} (
+                  {closingPreview.reconciliationStatus === 'conciliado' ? 'Conciliado' : 'Divergência'})
+                </span>
+              </div>
+            </div>
+
+            {(closingPreview.pendingProofsCount > 0 || closingPreview.pendingExpensesCount > 0) && (
+              <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg text-[11px]">
+                <strong>Aviso:</strong> Existem {closingPreview.pendingProofsCount} comprovativo(s) pendente(s) e{' '}
+                {closingPreview.pendingExpensesCount} despesa(s) em aberto neste período.
+              </div>
+            )}
+
+            <p className="text-slate-600">
+              Ao confirmar, o mês de <strong>{getMonthNamePT(closingMonth)}/{closingYear}</strong> ficará bloqueado contra novos lançamentos ou anulações até eventual reabertura autorizada pela Direção.
+            </p>
+
+            <div className="flex justify-end gap-2 pt-2">
               <button
+                type="button"
                 onClick={() => {
-                  const res = closeFiscalMonth(closingYear, closingMonth);
+                  setIsCloseMonthModalOpen(false);
+                  setClosingModalError(null);
+                }}
+                className="px-3 py-1.5 text-slate-600 hover:text-slate-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const res = closeFiscalMonth(closingYear, closingMonth, {
+                    verifiedBalancesByAccountId,
+                    reconciliationNotes,
+                  });
                   if (res.success) {
                     setIsCloseMonthModalOpen(false);
-                    showFeedback('success', 'Fecho mensal concluído com sucesso.');
+                    setClosingModalError(null);
+                    setVerifiedBalanceStrs({});
+                    setReconciliationNotes('');
+                    showFeedback(
+                      'success',
+                      `Fecho mensal de ${getMonthNamePT(closingMonth)}/${closingYear} concluído e reconciliado com sucesso.`
+                    );
                   } else {
-                    showFeedback('error', res.error || 'Erro ao executar fecho mensal.');
+                    setClosingModalError(res.error || 'Erro ao executar fecho mensal.');
                   }
                 }}
-                className="px-4 py-1.5 bg-blue-900 text-white rounded"
+                className="px-4 py-1.5 font-semibold bg-blue-900 hover:bg-blue-800 text-white rounded cursor-pointer"
               >
-                Confirmar Fecho
+                Confirmar Fecho e Bloquear Período
               </button>
             </div>
           </div>

@@ -39,6 +39,12 @@ import { formatDateAO } from '../../utils/date';
 import { Modal } from '../common/Modal';
 import { ROLE_LABELS } from '../../services/permissionService';
 import { getMemberTeamLabel, isDirectionMember } from '../../services/accountSyncService';
+import {
+  ACTIVITY_TYPE_LABELS,
+  calculateTeamAttendanceStats,
+  canActivityHaveMinute,
+  getActivitiesRequiringMinute,
+} from '../../utils/activityUtils';
 
 interface AssociateDirectorModuleProps {
   onNavigate?: (module: ModuleName) => void;
@@ -54,15 +60,6 @@ const STAGE_LABELS: Record<ActivityStage, string> = {
   execucao: 'Execução',
   relatorio: 'Relatório',
   encerrado: 'Encerrado',
-};
-
-const ACTIVITY_TYPE_LABELS: Record<ClubActivity['type'], string> = {
-  reuniao_regular: 'Reunião Regular',
-  acampamento: 'Acampamento',
-  civica: 'Atividade Cívica',
-  formacao: 'Formação',
-  social: 'Ação Social',
-  diretoria: 'Reunião de Diretoria',
 };
 
 const DIRECTIVE_STATUS_LABELS: Record<AssociateDirectiveStatus, string> = {
@@ -125,8 +122,14 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
   });
   const [unassignedSearch, setUnassignedSearch] = useState('');
   const [unassignedCategoryFilter, setUnassignedCategoryFilter] = useState<'todas' | MemberCategory>('todas');
-  const [assignTargetUnitName, setAssignTargetUnitName] = useState<string>(state.settings.units[0]?.name || '');
+  const [assignTargetByMemberId, setAssignTargetByMemberId] = useState<Record<string, string>>({});
   const [teamRosterSearch, setTeamRosterSearch] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState<{
+    type: 'unit' | 'directive' | 'evaluation';
+    id: string;
+    title: string;
+    description: string;
+  } | null>(null);
 
   // Estados de Operações & Tarefas
   const [activityStageFilter, setActivityStageFilter] = useState<'todas' | ActivityStage>('todas');
@@ -222,20 +225,9 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
           tp.completedRequirements.length >= tp.totalRequirements
       ).length;
 
-      // Indicador percentual agregado de participação em reuniões/atividades da equipa (nunca expõe chamada individual)
-      const totalSlots = teamMembers.length * state.activities.length;
-      let totalPresent = 0;
-      if (totalSlots > 0) {
-        state.activities.forEach((act) => {
-          act.attendees?.forEach((att) => {
-            if (att.present && teamMemberIds.has(att.memberId)) {
-              totalPresent++;
-            }
-          });
-        });
-      }
-      const aggregateParticipationPct =
-        totalSlots > 0 ? Math.round((totalPresent / totalSlots) * 100) : 0;
+      // Indicador percentual agregado de participação em reuniões/atividades da equipa (considera apenas atividades com lista de presenças registada)
+      const { totalSlots, participationPct: aggregateParticipationPct } =
+        calculateTeamAttendanceStats(teamMemberIds, state.activities);
 
       const unitEvals = evaluations.filter((ev) => ev.unitId === unit.id || ev.unitName === unit.name);
       const latestEval = unitEvals[0];
@@ -324,9 +316,7 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
   ).length;
 
   const unitsWithoutLeader = state.settings.units.filter((u) => !u.leaderUserId);
-  const activitiesWithoutMinute = state.activities.filter(
-    (act) => act.stage !== 'planeamento' && !act.minute
-  );
+  const activitiesWithoutMinute = getActivitiesRequiringMinute(state.activities);
   const candidatesReadyForInvestiture = useMemo(() => {
     return state.trainingProgress
       .map((tp) => {
@@ -458,19 +448,61 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
     }
   };
 
-  const handleDeleteUnit = (unitId: string, unitName: string) => {
-    const res = deleteUnit(unitId);
-    if (res.success) {
-      if (selectedUnitId === unitId) setSelectedUnitId('');
-      showFeedback('success', `Equipa "${unitName}" removida. Os membros associados passaram para a fila Sem Equipa.`);
-    } else {
-      showFeedback('error', res.error || 'Erro ao remover equipa.');
+  const requestDeleteUnit = (unitId: string, unitName: string, memberCount: number) => {
+    setConfirmDelete({
+      type: 'unit',
+      id: unitId,
+      title: `Remover equipa "${unitName}"?`,
+      description:
+        memberCount > 0
+          ? `Esta equipa possui ${memberCount} membro(s) ativo(s). Ao confirmar, todos serão movidos automaticamente para a fila "Sem Equipa".`
+          : 'A equipa selecionada será removida permanentemente do registo de unidades do clube.',
+    });
+  };
+
+  const handleConfirmDeleteAction = () => {
+    if (!confirmDelete) return;
+    const { type, id } = confirmDelete;
+    setConfirmDelete(null);
+
+    if (type === 'unit') {
+      const unitObj = state.settings.units.find((u) => u.id === id);
+      const res = deleteUnit(id);
+      if (res.success) {
+        if (selectedUnitId === id) setSelectedUnitId('');
+        showFeedback(
+          'success',
+          `Equipa "${unitObj?.name || ''}" removida. Os membros associados passaram para a fila Sem Equipa.`
+        );
+      } else {
+        showFeedback('error', res.error || 'Erro ao remover equipa.');
+      }
+      return;
+    }
+
+    if (type === 'directive') {
+      const res = deleteAssociateDirective(id);
+      if (res.success) showFeedback('success', 'Diretiva removida do histórico.');
+      else showFeedback('error', res.error || 'Erro ao remover diretiva.');
+      return;
+    }
+
+    if (type === 'evaluation') {
+      const res = deleteTeamEvaluation(id);
+      if (res.success) showFeedback('success', 'Avaliação removida.');
+      else showFeedback('error', res.error || 'Erro ao remover avaliação.');
     }
   };
 
   const handleAssignMember = (memberId: string, unitName?: string) => {
     const res = assignMemberToUnit(memberId, unitName);
     if (res.success) {
+      setAssignTargetByMemberId((prev) => {
+        if (!(memberId in prev)) return prev;
+        const next = { ...prev };
+        delete next[memberId];
+        return next;
+      });
       showFeedback(
         'success',
         unitName ? `Membro alocado à equipa "${unitName}".` : 'Membro desvinculado da equipa.'
@@ -863,9 +895,9 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
 
                 <div className="p-4 flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-xs font-semibold text-slate-900">Atividades em curso sem ata</p>
+                    <p className="text-xs font-semibold text-slate-900">Reuniões da comissão sem ata</p>
                     <p className="text-xs text-slate-500 tabular-nums mt-0.5">
-                      {activitiesWithoutMinute.length} atividade(s) precisam de registo de ata
+                      {activitiesWithoutMinute.length} reunião(ões) da comissão em falta de ata
                     </p>
                   </div>
                   <button
@@ -1095,7 +1127,7 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
                                 <Edit2 className="w-3.5 h-3.5" />
                               </button>
                               <button
-                                onClick={() => handleDeleteUnit(tm.unit.id, tm.unit.name)}
+                                onClick={() => requestDeleteUnit(tm.unit.id, tm.unit.name, tm.memberCount)}
                                 title="Remover equipa"
                                 className="p-1.5 text-slate-400 hover:text-rose-700 rounded hover:bg-rose-50 cursor-pointer"
                               >
@@ -1288,45 +1320,56 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
                   </div>
                 ) : (
                   <div className="divide-y divide-slate-100">
-                    {filteredUnassignedMembers.map((m) => (
-                      <div key={m.id} className="px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50">
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold text-slate-900 truncate">{m.fullName}</p>
-                          <p className="text-[11px] text-slate-500 tabular-nums">
-                            Nº {m.manualNumber} · {CATEGORY_LABELS[m.category]} · Tel: {m.phone}
-                          </p>
-                        </div>
+                    {filteredUnassignedMembers.map((m) => {
+                      const selectedUnitTarget =
+                        assignTargetByMemberId[m.id] ||
+                        activeSelectedUnit?.unit.name ||
+                        state.settings.units[0]?.name ||
+                        '';
 
-                        {canEdit && state.settings.units.length > 0 && (
-                          <div className="flex items-center gap-2 shrink-0">
-                            <select
-                              value={assignTargetUnitName || activeSelectedUnit?.unit.name || state.settings.units[0]?.name || ''}
-                              onChange={(e) => setAssignTargetUnitName(e.target.value)}
-                              className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-white text-slate-700"
-                            >
-                              {state.settings.units.map((u) => (
-                                <option key={u.id} value={u.name}>
-                                  {u.name}
-                                </option>
-                              ))}
-                            </select>
-                            <button
-                              onClick={() => {
-                                const target =
-                                  assignTargetUnitName ||
-                                  activeSelectedUnit?.unit.name ||
-                                  state.settings.units[0]?.name;
-                                if (target) handleAssignMember(m.id, target);
-                              }}
-                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
-                            >
-                              <UserPlus className="w-3.5 h-3.5" />
-                              <span>Alocar</span>
-                            </button>
+                      return (
+                        <div key={m.id} className="px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-slate-900 truncate">{m.fullName}</p>
+                            <p className="text-[11px] text-slate-500 tabular-nums">
+                              Nº {m.manualNumber} · {CATEGORY_LABELS[m.category]} · Tel: {m.phone}
+                            </p>
                           </div>
-                        )}
-                      </div>
-                    ))}
+
+                          {canEdit && state.settings.units.length > 0 && (
+                            <div className="flex items-center gap-2 shrink-0">
+                              <select
+                                value={selectedUnitTarget}
+                                onChange={(e) => {
+                                  const nextVal = e.target.value;
+                                  setAssignTargetByMemberId((prev) => ({
+                                    ...prev,
+                                    [m.id]: nextVal,
+                                  }));
+                                }}
+                                aria-label={`Equipa de destino para ${m.fullName}`}
+                                className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-white text-slate-700"
+                              >
+                                {state.settings.units.map((u) => (
+                                  <option key={u.id} value={u.name}>
+                                    {u.name}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                onClick={() => {
+                                  if (selectedUnitTarget) handleAssignMember(m.id, selectedUnitTarget);
+                                }}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+                              >
+                                <UserPlus className="w-3.5 h-3.5" />
+                                <span>Alocar</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -1383,9 +1426,15 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
                           </div>
 
                           <div className="flex items-center gap-2 shrink-0">
-                            <span className={`text-[11px] font-semibold ${act.minute ? 'text-emerald-700' : 'text-amber-700'}`}>
-                              {act.minute ? 'Ata OK' : 'Sem Ata'}
-                            </span>
+                            {canActivityHaveMinute(act.type) ? (
+                              <span className={`text-[11px] font-semibold ${act.minute ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                {act.minute ? 'Ata OK' : 'Sem Ata'}
+                              </span>
+                            ) : (
+                              <span className="text-[11px] text-slate-400">
+                                Sem ata aplicável
+                              </span>
+                            )}
                             {(canEdit || can('activities', 'EDIT')) ? (
                               <select
                                 value={act.stage}
@@ -1696,11 +1745,15 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
 
                         {canEdit && (
                           <button
-                            onClick={() => {
-                              const res = deleteAssociateDirective(dir.id);
-                              if (res.success) showFeedback('success', 'Diretiva removida do histórico.');
-                              else showFeedback('error', res.error || 'Erro ao remover.');
-                            }}
+                            onClick={() =>
+                              setConfirmDelete({
+                                type: 'directive',
+                                id: dir.id,
+                                title: `Remover diretiva "${dir.title}"?`,
+                                description:
+                                  'Esta diretiva operacional será removida permanentemente do acompanhamento do Gabinete.',
+                              })
+                            }
                             title="Remover diretiva"
                             className="p-1 text-slate-400 hover:text-rose-700 rounded cursor-pointer"
                           >
@@ -1784,11 +1837,14 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
                         </span>
                         {canEdit && (
                           <button
-                            onClick={() => {
-                              const res = deleteTeamEvaluation(ev.id);
-                              if (res.success) showFeedback('success', 'Avaliação removida.');
-                              else showFeedback('error', res.error || 'Erro ao remover.');
-                            }}
+                            onClick={() =>
+                              setConfirmDelete({
+                                type: 'evaluation',
+                                id: ev.id,
+                                title: `Remover avaliação de "${ev.unitName}"?`,
+                                description: `A avaliação referente a "${ev.periodLabel}" (${ev.overallScore}%) será eliminada permanentemente do histórico.`,
+                              })
+                            }
                             className="p-1 text-slate-400 hover:text-rose-700 rounded cursor-pointer"
                             title="Remover avaliação"
                           >
@@ -2462,6 +2518,38 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
           </div>
         </div>
       )}
+
+      {/* Modal de Confirmação de Remoção Segura */}
+      <Modal
+        isOpen={Boolean(confirmDelete)}
+        onClose={() => setConfirmDelete(null)}
+        title={confirmDelete?.title || 'Confirmar remoção'}
+        description="Esta ação altera os registos oficiais do Gabinete do Diretor-associado."
+        maxWidth="md"
+      >
+        <div className="space-y-4 text-xs">
+          <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-900 flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+            <p className="leading-relaxed">{confirmDelete?.description}</p>
+          </div>
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(null)}
+              className="px-4 py-2 font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmDeleteAction}
+              className="px-4 py-2 font-semibold text-white bg-rose-700 hover:bg-rose-800 rounded-lg cursor-pointer"
+            >
+              Confirmar Remoção
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };

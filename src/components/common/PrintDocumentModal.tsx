@@ -4,7 +4,11 @@ import { OfficialDocument } from '../../types';
 import { formatDateAO } from '../../utils/date';
 import { useClub } from '../../context/ClubContext';
 import { formatKz } from '../../utils/currency';
-import { resolveDocumentOperatorSigner } from '../../utils/documentSigner';
+import {
+  cleanOperatorDisplayName,
+  resolveDocumentOperatorSigner,
+  resolveMinuteOfficers,
+} from '../../utils/documentSigner';
 import { ROLE_LABELS } from '../../services/permissionService';
 import {
   OfficialDocumentHeader,
@@ -73,9 +77,34 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
   const resolvedSigner = document
     ? resolveDocumentOperatorSigner(document, state.users)
     : null;
-  const directorUser = state.users.find((u) => u.role === 'diretor');
+  const directorUser =
+    state.users.find((u) => u.role === 'diretor' && u.active !== false) ||
+    state.users.find((u) => u.role === 'diretor');
 
   if (!document || !resolvedSigner) return null;
+
+  const resolvedMinuteOfficers = resolveMinuteOfficers(state.users, {
+    id: resolvedSigner.userId,
+    name: resolvedSigner.name,
+    role: resolvedSigner.role,
+  });
+
+  const ataChairDisplay = directorUser
+    ? resolvedMinuteOfficers.chairPerson
+    : String(content.chairPerson || resolvedMinuteOfficers.chairPerson);
+  const ataSecretaryDisplay = String(
+    content.secretary || resolvedMinuteOfficers.secretary
+  );
+  const ataSecretarySignerName =
+    cleanOperatorDisplayName(String(content.secretary || resolvedSigner.name)) ||
+    resolvedSigner.name;
+
+  const isDefaultAtaStub =
+    document.documentType === 'ata' &&
+    (!customTpl ||
+      customTpl.trim() === 'Ata de reunião oficial...' ||
+      customTpl.trim() ===
+        "Ata da reunião oficial do Clube D'Alvorada realizada na sede com os membros presentes.");
 
   const handlePrint = () => {
     window.print();
@@ -108,7 +137,7 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
     text = text.replace(/\{tipo_documento\}/g, document.documentType);
     text = text.replace(/\{cargo_diretor\}/g, 'Diretor do Clube');
     text = text.replace(/\{diretor_associado\}/g, state.users.find(u => u.role === 'diretor_associado')?.name || 'Diretor-associado');
-    text = text.replace(/\{secretario\}/g, 'Secretaria Geral');
+    text = text.replace(/\{secretario\}/g, ataSecretarySignerName);
     text = text.replace(/\{tesoureiro\}/g, 'Tesouraria Geral');
     text = text.replace(/\{capelao\}/g, 'Capelania');
     text = text.replace(/\{total_membros\}/g, String(state.members.length));
@@ -257,7 +286,10 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
 
           {/* 4. Corpo Central Específico do Documento */}
           <div className="print-document-body space-y-4 text-xs text-slate-800 leading-relaxed min-h-[140px] print:space-y-2">
-            {customTpl && document.documentType !== 'recibo' ? (
+            {customTpl &&
+            document.documentType !== 'recibo' &&
+            document.documentType !== 'ata' &&
+            !(document.documentType === 'mapa_financeiro' && Boolean(content.isMonthlyClosing)) ? (
               <div className="whitespace-pre-line p-5 bg-slate-50/80 border border-slate-200 rounded text-slate-800 leading-relaxed font-serif text-sm">
                 {renderCustomText()}
               </div>
@@ -417,6 +449,27 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
                 {/* D. MODELO: ATA DE REUNIÃO */}
                 {document.documentType === 'ata' && (
                   <div className="space-y-4">
+                    {!isDefaultAtaStub && customTpl && (
+                      <div className="whitespace-pre-line p-4 bg-slate-50/80 border border-slate-200 rounded text-slate-800 leading-relaxed font-serif text-sm">
+                        {renderCustomText()}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 border border-slate-300 text-xs">
+                      <div>
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+                          Presidente da Mesa
+                        </span>
+                        <span className="font-bold text-slate-900">{ataChairDisplay}</span>
+                      </div>
+                      <div>
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+                          Secretário(a) da Ata
+                        </span>
+                        <span className="font-bold text-slate-900">{ataSecretaryDisplay}</span>
+                      </div>
+                    </div>
+
                     <div className="border border-slate-900 overflow-hidden">
                       <table className="w-full text-left border-collapse">
                         <thead>
@@ -428,14 +481,28 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
                         </thead>
                         <tbody className="text-xs divide-y divide-slate-300">
                           <tr>
-                            <td className="p-2 border-r border-slate-300 font-medium">
+                            <td className="p-2 border-r border-slate-300 font-medium align-top">
                               {String(content.local || address)}
                             </td>
-                            <td className="p-2 border-r border-slate-300 font-semibold">
+                            <td className="p-2 border-r border-slate-300 font-semibold align-top">
                               {String(content.presentes ? `${content.presentes} Membros Presentes` : 'Diretoria Completa')}
                             </td>
-                            <td className="p-2 whitespace-pre-line text-slate-800 leading-relaxed font-serif">
-                              {String(content.deliberacao || content.deliberations || 'Deliberações oficiais aprovadas por unanimidade dos presentes em sessão ordinária.')}
+                            <td className="p-2 text-slate-800 leading-relaxed font-serif space-y-2">
+                              {Array.isArray(content.agenda) && content.agenda.length > 0 && (
+                                <div className="pb-2 border-b border-slate-200">
+                                  <p className="text-[10px] font-sans font-bold uppercase tracking-wider text-slate-600 mb-1">
+                                    Ordem do Dia:
+                                  </p>
+                                  <ul className="list-disc pl-4 space-y-0.5 text-xs">
+                                    {(content.agenda as unknown[]).map((item, idx) => (
+                                      <li key={idx}>{String(item)}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                              <div className="whitespace-pre-line">
+                                {String(content.deliberacao || content.deliberations || 'Deliberações oficiais aprovadas por unanimidade dos presentes em sessão ordinária.')}
+                              </div>
                             </td>
                           </tr>
                         </tbody>
@@ -446,8 +513,8 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
                     <OfficialRemessaBox
                       title="REMESSA"
                       subTitle="CONTROLO DO LIVRO DE ATAS"
-                      memberName="Diretoria Geral do Clube"
-                      memberId="DIR-GERAL"
+                      memberName={ataChairDisplay}
+                      memberId={document.documentNumber}
                       documentNumber={document.documentNumber}
                       issuedAt={document.issuedAt}
                       highlightLabel="Decisão Colegial:"
@@ -459,50 +526,189 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
                 {/* E. MODELO: MAPA FINANCEIRO */}
                 {document.documentType === 'mapa_financeiro' && (
                   <div className="space-y-4">
-                    <div className="border border-slate-900 overflow-hidden">
-                      <table className="w-full text-left border-collapse">
-                        <thead>
-                          <tr className="bg-slate-800 text-white text-[11px] uppercase tracking-wider">
-                            <th className="p-2 border-r border-slate-700">Conta Institucional</th>
-                            <th className="p-2 border-r border-slate-700">Tipo de Conta</th>
-                            <th className="p-2 border-r border-slate-700">Titularidade</th>
-                            <th className="p-2 text-right">Saldo Atual</th>
-                          </tr>
-                        </thead>
-                        <tbody className="text-xs divide-y divide-slate-300">
-                          {state.accounts.map((acc) => (
-                            <tr key={acc.id}>
-                              <td className="p-2 border-r border-slate-300 font-semibold">{acc.name}</td>
-                              <td className="p-2 border-r border-slate-300 capitalize">{acc.type}</td>
-                              <td className="p-2 border-r border-slate-300">{acc.accountNumber || clubName}</td>
-                              <td className="p-2 text-right font-mono font-bold text-slate-900">
-                                {formatKz(acc.currentBalanceInCents)}
-                              </td>
-                            </tr>
-                          ))}
-                          <tr className="bg-slate-100 font-bold">
-                            <td colSpan={3} className="p-2 text-right border-r border-slate-300 uppercase tracking-wider text-slate-900">
-                              SALDO DISPONÍVEL TOTAL
-                            </td>
-                            <td className="p-2 text-right font-mono text-blue-950 font-black">
-                              {formatKz(state.accounts.reduce((sum, a) => sum + a.currentBalanceInCents, 0))}
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
+                    {Boolean(content.isMonthlyClosing) ? (
+                      <>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3 bg-slate-50 border border-slate-300 text-xs">
+                          <div>
+                            <span className="block text-[10px] uppercase text-slate-500 font-semibold">
+                              Período Fiscal
+                            </span>
+                            <span className="font-bold text-slate-900">
+                              {String(content.periodLabel || `${content.month}/${content.year}`)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="block text-[10px] uppercase text-slate-500 font-semibold">
+                              Receitas do Mês
+                            </span>
+                            <span className="font-mono font-bold text-emerald-800">
+                              {formatKz(Number(content.totalIncomeInCents || 0))}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="block text-[10px] uppercase text-slate-500 font-semibold">
+                              Despesas Pagas
+                            </span>
+                            <span className="font-mono font-bold text-rose-800">
+                              {formatKz(Number(content.totalExpenseInCents || 0))}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="block text-[10px] uppercase text-slate-500 font-semibold">
+                              Resultado Líquido
+                            </span>
+                            <span className="font-mono font-black text-blue-950">
+                              {formatKz(Number(content.closingBalanceInCents || 0))}
+                            </span>
+                          </div>
+                        </div>
 
-                    {/* Bloco REMESSA Oficial */}
-                    <OfficialRemessaBox
-                      title="REMESSA"
-                      subTitle="CONTROLO CONTABILÍSTICO"
-                      memberName="Departamento de Tesouraria"
-                      memberId="DEP-TESOURARIA"
-                      documentNumber={document.documentNumber}
-                      issuedAt={document.issuedAt}
-                      highlightLabel="Auditoria da Tesouraria:"
-                      highlightValue="Conferido e Balanceado"
-                    />
+                        {Array.isArray(content.accountSnapshots) && content.accountSnapshots.length > 0 && (
+                          <div className="border border-slate-900 overflow-hidden">
+                            <table className="w-full text-left border-collapse">
+                              <thead>
+                                <tr className="bg-slate-800 text-white text-[10px] uppercase tracking-wider">
+                                  <th className="p-2 border-r border-slate-700">Conta</th>
+                                  <th className="p-2 border-r border-slate-700 text-right">Entradas Mês</th>
+                                  <th className="p-2 border-r border-slate-700 text-right">Saídas Mês</th>
+                                  <th className="p-2 border-r border-slate-700 text-right">Saldo Sistema</th>
+                                  <th className="p-2 border-r border-slate-700 text-right">Saldo Conferido</th>
+                                  <th className="p-2 text-right">Diferença</th>
+                                </tr>
+                              </thead>
+                              <tbody className="text-[11px] divide-y divide-slate-300">
+                                {(content.accountSnapshots as Array<{
+                                  accountId: string;
+                                  accountName: string;
+                                  incomeInPeriodInCents: number;
+                                  expenseInPeriodInCents: number;
+                                  systemBalanceInCents: number;
+                                  verifiedBalanceInCents: number;
+                                  differenceInCents: number;
+                                }>).map((snap) => (
+                                  <tr key={snap.accountId}>
+                                    <td className="p-2 border-r border-slate-300 font-semibold">
+                                      {snap.accountName}
+                                    </td>
+                                    <td className="p-2 border-r border-slate-300 text-right font-mono">
+                                      {formatKz(snap.incomeInPeriodInCents)}
+                                    </td>
+                                    <td className="p-2 border-r border-slate-300 text-right font-mono">
+                                      {formatKz(snap.expenseInPeriodInCents)}
+                                    </td>
+                                    <td className="p-2 border-r border-slate-300 text-right font-mono font-semibold">
+                                      {formatKz(snap.systemBalanceInCents)}
+                                    </td>
+                                    <td className="p-2 border-r border-slate-300 text-right font-mono font-semibold">
+                                      {formatKz(snap.verifiedBalanceInCents)}
+                                    </td>
+                                    <td
+                                      className={`p-2 text-right font-mono font-bold ${
+                                        snap.differenceInCents === 0
+                                          ? 'text-emerald-800'
+                                          : 'text-rose-700'
+                                      }`}
+                                    >
+                                      {formatKz(snap.differenceInCents)}
+                                    </td>
+                                  </tr>
+                                ))}
+                                <tr className="bg-slate-100 font-bold">
+                                  <td colSpan={3} className="p-2 text-right border-r border-slate-300 uppercase tracking-wider text-slate-900">
+                                    TOTAIS CONSOLIDADOS
+                                  </td>
+                                  <td className="p-2 text-right border-r border-slate-300 font-mono text-slate-900">
+                                    {formatKz(Number(content.systemAccountsBalanceInCents || 0))}
+                                  </td>
+                                  <td className="p-2 text-right border-r border-slate-300 font-mono text-blue-950 font-black">
+                                    {formatKz(Number(content.reconciledPhysicalBalanceInCents || 0))}
+                                  </td>
+                                  <td
+                                    className={`p-2 text-right font-mono font-black ${
+                                      Number(content.varianceInCents || 0) === 0
+                                        ? 'text-emerald-800'
+                                        : 'text-rose-700'
+                                    }`}
+                                  >
+                                    {formatKz(Number(content.varianceInCents || 0))}
+                                  </td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+
+                        {Boolean(content.reconciliationNotes) && (
+                          <div className="p-2.5 bg-slate-50 border border-slate-300 text-xs text-slate-800">
+                            <strong>Notas da Reconciliação:</strong> {String(content.reconciliationNotes)}
+                          </div>
+                        )}
+
+                        <OfficialRemessaBox
+                          title="REMESSA"
+                          subTitle="FECHO MENSAL E RECONCILIAÇÃO"
+                          memberName="Departamento de Tesouraria"
+                          memberId={document.documentNumber}
+                          documentNumber={document.documentNumber}
+                          issuedAt={document.issuedAt}
+                          highlightLabel="Estado de Conciliação:"
+                          highlightValue={
+                            Boolean(content.isReopened)
+                              ? 'Reaberto pela Direção'
+                              : Number(content.varianceInCents || 0) === 0
+                              ? 'Conciliado (0,00 Kz Divergência)'
+                              : `Divergência (${formatKz(Number(content.varianceInCents || 0))})`
+                          }
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <div className="border border-slate-900 overflow-hidden">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="bg-slate-800 text-white text-[11px] uppercase tracking-wider">
+                                <th className="p-2 border-r border-slate-700">Conta Institucional</th>
+                                <th className="p-2 border-r border-slate-700">Tipo de Conta</th>
+                                <th className="p-2 border-r border-slate-700">Titularidade</th>
+                                <th className="p-2 text-right">Saldo Atual</th>
+                              </tr>
+                            </thead>
+                            <tbody className="text-xs divide-y divide-slate-300">
+                              {state.accounts.map((acc) => (
+                                <tr key={acc.id}>
+                                  <td className="p-2 border-r border-slate-300 font-semibold">{acc.name}</td>
+                                  <td className="p-2 border-r border-slate-300 capitalize">{acc.type}</td>
+                                  <td className="p-2 border-r border-slate-300">{acc.accountNumber || clubName}</td>
+                                  <td className="p-2 text-right font-mono font-bold text-slate-900">
+                                    {formatKz(acc.currentBalanceInCents)}
+                                  </td>
+                                </tr>
+                              ))}
+                              <tr className="bg-slate-100 font-bold">
+                                <td colSpan={3} className="p-2 text-right border-r border-slate-300 uppercase tracking-wider text-slate-900">
+                                  SALDO DISPONÍVEL TOTAL
+                                </td>
+                                <td className="p-2 text-right font-mono text-blue-950 font-black">
+                                  {formatKz(state.accounts.reduce((sum, a) => sum + a.currentBalanceInCents, 0))}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Bloco REMESSA Oficial */}
+                        <OfficialRemessaBox
+                          title="REMESSA"
+                          subTitle="CONTROLO CONTABILÍSTICO"
+                          memberName="Departamento de Tesouraria"
+                          memberId="DEP-TESOURARIA"
+                          documentNumber={document.documentNumber}
+                          issuedAt={document.issuedAt}
+                          highlightLabel="Auditoria da Tesouraria:"
+                          highlightValue="Conferido e Balanceado"
+                        />
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -595,13 +801,24 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
 
           {/* 5. Linha de Assinatura com Nome e Cargo do Autor da Operação */}
           <OfficialDocumentSignatures
-            signerName={resolvedSigner.name}
-            signerRole={resolvedSigner.roleLabel}
+            signerName={
+              document.documentType === 'ata' ? ataSecretarySignerName : resolvedSigner.name
+            }
+            signerRole={
+              document.documentType === 'ata'
+                ? resolvedSigner.role === 'secretario'
+                  ? resolvedSigner.roleLabel
+                  : `Secretário(a) da Ata · ${resolvedSigner.roleLabel}`
+                : resolvedSigner.roleLabel
+            }
             secondSignerName={
               (document.documentType === 'ata' || document.documentType === 'certificado' || document.documentType === 'mapa_financeiro') &&
               directorUser &&
               directorUser.id !== resolvedSigner.userId &&
-              directorUser.name.trim().toLowerCase() !== resolvedSigner.name.trim().toLowerCase()
+              directorUser.name.trim().toLowerCase() !==
+                (document.documentType === 'ata' ? ataSecretarySignerName : resolvedSigner.name)
+                  .trim()
+                  .toLowerCase()
                 ? directorUser.name
                 : undefined
             }

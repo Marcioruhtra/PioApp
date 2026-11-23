@@ -31,8 +31,15 @@ import { formatDateAO } from '../../utils/date';
 import { Modal } from '../common/Modal';
 import { PrintDocumentModal } from '../common/PrintDocumentModal';
 import { signInWithGoogleCalendar, getCalendarAccessToken, syncActivityToGoogleCalendar } from '../../services/googleCalendarService';
-import { canViewActivitiesAttendanceTab } from '../../services/permissionService';
+import {
+  canViewActivitiesAttendanceTab,
+  hasViewActivityFinancialsPermission,
+  shouldShowActivityCostsSection,
+  shouldShowActivityContributionsSection,
+} from '../../services/permissionService';
 import { getMemberTeamLabel } from '../../services/accountSyncService';
+import { resolveMinuteOfficers } from '../../utils/documentSigner';
+import { canActivityHaveMinute, getActivityTypeLabel } from '../../utils/activityUtils';
 
 export const ActivitiesModule: React.FC = () => {
   const [isSyncingCalendar, setIsSyncingCalendar] = useState(false);
@@ -78,8 +85,12 @@ export const ActivitiesModule: React.FC = () => {
     createReceipt,
   } = useClub();
 
-  // Navegação Principal de Abas
+  // Navegação Principal de Abas e Permissão Financeira de Atividades (Grelha do Administrador)
   const canViewAttendanceTab = canViewActivitiesAttendanceTab(currentUser.role);
+  const canViewActivityFinancials = hasViewActivityFinancialsPermission(
+    currentUser.role,
+    state.settings.permissionsMatrix
+  );
   const [mainTab, setMainTab] = useState<'atividades' | 'presencas'>('atividades');
 
   useEffect(() => {
@@ -128,12 +139,14 @@ export const ActivitiesModule: React.FC = () => {
     contributionTargetCategory: 'todos' as MemberCategory | 'todos',
   });
 
+  const minuteOfficers = resolveMinuteOfficers(state.users, currentUser);
+
   // Formulário Ata Estruturada
   const [minuteForm, setMinuteForm] = useState({
     date: new Date().toISOString().split('T')[0],
     location: "Sede do Clube de Embaixadores Pioneiros D'Alvorada, Talatona",
-    chairPerson: 'Carlos Mutamba (Diretor)',
-    secretary: 'Esperança Neto (Secretária)',
+    chairPerson: minuteOfficers.chairPerson,
+    secretary: minuteOfficers.secretary,
     attendeesCount: 20,
     agendaText: 'Abertura\nPlano de Atividades\nAssuntos Gerais',
     deliberations: '',
@@ -246,6 +259,8 @@ export const ActivitiesModule: React.FC = () => {
       startDate: activityForm.startDate,
       stage: activityForm.stage,
       requiresDirectorApproval: activityForm.requiresDirectorApproval,
+      hasCost: Boolean(activityForm.hasCost && costInCents > 0),
+      hasMemberContribution: Boolean(activityForm.hasMemberContribution && feeDefId),
       costEstimatedInCents: costInCents,
       costApprovedInCents: 0,
       costPaidInCents: 0,
@@ -282,20 +297,50 @@ export const ActivitiesModule: React.FC = () => {
     }
   };
 
+  const openMinuteModal = () => {
+    const activityRef = currentActivity || selectedActivity;
+    if (!activityRef || !canActivityHaveMinute(activityRef.type)) return;
+    const existingMinute = activityRef.minute;
+    const presentCount =
+      activityRef?.attendees?.filter((a) => a.present).length || 0;
+
+    setMinuteForm({
+      date:
+        existingMinute?.date ||
+        activityRef?.startDate?.split('T')[0] ||
+        new Date().toISOString().split('T')[0],
+      location:
+        existingMinute?.location ||
+        activityRef?.location ||
+        "Sede do Clube de Embaixadores Pioneiros D'Alvorada, Talatona",
+      chairPerson: minuteOfficers.chairPerson,
+      secretary: minuteOfficers.secretary,
+      attendeesCount:
+        existingMinute?.attendeesCount ?? (presentCount > 0 ? presentCount : 20),
+      agendaText:
+        existingMinute?.agenda && existingMinute.agenda.length > 0
+          ? existingMinute.agenda.join('\n')
+          : 'Abertura e oração\nLeitura da ata anterior\nOrdens de trabalho e instruções\nEncerramento',
+      deliberations: existingMinute?.deliberations || '',
+    });
+    setIsMinuteModalOpen(true);
+  };
+
   const handleSaveMinute = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedActivity) return;
+    const activityTarget = currentActivity || selectedActivity;
+    if (!activityTarget || !canActivityHaveMinute(activityTarget.type)) return;
 
     const agenda = minuteForm.agendaText
       .split('\n')
       .map((item) => item.trim())
       .filter(Boolean);
 
-    const res = saveMinuteToActivity(selectedActivity.id, {
+    const res = saveMinuteToActivity(activityTarget.id, {
       date: minuteForm.date,
       location: minuteForm.location,
-      chairPerson: minuteForm.chairPerson,
-      secretary: minuteForm.secretary,
+      chairPerson: minuteOfficers.chairPerson,
+      secretary: minuteOfficers.secretary,
       attendeesCount: minuteForm.attendeesCount,
       agenda,
       deliberations: minuteForm.deliberations,
@@ -305,9 +350,9 @@ export const ActivitiesModule: React.FC = () => {
       setIsMinuteModalOpen(false);
       setMinuteForm({
         date: new Date().toISOString().split('T')[0],
-        location: 'Sede do Clube D\'Alvorada, Talatona',
-        chairPerson: 'Comissão Diretiva',
-        secretary: 'Secretaria Geral',
+        location: "Sede do Clube de Embaixadores Pioneiros D'Alvorada, Talatona",
+        chairPerson: minuteOfficers.chairPerson,
+        secretary: minuteOfficers.secretary,
         attendeesCount: 20,
         agendaText: 'Abertura e oração\nLeitura da ata anterior\nOrdens de trabalho e instruções\nEncerramento',
         deliberations: '',
@@ -554,15 +599,15 @@ export const ActivitiesModule: React.FC = () => {
                       <span>{formatDateAO(act.startDate)}</span>
                       <span>·</span>
                       <span className="capitalize">{act.stage}</span>
-                      {act.costEstimatedInCents > 0 && (
+                      {canViewActivityFinancials && act.costEstimatedInCents > 0 && (
                         <span className="font-mono text-slate-600 font-medium">· Est: {formatKz(act.costEstimatedInCents)}</span>
                       )}
-                      {act.costApprovedInCents > 0 && (
+                      {canViewActivityFinancials && act.costApprovedInCents > 0 && (
                         <span className="px-1.5 py-0.5 bg-blue-100 text-blue-900 rounded font-semibold text-[10px]">
                           Aprovado: {formatKz(act.costApprovedInCents)}
                         </span>
                       )}
-                      {act.costPaidInCents > 0 && (
+                      {canViewActivityFinancials && act.costPaidInCents > 0 && (
                         <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-900 rounded font-semibold text-[10px]">
                           Total Pago: {formatKz(act.costPaidInCents)}
                         </span>
@@ -582,7 +627,7 @@ export const ActivitiesModule: React.FC = () => {
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
                   <div>
                     <span className="text-[10px] uppercase font-bold text-blue-900 tracking-wider">
-                      {currentActivity.department} · {currentActivity.type.replace('_', ' ')}
+                      {currentActivity.department} · {getActivityTypeLabel(currentActivity.type)}
                     </span>
                     <h2 className="text-lg font-black text-slate-900 mt-0.5">
                       {currentActivity.title}
@@ -647,11 +692,21 @@ export const ActivitiesModule: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Custos da Atividade & Tramitação na Tesouraria */}
+                {/* Custos da Atividade & Tramitação na Tesouraria (Apenas quando marcada com custos e autorizado pela Grelha) */}
                 {(() => {
                   const linkedExp = state.expenses.find(
                     (e) => e.activityId === currentActivity.id || e.id === currentActivity.expenseRequestId
                   );
+                  if (
+                    !shouldShowActivityCostsSection(
+                      currentActivity,
+                      Boolean(linkedExp),
+                      currentUser.role,
+                      state.settings.permissionsMatrix
+                    )
+                  ) {
+                    return null;
+                  }
                   return (
                     <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-2">
@@ -709,11 +764,21 @@ export const ActivitiesModule: React.FC = () => {
                   );
                 })()}
 
-                {/* Secção de Contribuições e Doações da Atividade */}
+                {/* Secção de Contribuições e Doações da Atividade (Apenas quando marcada com contribuição e autorizado pela Grelha) */}
                 {(() => {
                   const activityReceipts = state.receipts.filter(
                     (r) => !r.isCancelled && (r.activityId === currentActivity.id || (currentActivity.feeDefinitionId && r.feeDefinitionId === currentActivity.feeDefinitionId))
                   );
+                  if (
+                    !shouldShowActivityContributionsSection(
+                      currentActivity,
+                      activityReceipts.length,
+                      currentUser.role,
+                      state.settings.permissionsMatrix
+                    )
+                  ) {
+                    return null;
+                  }
                   const totalArrecadado = activityReceipts.reduce((sum, r) => sum + r.amountPaidInCents, 0);
 
                   return (
@@ -889,14 +954,16 @@ export const ActivitiesModule: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Bloco de Ata Estruturada */}
-                <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+                {/* Bloco de Ata Estruturada (exclusivo para Reunião da Comissão) */}
+                <div className="pt-4 border-t border-slate-100 flex items-center justify-between gap-3 flex-wrap">
                   <div>
                     <h3 className="text-xs font-bold text-slate-900">Ata Oficial da Reunião</h3>
                     <p className="text-[11px] text-slate-500">
-                      {currentActivity.minute
-                        ? `Ata numerada: ${currentActivity.minute.minuteNumber}`
-                        : 'Nenhuma ata redigida para esta atividade.'}
+                      {!canActivityHaveMinute(currentActivity.type)
+                        ? 'Atas só podem ser redigidas quando o tipo de atividade for "Reunião da Comissão".'
+                        : currentActivity.minute
+                        ? `Ata numerada: ${currentActivity.minute.minuteNumber} · Presidente: ${currentActivity.minute.chairPerson} · Secretário(a): ${currentActivity.minute.secretary}`
+                        : 'Nenhuma ata redigida para esta reunião da comissão.'}
                     </p>
                   </div>
 
@@ -922,7 +989,10 @@ export const ActivitiesModule: React.FC = () => {
                                 chairPerson: currentActivity.minute!.chairPerson,
                                 secretary: currentActivity.minute!.secretary,
                                 local: currentActivity.minute!.location,
+                                presentes: currentActivity.minute!.attendeesCount,
+                                agenda: currentActivity.minute!.agenda,
                                 deliberacao: currentActivity.minute!.deliberations,
+                                deliberations: currentActivity.minute!.deliberations,
                               },
                               isCancelled: false,
                             }
@@ -935,9 +1005,9 @@ export const ActivitiesModule: React.FC = () => {
                       </button>
                     )}
 
-                    {can('activities', 'CREATE') && (
+                    {can('activities', 'CREATE') && canActivityHaveMinute(currentActivity.type) && (
                       <button
-                        onClick={() => setIsMinuteModalOpen(true)}
+                        onClick={openMinuteModal}
                         className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded shadow-xs cursor-pointer"
                       >
                         {currentActivity.minute ? 'Editar Ata' : 'Redigir Ata'}
@@ -1548,11 +1618,11 @@ export const ActivitiesModule: React.FC = () => {
                 onChange={(e) => setActivityForm({ ...activityForm, type: e.target.value as ClubActivity['type'] })}
                 className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
               >
-                <option value="reuniao_regular">Reunião Regular</option>
+                <option value="reuniao_regular">Actividades Normais</option>
                 <option value="acampamento">Acampamento / Bivaque</option>
                 <option value="civica">Atividade Cívica</option>
                 <option value="formacao">Formação e Módulos</option>
-                <option value="diretoria">Reunião de Diretoria</option>
+                <option value="diretoria">Reunião da Comissão</option>
               </select>
             </div>
 
@@ -1708,23 +1778,63 @@ export const ActivitiesModule: React.FC = () => {
         maxWidth="lg"
       >
         <form onSubmit={handleSaveMinute} className="space-y-4 text-xs">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-slate-700 font-semibold mb-1">Presidente da Mesa</label>
               <input
                 type="text"
-                value={minuteForm.chairPerson}
-                onChange={(e) => setMinuteForm({ ...minuteForm, chairPerson: e.target.value })}
-                className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
-                required
+                value={minuteOfficers.chairPerson}
+                readOnly
+                className="w-full p-2 border border-slate-200 rounded bg-slate-50 text-slate-700 font-semibold cursor-not-allowed"
               />
+              <p className="text-[10px] text-slate-500 mt-1">
+                Definido automaticamente: sempre o Diretor do Clube.
+              </p>
             </div>
             <div>
               <label className="block text-slate-700 font-semibold mb-1">Secretário(a)</label>
               <input
                 type="text"
-                value={minuteForm.secretary}
-                onChange={(e) => setMinuteForm({ ...minuteForm, secretary: e.target.value })}
+                value={minuteOfficers.secretary}
+                readOnly
+                className="w-full p-2 border border-slate-200 rounded bg-slate-50 text-slate-700 font-semibold cursor-not-allowed"
+              />
+              <p className="text-[10px] text-slate-500 mt-1">
+                Definido automaticamente: secretário que está a redigir a ata.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-slate-700 font-semibold mb-1">Data da Sessão</label>
+              <input
+                type="date"
+                value={minuteForm.date}
+                onChange={(e) => setMinuteForm({ ...minuteForm, date: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-slate-700 font-semibold mb-1">Local da Sessão</label>
+              <input
+                type="text"
+                value={minuteForm.location}
+                onChange={(e) => setMinuteForm({ ...minuteForm, location: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-slate-700 font-semibold mb-1">Participantes Presentes</label>
+              <input
+                type="number"
+                min={1}
+                value={minuteForm.attendeesCount}
+                onChange={(e) =>
+                  setMinuteForm({ ...minuteForm, attendeesCount: Math.max(1, Number(e.target.value) || 1) })
+                }
                 className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
                 required
               />

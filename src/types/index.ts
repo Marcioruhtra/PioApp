@@ -36,7 +36,8 @@ export type PermissionAction =
   | 'MANAGE_RECONFIRMATION_PERIOD'
   | 'APPROVE_MEMBER_ACCOUNT'
   | 'DELETE_MEMBER_UPLOADS'
-  | 'EXPORT_ENROLLMENT_RECONF_LISTS';
+  | 'EXPORT_ENROLLMENT_RECONF_LISTS'
+  | 'VIEW_ACTIVITY_FINANCIALS';
 
 export type ModuleName =
   | 'dashboard'
@@ -251,6 +252,18 @@ export interface ExpenseRequest {
   createdAt: string;
 }
 
+export interface MonthlyClosingAccountSnapshot {
+  accountId: string;
+  accountName: string;
+  accountType: TreasuryAccount['type'];
+  incomeInPeriodInCents: number;
+  expenseInPeriodInCents: number;
+  netMovementInPeriodInCents: number;
+  systemBalanceInCents: number;
+  verifiedBalanceInCents: number;
+  differenceInCents: number;
+}
+
 export interface MonthlyClosing {
   id: string;
   year: number;
@@ -264,7 +277,19 @@ export interface MonthlyClosing {
   isReopened?: boolean;
   reopenReason?: string;
   reopenedByUserId?: string;
+  reopenedByName?: string;
   reopenedAt?: string;
+  receiptsCount?: number;
+  cancelledReceiptsCount?: number;
+  expensesCount?: number;
+  pendingProofsCount?: number;
+  pendingExpensesCount?: number;
+  systemAccountsBalanceInCents?: number;
+  reconciledPhysicalBalanceInCents?: number;
+  varianceInCents?: number;
+  reconciliationStatus?: 'conciliado' | 'divergente';
+  reconciliationNotes?: string;
+  accountSnapshots?: MonthlyClosingAccountSnapshot[];
 }
 
 export type ActivityStage = 
@@ -316,6 +341,8 @@ export interface ClubActivity {
   stage: ActivityStage;
   requiresDirectorApproval: boolean;
   isApprovedByDirector?: boolean;
+  hasCost?: boolean;
+  hasMemberContribution?: boolean;
   costEstimatedInCents: number;
   costApprovedInCents: number;
   costPaidInCents: number;

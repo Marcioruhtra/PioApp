@@ -27,7 +27,7 @@ const GENERIC_PLACEHOLDER_NAMES = new Set([
 export function cleanOperatorDisplayName(rawName?: string): string {
   if (!rawName) return '';
   return rawName
-    .replace(/\s*\((?:tesoureir[oa]|secretári[oa]|secretari[oa]|diretor(?:-associado)?|administrador(?:\s+técnico)?|instrutor(?:\s*\/\s*guia)?|capel[aã]o|membro(?:\s*\/\s*encarregado)?)\)\s*$/i, '')
+    .replace(/\s*\((?:tesoureir[oa]|secretári[oa](?:\(a\))?|secretari[oa](?:\(a\))?|diretor(?:-associado)?|administrador(?:\s+técnico)?|instrutor(?:\s*\/\s*guia)?|capel[aã]o|membro(?:\s*\/\s*encarregado)?)\)\s*$/i, '')
     .trim();
 }
 
@@ -119,4 +119,53 @@ export function resolveReceiptOperatorSigner(
     },
     users
   );
+}
+
+export interface ResolvedMinuteOfficers {
+  chairPersonUserId?: string;
+  chairPersonName: string;
+  chairPerson: string;
+  secretaryUserId?: string;
+  secretaryName: string;
+  secretary: string;
+}
+
+/**
+ * Regra institucional da Ata:
+ * - O Presidente da Mesa é sempre o Diretor do Clube.
+ * - O Secretário é sempre o secretário (utilizador autenticado) que está a redigir a ata.
+ */
+export function resolveMinuteOfficers(
+  users: UserAccount[] = [],
+  draftingUser?: { id?: string; name: string; role: RoleType } | null
+): ResolvedMinuteOfficers {
+  const directorUser =
+    users.find((u) => u.role === 'diretor' && u.active !== false) ||
+    users.find((u) => u.role === 'diretor');
+
+  const chairPersonName =
+    cleanOperatorDisplayName(directorUser?.name) || 'Diretor do Clube';
+  const chairPerson = directorUser
+    ? `${chairPersonName} (Diretor)`
+    : 'Diretor do Clube';
+
+  const fallbackSecretary =
+    users.find((u) => u.role === 'secretario' && u.active !== false) ||
+    users.find((u) => u.role === 'secretario');
+
+  const resolvedDrafter = draftingUser || fallbackSecretary;
+  const secretaryName =
+    cleanOperatorDisplayName(resolvedDrafter?.name) || 'Secretário do Clube';
+  const secretary = resolvedDrafter
+    ? `${secretaryName} (Secretário)`
+    : 'Secretário do Clube';
+
+  return {
+    chairPersonUserId: directorUser?.id,
+    chairPersonName,
+    chairPerson,
+    secretaryUserId: resolvedDrafter?.id,
+    secretaryName,
+    secretary,
+  };
 }

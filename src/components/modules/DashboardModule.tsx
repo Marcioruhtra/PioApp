@@ -33,6 +33,7 @@ import {
   getWeeklyBirthdayMembers,
 } from '../../utils/date';
 import { ROLE_LABELS } from '../../services/permissionService';
+import { calculateTeamAttendanceStats } from '../../utils/activityUtils';
 import { ModuleName } from '../../types';
 import { isDirectionMember } from '../../services/accountSyncService';
 import {
@@ -95,20 +96,9 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
         : 0;
     const investedCount = teamTraining.filter((tp) => tp.finalAuthorizedApproval).length;
 
-    // Taxa agregada da equipa nas reuniões/atividades (apenas indicador percentual da equipa, sem chamada individual sensível)
-    const totalActivitySlots = teamMembers.length * state.activities.length;
-    let totalPresentMarks = 0;
-    if (totalActivitySlots > 0) {
-      state.activities.forEach((act) => {
-        act.attendees?.forEach((att) => {
-          if (att.present && teamMemberIds.has(att.memberId)) {
-            totalPresentMarks++;
-          }
-        });
-      });
-    }
-    const aggregateParticipationPct =
-      totalActivitySlots > 0 ? Math.round((totalPresentMarks / totalActivitySlots) * 100) : 0;
+    // Taxa agregada da equipa nas reuniões/atividades (considera apenas atividades com lista de presenças registada)
+    const { totalSlots: totalActivitySlots, participationPct: aggregateParticipationPct } =
+      calculateTeamAttendanceStats(teamMemberIds, state.activities);
 
     // Progresso global combinado da equipa
     const hasTraining = teamTraining.length > 0;

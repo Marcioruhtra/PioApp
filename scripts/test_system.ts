@@ -37,6 +37,10 @@ import {
   hasDeleteMemberUploadsPermission,
   canGrantExportEnrollmentReconfLists,
   hasExportEnrollmentReconfListsPermission,
+  canGrantViewActivityFinancials,
+  hasViewActivityFinancialsPermission,
+  shouldShowActivityCostsSection,
+  shouldShowActivityContributionsSection,
   canExecuteMemberDeletion,
   ACTION_LABELS,
   sanitizeRoleType,
@@ -81,6 +85,13 @@ import {
 import { INACTIVITY_TIMEOUT_MS, isSessionInactive, getRemainingInactivityMs } from '../src/utils/inactivity';
 import { buildMemberDossierData } from '../src/utils/memberDossier';
 import { getDocumentPreviewKind, dataUrlToBlob, MAX_UPLOAD_FILE_BYTES, validateUploadFileSize } from '../src/utils/fileUpload';
+import { resolveMinuteOfficers } from '../src/utils/documentSigner';
+import {
+  getActivityTypeLabel,
+  canActivityHaveMinute,
+  getActivitiesRequiringMinute,
+  calculateTeamAttendanceStats,
+} from '../src/utils/activityUtils';
 import { sanitizeMemberIntegrity } from '../src/services/memberIntegrityService';
 import {
   syncMemberChangesToUsers,
@@ -116,6 +127,9 @@ import {
   reverseReceiptFromTreasuryAccounts,
   calculateMonthlyFiscalSummary,
   isIsoDateInFiscalMonth,
+  calculateMonthlyReconciliationPreview,
+  isFiscalPeriodLocked,
+  isDateInLockedFiscalPeriod,
 } from '../src/services/quotaService';
 import {
   cleanOperatorDisplayName,
@@ -129,7 +143,7 @@ import {
   shouldSkipIncomingSnapshot,
   getReconnectDelayMs,
 } from '../src/services/realtimeSyncService';
-import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver, FeeDefinition, EnrollmentScheduleConfig } from '../src/types';
+import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver, FeeDefinition, EnrollmentScheduleConfig, MonthlyClosing, TreasuryAccount, PaymentProofReport } from '../src/types';
 
 function runTests() {
   console.log("=== INICIANDO BATERIA COMPLETA DE TESTES DO SISTEMA ===");
@@ -4951,6 +4965,543 @@ function runTests() {
   assert(
     val1.valid === true && val2.valid === false && Boolean(val2.error),
     "validateUploadFileSize aceita ficheiros até 2 MB (ex: 1.5 MB) e rejeita ficheiros acima de 2 MB (ex: 2.1 MB)"
+  );
+
+  // =========================================================================
+  // TESTE 59: Permissão Granular para Financeiro das Atividades (Custos & Contribuições/Doações)
+  // =========================================================================
+  console.log("\n[TESTE 59] Validação RBAC da permissão VIEW_ACTIVITY_FINANCIALS na Grelha do Administrador...");
+  const hasCatalogActFin = PERMISSION_CATALOG.some(
+    (p) => p.module === 'activities' && p.action === 'VIEW_ACTIVITY_FINANCIALS'
+  );
+  assert(
+    hasCatalogActFin && Boolean(ACTION_LABELS.VIEW_ACTIVITY_FINANCIALS),
+    "Catálogo de permissões e rótulos incluem VIEW_ACTIVITY_FINANCIALS no módulo activities"
+  );
+
+  assert(
+    canGrantViewActivityFinancials('admin_tecnico') === true &&
+      canGrantViewActivityFinancials('diretor') === false &&
+      canGrantViewActivityFinancials('secretario') === false &&
+      canGrantViewActivityFinancials('tesoureiro') === false &&
+      canGrantViewActivityFinancials('membro') === false,
+    "Apenas o Administrador Técnico pode conceder ou revogar VIEW_ACTIVITY_FINANCIALS na grelha de permissões"
+  );
+
+  assert(
+    hasViewActivityFinancialsPermission('admin_tecnico') === true &&
+      hasViewActivityFinancialsPermission('diretor') === true &&
+      hasViewActivityFinancialsPermission('tesoureiro') === true &&
+      hasViewActivityFinancialsPermission('membro') === false &&
+      hasViewActivityFinancialsPermission('secretario') === false &&
+      hasViewActivityFinancialsPermission('diretor_associado') === false &&
+      hasViewActivityFinancialsPermission('instrutor') === false &&
+      hasViewActivityFinancialsPermission('capelao') === false,
+    "Por padrão apenas Admin, Diretor e Tesoureiro veem custos e contribuições das atividades; membros e demais cargos ficam bloqueados"
+  );
+
+  // Migração de matriz antiga sem VIEW_ACTIVITY_FINANCIALS e persistência após revogação/concessão
+  const legacyMatrix59 = JSON.parse(JSON.stringify(ROLE_PERMISSIONS_MATRIX));
+  for (const r of Object.keys(legacyMatrix59) as Array<keyof typeof legacyMatrix59>) {
+    legacyMatrix59[r].activities = legacyMatrix59[r].activities.filter(
+      (a: string) => a !== 'VIEW_ACTIVITY_FINANCIALS'
+    );
+  }
+  const migrated59 = syncPermissionsMatrix(legacyMatrix59);
+  assert(
+    hasViewActivityFinancialsPermission('diretor', migrated59) === true &&
+      hasViewActivityFinancialsPermission('tesoureiro', migrated59) === true &&
+      hasViewActivityFinancialsPermission('membro', migrated59) === false &&
+      hasViewActivityFinancialsPermission('secretario', migrated59) === false,
+    "syncPermissionsMatrix migra matriz antiga atribuindo VIEW_ACTIVITY_FINANCIALS a Diretor/Tesoureiro e mantendo Membro/Secretário bloqueados"
+  );
+
+  // Admin concede a Secretário e revoga de Tesoureiro: syncPermissionsMatrix deve preservar a escolha
+  const customMatrix59 = JSON.parse(JSON.stringify(migrated59));
+  customMatrix59.secretario.activities.push('VIEW_ACTIVITY_FINANCIALS');
+  customMatrix59.tesoureiro.activities = customMatrix59.tesoureiro.activities.filter(
+    (a: string) => a !== 'VIEW_ACTIVITY_FINANCIALS'
+  );
+  const resyncedCustom59 = syncPermissionsMatrix(customMatrix59);
+  assert(
+    hasViewActivityFinancialsPermission('secretario', resyncedCustom59) === true &&
+      hasViewActivityFinancialsPermission('tesoureiro', resyncedCustom59) === false &&
+      hasViewActivityFinancialsPermission('membro', resyncedCustom59) === false,
+    "Concessão e revogação manual de VIEW_ACTIVITY_FINANCIALS pelo Administrador persistem após sincronização"
+  );
+
+  // =========================================================================
+  // TESTE 60: Ocultação de Custos e Contribuições quando não marcadas na Atividade
+  // =========================================================================
+  console.log("\n[TESTE 60] Verificação da ocultação automática de custos/contribuições quando não marcadas na atividade...");
+  const actSemFinanceiro60 = {
+    hasCost: false,
+    hasMemberContribution: false,
+    costEstimatedInCents: 0,
+    costApprovedInCents: 0,
+    costPaidInCents: 0,
+    expenseRequestId: undefined,
+    feeDefinitionId: undefined,
+  };
+  const actSoCusto60 = {
+    hasCost: true,
+    hasMemberContribution: false,
+    costEstimatedInCents: 1500000,
+    costApprovedInCents: 0,
+    costPaidInCents: 0,
+    expenseRequestId: 'EXP-60',
+    feeDefinitionId: undefined,
+  };
+  const actSoContrib60 = {
+    hasCost: false,
+    hasMemberContribution: true,
+    costEstimatedInCents: 0,
+    costApprovedInCents: 0,
+    costPaidInCents: 0,
+    expenseRequestId: undefined,
+    feeDefinitionId: 'FEE-ACT-60',
+  };
+
+  assert(
+    shouldShowActivityCostsSection(actSemFinanceiro60, false, 'diretor') === false &&
+      shouldShowActivityContributionsSection(actSemFinanceiro60, 0, 'diretor') === false &&
+      shouldShowActivityCostsSection(actSemFinanceiro60, false, 'admin_tecnico') === false &&
+      shouldShowActivityContributionsSection(actSemFinanceiro60, 0, 'admin_tecnico') === false,
+    "Mesmo para Diretor e Admin, atividade sem custos e sem contribuição não exibe secções vazias"
+  );
+
+  assert(
+    shouldShowActivityCostsSection(actSoCusto60, true, 'diretor') === true &&
+      shouldShowActivityContributionsSection(actSoCusto60, 0, 'diretor') === false &&
+      shouldShowActivityCostsSection(actSoCusto60, true, 'membro') === false,
+    "Atividade marcada apenas com custos exibe apenas Custos (e só para cargos autorizados)"
+  );
+
+  assert(
+    shouldShowActivityCostsSection(actSoContrib60, false, 'diretor') === false &&
+      shouldShowActivityContributionsSection(actSoContrib60, 0, 'diretor') === true &&
+      shouldShowActivityContributionsSection(actSoContrib60, 0, 'membro') === false,
+    "Atividade marcada apenas com contribuição exibe apenas Contribuições e Doações (e só para cargos autorizados)"
+  );
+
+  // =========================================================================
+  // TESTE 61: Regra Institucional da Ata (Presidente = Diretor, Secretário = Redator)
+  // =========================================================================
+  console.log("\n[TESTE 61] Verificação da resolução automática de Presidente (Diretor) e Secretário (redator da ata)...");
+  const testUsers61 = [
+    {
+      id: 'USR-DIR-INACTIVE',
+      name: 'Antigo Diretor',
+      email: 'antigo.diretor@clube.test',
+      role: 'diretor' as const,
+      active: false,
+      createdAt: '2025-01-01T00:00:00Z',
+    },
+    {
+      id: 'USR-DIR-ACTIVE',
+      name: 'Mateus António',
+      email: 'mateus.diretor@clube.test',
+      role: 'diretor' as const,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'USR-SEC-1',
+      name: 'Beatriz Kiala',
+      email: 'beatriz.sec@clube.test',
+      role: 'secretario' as const,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'USR-SEC-2',
+      name: 'Pedro Ndongala',
+      email: 'pedro.sec@clube.test',
+      role: 'secretario' as const,
+      active: true,
+      createdAt: '2026-01-02T00:00:00Z',
+    },
+  ];
+
+  const officersBySec2 = resolveMinuteOfficers(testUsers61, testUsers61[3]);
+  assert(
+    officersBySec2.chairPersonUserId === 'USR-DIR-ACTIVE' &&
+      officersBySec2.chairPersonName === 'Mateus António' &&
+      officersBySec2.chairPerson === 'Mateus António (Diretor)' &&
+      officersBySec2.secretaryUserId === 'USR-SEC-2' &&
+      officersBySec2.secretaryName === 'Pedro Ndongala' &&
+      officersBySec2.secretary === 'Pedro Ndongala (Secretário)',
+    "Quando o 2º secretário redige a ata, o Presidente é o Diretor ativo (Mateus António) e o Secretário é o redator atual (Pedro Ndongala)"
+  );
+
+  const officersBySec1 = resolveMinuteOfficers(testUsers61, testUsers61[2]);
+  assert(
+    officersBySec1.chairPersonName === 'Mateus António' &&
+      officersBySec1.secretaryName === 'Beatriz Kiala' &&
+      officersBySec1.secretary === 'Beatriz Kiala (Secretário)',
+    "Quando outra secretária redige a ata, o Presidente mantém-se o Diretor do Clube e o Secretário muda para quem está a redigir"
+  );
+
+  const officersWithoutDirector = resolveMinuteOfficers([testUsers61[2]], testUsers61[2]);
+  assert(
+    officersWithoutDirector.chairPerson === 'Diretor do Clube' &&
+      officersWithoutDirector.secretaryName === 'Beatriz Kiala',
+    "Fallback gracioso quando não existe conta com cargo de Diretor registada: mantém rótulo institucional sem nomes fictícios"
+  );
+
+  // =========================================================================
+  // TESTE 62: Rótulos de Tipo de Atividade & Atas Exclusivas para "Reunião da Comissão"
+  // =========================================================================
+  console.log("\n[TESTE 62] Verificação de rótulos de atividade e restrição de atas a 'Reunião da Comissão'...");
+  assert(
+    getActivityTypeLabel('reuniao_regular') === 'Actividades Normais' &&
+      getActivityTypeLabel('diretoria') === 'Reunião da Comissão',
+    "Tipos 'reuniao_regular' e 'diretoria' exibem os novos rótulos 'Actividades Normais' e 'Reunião da Comissão'"
+  );
+
+  assert(
+    canActivityHaveMinute('diretoria') === true &&
+      canActivityHaveMinute('reuniao_regular') === false &&
+      canActivityHaveMinute('acampamento') === false &&
+      canActivityHaveMinute('civica') === false &&
+      canActivityHaveMinute('formacao') === false &&
+      canActivityHaveMinute('social') === false &&
+      canActivityHaveMinute(undefined) === false,
+    "Atas oficiais só são permitidas para atividades do tipo 'Reunião da Comissão' ('diretoria'); restantes tipos ficam bloqueados"
+  );
+
+  // =========================================================================
+  // TESTE 63: Sistema Completo de Fecho Mensal, Reconciliação Bancária/Caixa & Bloqueio de Período
+  // =========================================================================
+  console.log("\n[TESTE 63] Verificação completa de reconciliação por conta, divergências, pendências e bloqueio fiscal...");
+  const testAccounts63: TreasuryAccount[] = [
+    {
+      id: 'ACC-CAIXA-63',
+      name: 'Caixa Físico',
+      type: 'caixa',
+      initialBalanceInCents: 100000,
+      currentBalanceInCents: 300000,
+      active: true,
+    },
+    {
+      id: 'ACC-BANCO-63',
+      name: 'Banco BAI',
+      type: 'banco',
+      initialBalanceInCents: 500000,
+      currentBalanceInCents: 850000,
+      active: true,
+    },
+  ];
+  const testReceipts63: PaymentReceipt[] = [
+    {
+      id: 'REC-63-1',
+      receiptNumber: 'REC-2026-6301',
+      memberId: 'MEM-1',
+      memberName: 'Ana Luísa',
+      feeDefinitionId: 'FEE-1',
+      feeTitle: 'Quota',
+      periodLabel: 'Março',
+      amountPaidInCents: 250000,
+      paymentMethod: 'numerario',
+      treasurerUserId: 'USR-TES',
+      treasurerName: 'Tesoureiro',
+      paidAt: '2026-03-10T10:00:00.000Z',
+      status: 'confirmado',
+      accountId: 'ACC-CAIXA-63',
+    },
+    {
+      id: 'REC-63-2',
+      receiptNumber: 'REC-2026-6302',
+      memberId: 'MEM-2',
+      memberName: 'Carlos Neto',
+      feeDefinitionId: 'FEE-1',
+      feeTitle: 'Quota',
+      periodLabel: 'Março',
+      amountPaidInCents: 400000,
+      paymentMethod: 'transferencia_bancaria',
+      treasurerUserId: 'USR-TES',
+      treasurerName: 'Tesoureiro',
+      paidAt: '2026-03-15T10:00:00.000Z',
+      status: 'confirmado',
+      accountId: 'ACC-BANCO-63',
+    },
+    {
+      id: 'REC-63-CANC',
+      receiptNumber: 'REC-2026-6303',
+      memberId: 'MEM-3',
+      memberName: 'Anulado',
+      feeDefinitionId: 'FEE-1',
+      feeTitle: 'Quota',
+      periodLabel: 'Março',
+      amountPaidInCents: 999999,
+      paymentMethod: 'numerario',
+      treasurerUserId: 'USR-TES',
+      treasurerName: 'Tesoureiro',
+      paidAt: '2026-03-16T10:00:00.000Z',
+      status: 'anulado',
+      isCancelled: true,
+      accountId: 'ACC-CAIXA-63',
+    },
+  ];
+  const testExpenses63: ExpenseRequest[] = [
+    {
+      id: 'EXP-63-1',
+      title: 'Compra Material',
+      description: 'Março',
+      category: 'Material',
+      amountInCents: 50000,
+      requestedByUserId: 'U-1',
+      requestedByName: 'Tesoureiro',
+      accountId: 'ACC-CAIXA-63',
+      status: 'pago',
+      createdAt: '2026-03-11T10:00:00.000Z',
+      paidAt: '2026-03-12T10:00:00.000Z',
+    },
+    {
+      id: 'EXP-63-PEND',
+      title: 'Pendente Março',
+      description: 'Não liquidada',
+      category: 'Logística',
+      amountInCents: 75000,
+      requestedByUserId: 'U-1',
+      requestedByName: 'Tesoureiro',
+      status: 'aprovado',
+      createdAt: '2026-03-20T10:00:00.000Z',
+    },
+  ];
+  const testProofs63: PaymentProofReport[] = [
+    {
+      id: 'PRF-63-1',
+      memberId: 'MEM-1',
+      memberName: 'Ana Luísa',
+      feeDefinitionId: 'FEE-1',
+      feeTitle: 'Quota',
+      amountInCents: 50000,
+      paymentMethod: 'transferencia_bancaria',
+      referenceCode: 'REF-63-01',
+      paymentDate: '2026-03-22',
+      attachmentFileName: 'comprovativo.png',
+      isVerifiedByTreasurer: false,
+      status: 'submetido',
+      createdAt: '2026-03-22T12:00:00.000Z',
+    },
+  ];
+
+  const matchedPreview63 = calculateMonthlyReconciliationPreview({
+    receipts: testReceipts63,
+    expenses: testExpenses63,
+    accounts: testAccounts63,
+    paymentProofs: testProofs63,
+    year: 2026,
+    month: 3,
+  });
+
+  const caixaSnap63 = matchedPreview63.accountSnapshots.find((s) => s.accountId === 'ACC-CAIXA-63')!;
+  const bancoSnap63 = matchedPreview63.accountSnapshots.find((s) => s.accountId === 'ACC-BANCO-63')!;
+
+  assert(
+    matchedPreview63.totalIncomeInCents === 650000 &&
+      matchedPreview63.totalExpenseInCents === 50000 &&
+      matchedPreview63.closingBalanceInCents === 600000 &&
+      matchedPreview63.receiptsCount === 2 &&
+      matchedPreview63.cancelledReceiptsCount === 1 &&
+      matchedPreview63.expensesCount === 1 &&
+      matchedPreview63.pendingProofsCount === 1 &&
+      matchedPreview63.pendingExpensesCount === 1 &&
+      caixaSnap63.incomeInPeriodInCents === 250000 &&
+      caixaSnap63.expenseInPeriodInCents === 50000 &&
+      bancoSnap63.incomeInPeriodInCents === 400000 &&
+      bancoSnap63.expenseInPeriodInCents === 0 &&
+      matchedPreview63.varianceInCents === 0 &&
+      matchedPreview63.reconciliationStatus === 'conciliado',
+    "Reconciliação apura entradas/saídas por conta, pendências e estado Conciliado quando saldos conferem"
+  );
+
+  const divergentPreview63 = calculateMonthlyReconciliationPreview({
+    receipts: testReceipts63,
+    expenses: testExpenses63,
+    accounts: testAccounts63,
+    paymentProofs: testProofs63,
+    year: 2026,
+    month: 3,
+    verifiedBalancesByAccountId: { 'ACC-CAIXA-63': 295000 }, // 50 Kz a menos na contagem física
+  });
+  assert(
+    divergentPreview63.varianceInCents === -5000 &&
+      divergentPreview63.reconciliationStatus === 'divergente' &&
+      divergentPreview63.reconciledPhysicalBalanceInCents === 1145000,
+    "Reconciliação deteta divergência exata (-50,00 Kz) entre saldo físico conferido e saldo contabilístico do sistema"
+  );
+
+  const closings63: MonthlyClosing[] = [
+    {
+      id: 'CLS-2026-03',
+      year: 2026,
+      month: 3,
+      totalIncomeInCents: 650000,
+      totalExpenseInCents: 50000,
+      closingBalanceInCents: 600000,
+      closedByUserId: 'USR-TES',
+      closedByName: 'Tesoureiro',
+      closedAt: '2026-03-31T20:00:00.000Z',
+    },
+    {
+      id: 'CLS-2026-02',
+      year: 2026,
+      month: 2,
+      totalIncomeInCents: 100000,
+      totalExpenseInCents: 0,
+      closingBalanceInCents: 100000,
+      closedByUserId: 'USR-TES',
+      closedByName: 'Tesoureiro',
+      closedAt: '2026-02-28T20:00:00.000Z',
+      isReopened: true,
+      reopenReason: 'Retificação autorizada',
+    },
+  ];
+  assert(
+    isFiscalPeriodLocked(closings63, 2026, 3) === true &&
+      isFiscalPeriodLocked(closings63, 2026, 2) === false &&
+      isDateInLockedFiscalPeriod(closings63, '2026-03-15T10:00:00.000Z').locked === true &&
+      isDateInLockedFiscalPeriod(closings63, '2026-02-15T10:00:00.000Z').locked === false &&
+      isDateInLockedFiscalPeriod(closings63, '2026-04-05T10:00:00.000Z').locked === false,
+    "Bloqueio fiscal impede lançamentos/anulações em meses encerrados e libera meses reabertos ou em aberto"
+  );
+
+  // =========================================================================
+  // TESTE 64: Radar de Atas & Participação Real das Equipas (Diretor-associado)
+  // =========================================================================
+  console.log("\n[TESTE 64] Verificação do radar de atas exclusivas e cálculo real de participação das equipas...");
+  const baseActivities64: ClubActivity[] = [
+    {
+      id: 'ACT-64-1',
+      title: 'Actividades Normais Sábado',
+      type: 'reuniao_regular',
+      department: 'Direção Associada',
+      startDate: '2026-03-07',
+      endDate: '2026-03-07',
+      location: 'Sede',
+      stage: 'execucao',
+      requiresDirectorApproval: false,
+      costEstimatedInCents: 0,
+      costApprovedInCents: 0,
+      costPaidInCents: 0,
+      tasks: [],
+      attendees: [
+        { memberId: 'MEM-A', present: true },
+        { memberId: 'MEM-B', present: false },
+        { memberId: 'MEM-OUTRA', present: true },
+      ],
+      createdAt: '2026-03-01T10:00:00.000Z',
+    },
+    {
+      id: 'ACT-64-2',
+      title: 'Acampamento Futuro',
+      type: 'acampamento',
+      department: 'Direção Associada',
+      startDate: '2026-06-10',
+      endDate: '2026-06-12',
+      location: 'Parque',
+      stage: 'planeamento',
+      requiresDirectorApproval: true,
+      costEstimatedInCents: 0,
+      costApprovedInCents: 0,
+      costPaidInCents: 0,
+      tasks: [],
+      attendees: [],
+      createdAt: '2026-03-02T10:00:00.000Z',
+    },
+    {
+      id: 'ACT-64-3',
+      title: 'Reunião da Comissão (em planeamento)',
+      type: 'diretoria',
+      department: 'Direção',
+      startDate: '2026-05-01',
+      endDate: '2026-05-01',
+      location: 'Sala',
+      stage: 'planeamento',
+      requiresDirectorApproval: false,
+      costEstimatedInCents: 0,
+      costApprovedInCents: 0,
+      costPaidInCents: 0,
+      tasks: [],
+      attendees: [],
+      createdAt: '2026-03-03T10:00:00.000Z',
+    },
+    {
+      id: 'ACT-64-4',
+      title: 'Reunião da Comissão Sem Ata',
+      type: 'diretoria',
+      department: 'Direção',
+      startDate: '2026-03-20',
+      endDate: '2026-03-20',
+      location: 'Sala',
+      stage: 'relatorio',
+      requiresDirectorApproval: false,
+      costEstimatedInCents: 0,
+      costApprovedInCents: 0,
+      costPaidInCents: 0,
+      tasks: [],
+      attendees: [],
+      createdAt: '2026-03-04T10:00:00.000Z',
+    },
+    {
+      id: 'ACT-64-5',
+      title: 'Reunião da Comissão Com Ata',
+      type: 'diretoria',
+      department: 'Direção',
+      startDate: '2026-03-14',
+      endDate: '2026-03-14',
+      location: 'Sala',
+      stage: 'encerrado',
+      requiresDirectorApproval: false,
+      costEstimatedInCents: 0,
+      costApprovedInCents: 0,
+      costPaidInCents: 0,
+      tasks: [],
+      attendees: [
+        { memberId: 'MEM-A', present: true },
+        { memberId: 'MEM-B', present: true },
+      ],
+      minute: {
+        id: 'MIN-64',
+        minuteNumber: 'ATA-2026-0064',
+        date: '2026-03-14',
+        location: 'Sala',
+        chairPerson: 'Diretor',
+        secretary: 'Secretário',
+        attendeesCount: 2,
+        agenda: ['Pauta'],
+        deliberations: 'Deliberações aprovadas',
+      },
+      createdAt: '2026-03-05T10:00:00.000Z',
+    },
+  ];
+
+  const missingMinutes64 = getActivitiesRequiringMinute(baseActivities64);
+  assert(
+    missingMinutes64.length === 1 && missingMinutes64[0].id === 'ACT-64-4',
+    "Radar de atas sinaliza exclusivamente 'Reunião da Comissão' fora do planeamento sem ata (ignora outros tipos)"
+  );
+
+  const teamStats64 = calculateTeamAttendanceStats(new Set(['MEM-A', 'MEM-B']), baseActivities64);
+  assert(
+    teamStats64.recordedActivitiesCount === 2 &&
+      teamStats64.totalSlots === 4 &&
+      teamStats64.totalPresent === 3 &&
+      teamStats64.participationPct === 75,
+    "Participação da equipa considera apenas atividades com chamada registada (3/4 = 75%, sem diluição por atividades futuras)"
+  );
+
+  const emptyAttendanceStats64 = calculateTeamAttendanceStats(
+    new Set(['MEM-A', 'MEM-B']),
+    baseActivities64.filter((a) => a.attendees.length === 0)
+  );
+  assert(
+    emptyAttendanceStats64.recordedActivitiesCount === 0 &&
+      emptyAttendanceStats64.totalSlots === 0 &&
+      emptyAttendanceStats64.participationPct === 0,
+    "Quando nenhuma atividade possui lista de presenças iniciada, totalSlots e recordedActivitiesCount são zero"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");

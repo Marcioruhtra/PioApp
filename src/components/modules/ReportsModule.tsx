@@ -12,12 +12,16 @@ import {
 import { useClub } from '../../context/ClubContext';
 import { formatKz } from '../../utils/currency';
 import { formatDateAO } from '../../utils/date';
-import { ROLE_LABELS } from '../../services/permissionService';
+import { ROLE_LABELS, hasViewActivityFinancialsPermission } from '../../services/permissionService';
 import { OfficialDocumentSignatures } from '../documents';
 import { getMemberTeamLabel } from '../../services/accountSyncService';
 
 export const ReportsModule: React.FC = () => {
   const { state, can, currentUser } = useClub();
+  const canViewActivityFinancials = hasViewActivityFinancialsPermission(
+    currentUser?.role || 'membro',
+    state.settings.permissionsMatrix
+  );
   const [reportType, setReportType] = useState<
     'members' | 'treasury' | 'activities' | 'training'
   >('members');
@@ -41,10 +45,17 @@ export const ReportsModule: React.FC = () => {
         csvContent += `${r.receiptNumber};"${r.memberName}";"${r.feeTitle}";"${r.periodLabel}";${r.amountPaidInCents / 100};${r.paymentMethod};${r.paidAt};${r.status}\n`;
       });
     } else if (reportType === 'activities') {
-      csvContent += 'ID;Titulo;Tipo;Data;Local;Fase;Custo_Estimado_Kz;Custo_Aprovado_Kz\n';
-      state.activities.forEach((a) => {
-        csvContent += `${a.id};"${a.title}";${a.type};${a.startDate};"${a.location}";${a.stage};${a.costEstimatedInCents / 100};${a.costApprovedInCents / 100}\n`;
-      });
+      if (canViewActivityFinancials) {
+        csvContent += 'ID;Titulo;Tipo;Data;Local;Fase;Custo_Estimado_Kz;Custo_Aprovado_Kz\n';
+        state.activities.forEach((a) => {
+          csvContent += `${a.id};"${a.title}";${a.type};${a.startDate};"${a.location}";${a.stage};${a.costEstimatedInCents / 100};${a.costApprovedInCents / 100}\n`;
+        });
+      } else {
+        csvContent += 'ID;Titulo;Tipo;Data;Local;Fase\n';
+        state.activities.forEach((a) => {
+          csvContent += `${a.id};"${a.title}";${a.type};${a.startDate};"${a.location}";${a.stage}\n`;
+        });
+      }
     } else {
       csvContent += 'ID;Membro;Tipo;Titulo;Requisitos_Concluidos;Total_Requisitos;Investidura_Aprovada\n';
       state.trainingProgress.forEach((t) => {
@@ -166,7 +177,10 @@ export const ReportsModule: React.FC = () => {
           <h2 className="text-xl font-black text-slate-900 tracking-tight mt-1">
             {reportType === 'members' && 'Relatório Oficial de Efetivo e Matrículas'}
             {reportType === 'treasury' && 'Mapa Geral de Arrecadação e Execução Financeira'}
-            {reportType === 'activities' && 'Relatório de Atividades, Presenças e Custos'}
+            {reportType === 'activities' &&
+              (canViewActivityFinancials
+                ? 'Relatório de Atividades, Presenças e Custos'
+                : 'Relatório de Atividades e Presenças')}
             {reportType === 'training' && 'Mapa Geral de Módulos, Medalhas e Investidura'}
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -260,8 +274,8 @@ export const ReportsModule: React.FC = () => {
                   <th className="py-2.5 px-3">Data</th>
                   <th className="py-2.5 px-3">Local</th>
                   <th className="py-2.5 px-3">Fase</th>
-                  <th className="py-2.5 px-3">Custo Estimado</th>
-                  <th className="py-2.5 px-3">Custo Aprovado</th>
+                  {canViewActivityFinancials && <th className="py-2.5 px-3">Custo Estimado</th>}
+                  {canViewActivityFinancials && <th className="py-2.5 px-3">Custo Aprovado</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
@@ -272,8 +286,8 @@ export const ReportsModule: React.FC = () => {
                     <td className="py-2.5 px-3">{formatDateAO(a.startDate)}</td>
                     <td className="py-2.5 px-3">{a.location}</td>
                     <td className="py-2.5 px-3 capitalize">{a.stage}</td>
-                    <td className="py-2.5 px-3">{formatKz(a.costEstimatedInCents)}</td>
-                    <td className="py-2.5 px-3 font-bold">{formatKz(a.costApprovedInCents)}</td>
+                    {canViewActivityFinancials && <td className="py-2.5 px-3">{formatKz(a.costEstimatedInCents)}</td>}
+                    {canViewActivityFinancials && <td className="py-2.5 px-3 font-bold">{formatKz(a.costApprovedInCents)}</td>}
                   </tr>
                 ))}
               </tbody>

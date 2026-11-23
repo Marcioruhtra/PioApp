@@ -73,9 +73,12 @@ import {
   canGrantDeleteMemberUploads,
   hasDeleteMemberUploadsPermission,
   canGrantExportEnrollmentReconfLists,
+  canGrantViewActivityFinancials,
   canExecuteMemberDeletion,
   sanitizeRoleType,
 } from '../services/permissionService';
+import { resolveMinuteOfficers } from '../utils/documentSigner';
+import { canActivityHaveMinute } from '../utils/activityUtils';
 import {
   MemberRegistrationFormData,
   MemberReconfirmationInput,
@@ -133,6 +136,9 @@ import {
   resolveQuotaConfig,
   reverseReceiptFromTreasuryAccounts,
   calculateMonthlyFiscalSummary,
+  calculateMonthlyReconciliationPreview,
+  isFiscalPeriodLocked,
+  isDateInLockedFiscalPeriod,
 } from '../services/quotaService';
 import {
   getNextMonotonicSyncTimestamp,
@@ -271,7 +277,14 @@ interface ClubContextValue {
   approveExpense: (id: string, reason?: string) => { success: boolean; error?: string };
   rejectExpense: (id: string, reason: string) => { success: boolean; error?: string };
   payExpense: (id: string, accountId: string, proofUrl?: string) => { success: boolean; error?: string };
-  closeFiscalMonth: (year: number, month: number) => { success: boolean; error?: string };
+  closeFiscalMonth: (
+    year: number,
+    month: number,
+    options?: {
+      verifiedBalancesByAccountId?: Record<string, number>;
+      reconciliationNotes?: string;
+    }
+  ) => { success: boolean; error?: string; closing?: MonthlyClosing };
   reopenFiscalMonth: (id: string, reason: string) => { success: boolean; error?: string };
 
   // Atividades e Reuniões
@@ -281,7 +294,7 @@ interface ClubContextValue {
   toggleAttendance: (activityId: string, memberId: string, present: boolean, notes?: string) => void;
   addTaskToActivity: (activityId: string, task: Omit<ClubActivity['tasks'][0], 'id'>) => void;
   updateTaskStatus: (activityId: string, taskId: string, status: ClubActivity['tasks'][0]['status']) => void;
-  saveMinuteToActivity: (activityId: string, minuteData: Omit<NonNullable<ClubActivity['minute']>, 'id' | 'minuteNumber'>) => { success: boolean; minuteNumber?: string };
+  saveMinuteToActivity: (activityId: string, minuteData: Omit<NonNullable<ClubActivity['minute']>, 'id' | 'minuteNumber'>) => { success: boolean; minuteNumber?: string; error?: string };
 
   // Formação
   updateTrainingProgress: (
@@ -1371,6 +1384,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return {
         success: false,
         error: 'Apenas o Administrador Técnico pode conceder ou revogar a permissão de baixar listas de inscrição e reconfirmação na grelha de permissões.',
+      };
+    }
+
+    if (module === 'activities' && action === 'VIEW_ACTIVITY_FINANCIALS' && !canGrantViewActivityFinancials(currentUser.role)) {
+      return {
+        success: false,
+        error: 'Apenas o Administrador Técnico pode conceder ou revogar a permissão de visualizar informações financeiras das atividades na grelha de permissões.',
       };
     }
 
@@ -3499,6 +3519,14 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const receiptNumber = generateNextDocumentNumber('REC', currentYear, existingRecNumbers);
 
     const now = getNowISOString();
+    const lockCheck = isDateInLockedFiscalPeriod(state.monthlyClosings, now);
+    if (lockCheck.locked) {
+      return {
+        success: false,
+        error: `O mês fiscal ${lockCheck.month}/${lockCheck.year} encontra-se encerrado e bloqueado. Solicite a reabertura à Direção antes de emitir novos recibos neste período.`,
+      };
+    }
+
     const newReceipt: PaymentReceipt = {
       id: receiptNumber,
       receiptNumber,
@@ -3570,6 +3598,14 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!receipt) return { success: false, error: 'Recibo não encontrado.' };
     if (receipt.isCancelled || receipt.status === 'anulado') {
       return { success: false, error: 'Este recibo já se encontra anulado.' };
+    }
+
+    const periodLock = isDateInLockedFiscalPeriod(state.monthlyClosings, receipt.paidAt);
+    if (periodLock.locked) {
+      return {
+        success: false,
+        error: `O recibo pertence ao mês fiscal encerrado (${periodLock.month}/${periodLock.year}). Solicite à Direção a reabertura do fecho mensal antes de anular.`,
+      };
     }
 
     const now = getNowISOString();
@@ -3743,6 +3779,14 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       state.fees.find((f) => f.category === 'quota_mensal');
 
     const now = getNowISOString();
+    const lockCheck = isDateInLockedFiscalPeriod(state.monthlyClosings, now);
+    if (lockCheck.locked) {
+      return {
+        success: false,
+        error: `O mês fiscal ${lockCheck.month}/${lockCheck.year} encontra-se encerrado. Solicite a reabertura à Direção para regularizar quotas neste período.`,
+      };
+    }
+
     const createdFeeToAdd: FeeDefinition | null = quotaFee
       ? null
       : {
@@ -4309,6 +4353,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const now = getNowISOString();
+    const periodLock = isDateInLockedFiscalPeriod(state.monthlyClosings, now);
+    if (periodLock.locked) {
+      return {
+        success: false,
+        error: `O mês fiscal ${periodLock.month}/${periodLock.year} encontra-se encerrado. Solicite a reabertura à Direção para liquidar despesas neste período.`,
+      };
+    }
 
     setState((prev) => {
       const updatedExpenses = prev.expenses.map((e) => {
@@ -4356,72 +4407,166 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
-  const closeFiscalMonth = (year: number, month: number) => {
+  const closeFiscalMonth = (
+    year: number,
+    month: number,
+    options?: {
+      verifiedBalancesByAccountId?: Record<string, number>;
+      reconciliationNotes?: string;
+    }
+  ) => {
     if (!can('treasury', 'ARCHIVE')) {
       return { success: false, error: 'Sem autorização para realizar o fecho mensal.' };
     }
 
-    const existing = state.monthlyClosings.find((c) => c.year === year && c.month === month && !c.isReopened);
-    if (existing) {
+    if (!Number.isInteger(year) || year < 2000 || !Number.isInteger(month) || month < 1 || month > 12) {
+      return { success: false, error: 'Selecione um mês e ano fiscal válidos para executar o fecho.' };
+    }
+
+    if (isFiscalPeriodLocked(state.monthlyClosings, year, month)) {
       return { success: false, error: `O mês ${month}/${year} já se encontra encerrado.` };
     }
 
-    // Calcula receitas e despesas reais estritamente referentes ao mês e ano fiscal encerrado
-    const {
-      totalIncomeInCents: totalIncome,
-      totalExpenseInCents: totalExpense,
-      closingBalanceInCents: closingBalance,
-    } = calculateMonthlyFiscalSummary(state.receipts, state.expenses, year, month);
-    const closingId = `CLS-${year}-${month.toString().padStart(2, '0')}`;
+    const preview = calculateMonthlyReconciliationPreview({
+      receipts: state.receipts,
+      expenses: state.expenses,
+      accounts: state.accounts,
+      paymentProofs: state.paymentProofs,
+      year,
+      month,
+      verifiedBalancesByAccountId: options?.verifiedBalancesByAccountId,
+    });
+
+    const trimmedNotes = (options?.reconciliationNotes || '').trim();
+    if (preview.varianceInCents !== 0 && trimmedNotes.length < 5) {
+      return {
+        success: false,
+        error:
+          'Foi detetada uma divergência entre o saldo real conferido e o saldo do sistema. Registe uma justificação nas notas de reconciliação (mínimo 5 caracteres).',
+      };
+    }
+
+    const previousClosingsForPeriod = state.monthlyClosings.filter(
+      (c) => c.year === year && c.month === month
+    ).length;
+    const baseClosingId = `CLS-${year}-${month.toString().padStart(2, '0')}`;
+    const closingId =
+      previousClosingsForPeriod > 0
+        ? `${baseClosingId}-R${previousClosingsForPeriod + 1}`
+        : baseClosingId;
+
+    const now = getNowISOString();
 
     const newClosing: MonthlyClosing = {
       id: closingId,
       year,
       month,
-      totalIncomeInCents: totalIncome,
-      totalExpenseInCents: totalExpense,
-      closingBalanceInCents: closingBalance,
+      totalIncomeInCents: preview.totalIncomeInCents,
+      totalExpenseInCents: preview.totalExpenseInCents,
+      closingBalanceInCents: preview.closingBalanceInCents,
       closedByUserId: currentUser.id,
       closedByName: currentUser.name,
-      closedAt: getNowISOString(),
+      closedAt: now,
+      receiptsCount: preview.receiptsCount,
+      cancelledReceiptsCount: preview.cancelledReceiptsCount,
+      expensesCount: preview.expensesCount,
+      pendingProofsCount: preview.pendingProofsCount,
+      pendingExpensesCount: preview.pendingExpensesCount,
+      systemAccountsBalanceInCents: preview.systemAccountsBalanceInCents,
+      reconciledPhysicalBalanceInCents: preview.reconciledPhysicalBalanceInCents,
+      varianceInCents: preview.varianceInCents,
+      reconciliationStatus: preview.reconciliationStatus,
+      reconciliationNotes: trimmedNotes || undefined,
+      accountSnapshots: preview.accountSnapshots,
     };
 
-    setState((prev) => ({
-      ...prev,
-      monthlyClosings: [newClosing, ...prev.monthlyClosings],
-    }));
+    const statusText =
+      preview.reconciliationStatus === 'conciliado'
+        ? 'Conciliado (0,00 Kz diferença)'
+        : `Divergência de ${formatKz(preview.varianceInCents)}`;
 
-    logAction('treasury', 'FECHO_MENSAL', `Fecho do mês fiscal ${month}/${year} concluído com sucesso`, closingId);
-    return { success: true };
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'treasury',
+      'FECHO_MENSAL',
+      `Fecho do mês fiscal ${month}/${year} concluído (${statusText}). Receitas: ${formatKz(preview.totalIncomeInCents)} · Despesas: ${formatKz(preview.totalExpenseInCents)} · Resultado: ${formatKz(preview.closingBalanceInCents)}`,
+      closingId,
+      `${month.toString().padStart(2, '0')}/${year}`,
+      trimmedNotes || undefined
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      monthlyClosings: [newClosing, ...state.monthlyClosings],
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
+    return { success: true, closing: newClosing };
   };
 
   const reopenFiscalMonth = (id: string, reason: string) => {
     if (!can('treasury', 'REOPEN')) {
       return { success: false, error: 'Apenas a Direção Geral tem autorização para reabrir um mês fiscal encerrado.' };
     }
-    if (!reason || reason.trim().length < 5) {
-      return { success: false, error: 'É obrigatório fundamentar a reabertura do mês fiscal.' };
+    const cleanReason = (reason || '').trim();
+    if (cleanReason.length < 5) {
+      return { success: false, error: 'É obrigatório fundamentar a reabertura do mês fiscal (mínimo 5 caracteres).' };
+    }
+
+    const targetClosing = state.monthlyClosings.find((c) => c.id === id);
+    if (!targetClosing) {
+      return { success: false, error: 'Registo de fecho fiscal não encontrado.' };
+    }
+    if (targetClosing.isReopened) {
+      return { success: false, error: 'Este fecho fiscal já foi reaberto anteriormente.' };
     }
 
     const now = getNowISOString();
 
-    setState((prev) => {
-      const updated = prev.monthlyClosings.map((c) => {
-        if (c.id === id) {
-          return {
-            ...c,
-            isReopened: true,
-            reopenReason: reason,
-            reopenedByUserId: currentUser.id,
-            reopenedAt: now,
-          };
-        }
-        return c;
-      });
-      return { ...prev, monthlyClosings: updated };
+    const updatedClosings = state.monthlyClosings.map((c) => {
+      if (c.id === id) {
+        return {
+          ...c,
+          isReopened: true,
+          reopenReason: cleanReason,
+          reopenedByUserId: currentUser.id,
+          reopenedByName: currentUser.name,
+          reopenedAt: now,
+        };
+      }
+      return c;
     });
 
-    logAction('treasury', 'REABERTURA_MES_FISCAL', `Reabertura autorizada do fecho: ${reason}`, id, id, reason);
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'treasury',
+      'REABERTURA_MES_FISCAL',
+      `Reabertura autorizada do fecho ${targetClosing.month}/${targetClosing.year} (${id}): ${cleanReason}`,
+      id,
+      `${targetClosing.month.toString().padStart(2, '0')}/${targetClosing.year}`,
+      cleanReason
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      monthlyClosings: updatedClosings,
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
+
     return { success: true };
   };
 
@@ -4707,38 +4852,78 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     minuteData: Omit<NonNullable<ClubActivity['minute']>, 'id' | 'minuteNumber'>
   ) => {
     if (!can('activities', 'CREATE')) {
-      return { success: false };
+      return { success: false, error: 'Sem permissão para redigir atas.' };
     }
 
     const currentYear = state.settings.currentYear;
+    const targetActivity = state.activities.find((a) => a.id === activityId);
+    if (!targetActivity || !canActivityHaveMinute(targetActivity.type)) {
+      return {
+        success: false,
+        error: 'Atas só podem ser redigidas quando o tipo de atividade for "Reunião da Comissão".',
+      };
+    }
+
+    const existingMinuteNumber = targetActivity.minute?.minuteNumber;
     const existingDocNumbers = state.documents.map((d) => d.documentNumber);
-    const minuteNumber = generateNextDocumentNumber('ATA', currentYear, existingDocNumbers);
+    const minuteNumber =
+      existingMinuteNumber ||
+      generateNextDocumentNumber('ATA', currentYear, existingDocNumbers);
     const now = getNowISOString();
+
+    const resolvedOfficers = resolveMinuteOfficers(state.users, currentUser);
 
     const minute = {
       ...minuteData,
+      chairPerson: resolvedOfficers.chairPerson,
+      secretary: resolvedOfficers.secretary,
       id: minuteNumber,
       minuteNumber,
     };
 
-    const officialDoc: OfficialDocument = {
-      id: `DOC-${Date.now()}`,
-      documentNumber: minuteNumber,
-      documentType: 'ata',
-      title: `Ata da Reunião - ${minuteData.date}`,
-      year: currentYear,
-      issuedByUserId: currentUser.id,
-      issuedByName: currentUser.name,
-      issuedByRole: currentUser.role,
-      issuedAt: now,
-      contentData: {
-        chairPerson: minuteData.chairPerson,
-        secretary: minuteData.secretary,
-        agenda: minuteData.agenda,
-        deliberations: minuteData.deliberations,
-      },
-      isCancelled: false,
+    const contentData = {
+      chairPerson: resolvedOfficers.chairPerson,
+      chairPersonUserId: resolvedOfficers.chairPersonUserId,
+      secretary: resolvedOfficers.secretary,
+      secretaryUserId: resolvedOfficers.secretaryUserId,
+      local: minuteData.location,
+      presentes: minuteData.attendeesCount,
+      agenda: minuteData.agenda,
+      deliberacao: minuteData.deliberations,
+      deliberations: minuteData.deliberations,
     };
+
+    const docTitle = targetActivity
+      ? `Ata da Reunião - ${targetActivity.title}`
+      : `Ata da Reunião - ${minuteData.date}`;
+
+    const existingOfficialDoc = state.documents.find(
+      (d) => d.documentNumber === minuteNumber
+    );
+
+    const officialDoc: OfficialDocument = existingOfficialDoc
+      ? {
+          ...existingOfficialDoc,
+          title: docTitle,
+          issuedByUserId: currentUser.id,
+          issuedByName: currentUser.name,
+          issuedByRole: currentUser.role,
+          issuedAt: now,
+          contentData,
+        }
+      : {
+          id: `DOC-${Date.now()}`,
+          documentNumber: minuteNumber,
+          documentType: 'ata',
+          title: docTitle,
+          year: currentYear,
+          issuedByUserId: currentUser.id,
+          issuedByName: currentUser.name,
+          issuedByRole: currentUser.role,
+          issuedAt: now,
+          contentData,
+          isCancelled: false,
+        };
 
     const updatedActivities = state.activities.map((a) => {
       if (a.id === activityId) {
@@ -4747,18 +4932,32 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return a;
     });
 
+    const updatedDocuments = existingOfficialDoc
+      ? state.documents.map((d) =>
+          d.documentNumber === minuteNumber ? officialDoc : d
+        )
+      : [officialDoc, ...state.documents];
+
     const nextState: ClubDatabaseState = {
       ...state,
       updatedAt: now,
       activities: updatedActivities,
-      documents: [officialDoc, ...state.documents],
+      documents: updatedDocuments,
     };
 
     setState(nextState);
     saveStateToStorage(nextState);
     pushToFirestore(nextState);
 
-    logAction('activities', 'EMISSAO_ATA', `Ata ${minuteNumber} redigida e anexada`, activityId, minuteNumber);
+    logAction(
+      'activities',
+      'EMISSAO_ATA',
+      existingMinuteNumber
+        ? `Ata ${minuteNumber} atualizada`
+        : `Ata ${minuteNumber} redigida e anexada`,
+      activityId,
+      minuteNumber
+    );
     return { success: true, minuteNumber };
   };
 
@@ -5232,21 +5431,48 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     ) {
       return { success: false, error: 'Apenas a Direção e o Secretário podem adicionar novas equipas.' };
     }
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      return { success: false, error: 'Informe o nome da equipa ou unidade.' };
+    }
+    const duplicateUnit = state.settings.units.find(
+      (u) => u.name.trim().toLowerCase() === trimmedName.toLowerCase()
+    );
+    if (duplicateUnit) {
+      return { success: false, error: `Já existe uma equipa registada com o nome "${duplicateUnit.name}".` };
+    }
+
+    const now = getNowISOString();
     const newUnit = {
       id: `UNT-${Date.now().toString().slice(-4)}`,
-      name: name.trim(),
+      name: trimmedName,
       category,
       leaderUserId: leaderUserId || undefined,
       active: true,
     };
-    setState((prev) => ({
-      ...prev,
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'settings',
+      'CRIACAO_UNIDADE',
+      `Equipa/Unidade criada: ${trimmedName}`,
+      newUnit.id,
+      trimmedName
+    );
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
       settings: {
-        ...prev.settings,
-        units: [...prev.settings.units, newUnit],
+        ...state.settings,
+        units: [...state.settings.units, newUnit],
       },
-    }));
-    logAction('settings', 'CRIACAO_UNIDADE', `Equipa/Unidade criada: ${name}`, newUnit.id, name);
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
     return { success: true };
   };
 
@@ -5261,23 +5487,51 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Apenas a Direção e o Secretário podem editar equipas.' };
     }
     const trimmedName = name.trim();
-    let oldName = '';
-    setState((prev) => {
-      const oldUnit = prev.settings.units.find((u) => u.id === id);
-      oldName = oldUnit?.name || '';
-      return {
-        ...prev,
-        settings: {
-          ...prev.settings,
-          units: prev.settings.units.map((u) => (u.id === id ? { ...u, name: trimmedName, category, leaderUserId: leaderUserId || undefined } : u)),
-        },
-        // Update member unitOrTeam if name changed
-        members: oldName && oldName !== trimmedName
-          ? prev.members.map((m) => (m.unitOrTeam === oldName ? { ...m, unitOrTeam: trimmedName } : m))
-          : prev.members,
-      };
-    });
-    logAction('settings', 'ATUALIZACAO_UNIDADE', `Equipa/Unidade atualizada: ${trimmedName}`, id, trimmedName);
+    if (!trimmedName) {
+      return { success: false, error: 'Informe o nome da equipa ou unidade.' };
+    }
+    const existingUnit = state.settings.units.find((u) => u.id === id);
+    if (!existingUnit) {
+      return { success: false, error: 'Equipa não encontrada.' };
+    }
+    const duplicateUnit = state.settings.units.find(
+      (u) => u.id !== id && u.name.trim().toLowerCase() === trimmedName.toLowerCase()
+    );
+    if (duplicateUnit) {
+      return { success: false, error: `Já existe outra equipa registada com o nome "${duplicateUnit.name}".` };
+    }
+
+    const now = getNowISOString();
+    const oldName = existingUnit.name;
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'settings',
+      'ATUALIZACAO_UNIDADE',
+      `Equipa/Unidade atualizada: ${trimmedName}`,
+      id,
+      trimmedName
+    );
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      settings: {
+        ...state.settings,
+        units: state.settings.units.map((u) =>
+          u.id === id ? { ...u, name: trimmedName, category, leaderUserId: leaderUserId || undefined } : u
+        ),
+      },
+      members:
+        oldName && oldName !== trimmedName
+          ? state.members.map((m) => (m.unitOrTeam === oldName ? { ...m, unitOrTeam: trimmedName, updatedAt: now } : m))
+          : state.members,
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
     return { success: true };
   };
 
@@ -5291,22 +5545,39 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     ) {
       return { success: false, error: 'Apenas a Direção e o Secretário podem remover equipas.' };
     }
-    let unitName = '';
-    setState((prev) => {
-      const target = prev.settings.units.find((u) => u.id === id);
-      unitName = target?.name || '';
-      return {
-        ...prev,
-        settings: {
-          ...prev.settings,
-          units: prev.settings.units.filter((u) => u.id !== id),
-        },
-        members: unitName
-          ? prev.members.map((m) => (m.unitOrTeam === unitName ? { ...m, unitOrTeam: undefined } : m))
-          : prev.members,
-      };
-    });
-    logAction('settings', 'REMOCAO_UNIDADE', `Equipa/Unidade removida: ${unitName}`, id, unitName);
+    const target = state.settings.units.find((u) => u.id === id);
+    if (!target) {
+      return { success: false, error: 'Equipa não encontrada.' };
+    }
+
+    const now = getNowISOString();
+    const unitName = target.name;
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'settings',
+      'REMOCAO_UNIDADE',
+      `Equipa/Unidade removida: ${unitName}`,
+      id,
+      unitName
+    );
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      settings: {
+        ...state.settings,
+        units: state.settings.units.filter((u) => u.id !== id),
+      },
+      members: unitName
+        ? state.members.map((m) => (m.unitOrTeam === unitName ? { ...m, unitOrTeam: undefined, updatedAt: now } : m))
+        : state.members,
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
     return { success: true };
   };
 
@@ -5332,18 +5603,29 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
     const now = getNowISOString();
-    let memberName = targetMember.fullName;
-    setState((prev) => ({
-      ...prev,
-      members: prev.members.map((m) => {
-        if (m.id === memberId) {
-          memberName = m.fullName;
-          return { ...m, unitOrTeam: unitOrTeam ? unitOrTeam.trim() : undefined, updatedAt: now };
-        }
-        return m;
-      }),
-    }));
-    logAction('members', 'ALOCACAO_EQUIPA', `Membro ${memberName} alocado à equipa: ${unitOrTeam || 'Nenhuma'}`, memberId, memberName);
+    const trimmedTarget = unitOrTeam ? unitOrTeam.trim() : undefined;
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'members',
+      'ALOCACAO_EQUIPA',
+      `Membro ${targetMember.fullName} alocado à equipa: ${trimmedTarget || 'Nenhuma'}`,
+      memberId,
+      targetMember.fullName
+    );
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      members: state.members.map((m) =>
+        m.id === memberId ? { ...m, unitOrTeam: trimmedTarget || undefined, updatedAt: now } : m
+      ),
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
     return { success: true };
   };
 
@@ -5358,19 +5640,31 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!isAllowed) {
       return { success: false, error: 'Apenas a Direção, Administrador e Secretário podem editar as categorias dos membros.' };
     }
+    const targetMember = state.members.find((m) => m.id === memberId);
+    if (!targetMember) {
+      return { success: false, error: 'Membro não encontrado.' };
+    }
     const now = getNowISOString();
-    let memberName = '';
-    setState((prev) => ({
-      ...prev,
-      members: prev.members.map((m) => {
-        if (m.id === memberId) {
-          memberName = m.fullName;
-          return { ...m, category, updatedAt: now };
-        }
-        return m;
-      }),
-    }));
-    logAction('members', 'ALTERACAO_CATEGORIA', `Categoria do membro ${memberName} alterada para: ${category}`, memberId, memberName);
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'members',
+      'ALTERACAO_CATEGORIA',
+      `Categoria do membro ${targetMember.fullName} alterada para: ${category}`,
+      memberId,
+      targetMember.fullName
+    );
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      members: state.members.map((m) => (m.id === memberId ? { ...m, category, updatedAt: now } : m)),
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
     return { success: true };
   };
 

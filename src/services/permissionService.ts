@@ -68,6 +68,7 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   { module: 'activities', action: 'EXPORT', description: 'Exportar folhas de presença e atas' },
   { module: 'activities', action: 'PRINT', description: 'Imprimir atas estruturadas e presenças' },
   { module: 'activities', action: 'ARCHIVE', description: 'Encerrar atividades concluídas' },
+  { module: 'activities', action: 'VIEW_ACTIVITY_FINANCIALS', description: 'Visualizar informações financeiras das atividades (Custos, Tramitação na Tesouraria e Contribuições/Doações) — Concedido pelo Administrador' },
 
   // Formação (Módulos e Medalhas)
   { module: 'training', action: 'VIEW', description: 'Consultar módulos e medalhas' },
@@ -149,7 +150,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     associate_director: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
     members: ['VIEW', 'VIEW_DOSSIER_360', 'CREATE', 'EDIT', 'DELETE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'APPROVE_ENROLLMENT', 'MANAGE_ENROLLMENT_PERIOD', 'MANAGE_RECONFIRMATION_PERIOD', 'APPROVE_MEMBER_ACCOUNT', 'DELETE_MEMBER_UPLOADS', 'EXPORT_ENROLLMENT_RECONF_LISTS'],
     treasury: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'ARCHIVE', 'ADMIN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
-    activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN'],
+    activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'VIEW_ACTIVITY_FINANCIALS'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ADMIN'],
     documents: ['VIEW', 'EXPORT', 'PRINT', 'ADMIN'],
     member_portal: ['VIEW'],
@@ -169,7 +170,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     associate_director: [],
     members: ['VIEW', 'VIEW_DOSSIER_360', 'EDIT', 'DELETE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'MANAGE_ENROLLMENT_PERIOD', 'MANAGE_RECONFIRMATION_PERIOD', 'APPROVE_MEMBER_ACCOUNT', 'DELETE_MEMBER_UPLOADS', 'EXPORT_ENROLLMENT_RECONF_LISTS'],
     treasury: ['VIEW', 'CREATE', 'APPROVE', 'EXPORT', 'PRINT', 'REOPEN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS', 'WAIVE_QUOTA_DEBT'],
-    activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE'],
+    activities: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE', 'VIEW_ACTIVITY_FINANCIALS'],
     training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT'],
     documents: ['VIEW', 'CREATE', 'ARCHIVE', 'PRINT', 'EXPORT'],
     member_portal: ['VIEW'],
@@ -229,7 +230,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     associate_director: [],
     members: ['VIEW'],
     treasury: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT', 'ARCHIVE', 'ADMIN', 'CREATE_ACCOUNT', 'DELETE_ACCOUNT', 'CREATE_RUBRIC', 'DELETE_RUBRIC', 'CONFIGURE_QUOTAS'],
-    activities: ['VIEW'],
+    activities: ['VIEW', 'VIEW_ACTIVITY_FINANCIALS'],
     training: ['VIEW'],
     documents: ['VIEW', 'CREATE', 'PRINT', 'EXPORT'],
     member_portal: ['VIEW'],
@@ -400,6 +401,7 @@ export const ACTION_LABELS: Record<PermissionAction, string> = {
   APPROVE_MEMBER_ACCOUNT: 'Confirmar Contas de Login (Membros)',
   DELETE_MEMBER_UPLOADS: 'Apagar Uploads nas Fichas',
   EXPORT_ENROLLMENT_RECONF_LISTS: 'Baixar Listas em PDF (Inscrição e Reconfirmação)',
+  VIEW_ACTIVITY_FINANCIALS: 'Ver Financeiro das Atividades',
 };
 
 /**
@@ -430,6 +432,7 @@ export const syncPermissionsMatrix = (
   const needsMemberDeleteSync = !synced.admin_tecnico?.members?.includes('DELETE');
   const needsDeleteMemberUploadsSync = !synced.admin_tecnico?.members?.includes('DELETE_MEMBER_UPLOADS');
   const needsExportEnrollmentReconfListsSync = !synced.admin_tecnico?.members?.includes('EXPORT_ENROLLMENT_RECONF_LISTS');
+  const needsViewActivityFinancialsSync = !synced.admin_tecnico?.activities?.includes('VIEW_ACTIVITY_FINANCIALS');
 
   for (const role of roles) {
     if (!synced[role]) {
@@ -470,7 +473,11 @@ export const syncPermissionsMatrix = (
         }
       } else if (mod === 'activities') {
         for (const act of base[role].activities) {
-          if (!synced[role].activities.includes(act)) {
+          if (act === 'VIEW_ACTIVITY_FINANCIALS') {
+            if (needsViewActivityFinancialsSync && !synced[role].activities.includes('VIEW_ACTIVITY_FINANCIALS')) {
+              synced[role].activities.push('VIEW_ACTIVITY_FINANCIALS');
+            }
+          } else if (!synced[role].activities.includes(act)) {
             synced[role].activities.push(act);
           }
         }
@@ -740,3 +747,80 @@ export const hasExportEnrollmentReconfListsPermission = (
   }
   return hasPermission(role, 'members', 'EXPORT_ENROLLMENT_RECONF_LISTS');
 };
+
+/**
+ * Apenas o Administrador Técnico pode conceder ou revogar a permissão de visualizar
+ * informações financeiras das atividades (Custos, Tramitação e Contribuições/Doações).
+ */
+export const canGrantViewActivityFinancials = (actorRole: RoleType): boolean => {
+  return actorRole === 'admin_tecnico';
+};
+
+/**
+ * Verifica pela Grelha de Permissões se o cargo pode visualizar custos, tramitação na Tesouraria
+ * e contribuições/doações das atividades do clube.
+ */
+export const hasViewActivityFinancialsPermission = (
+  role: RoleType,
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>
+): boolean => {
+  if (role === 'admin_tecnico') return true;
+  if (permissionsMatrix?.[role] && Array.isArray(permissionsMatrix[role].activities)) {
+    return permissionsMatrix[role].activities.includes('VIEW_ACTIVITY_FINANCIALS');
+  }
+  return hasPermission(role, 'activities', 'VIEW_ACTIVITY_FINANCIALS');
+};
+
+/**
+ * Determina se a secção "Custos da Atividade & Tramitação na Tesouraria" deve ser exibida:
+ * exige autorização RBAC na Grelha do Administrador E que a atividade tenha sido marcada com custos
+ * (ou possua valores/despesa associada).
+ */
+export const shouldShowActivityCostsSection = (
+  activity: {
+    hasCost?: boolean;
+    costEstimatedInCents?: number;
+    costApprovedInCents?: number;
+    costPaidInCents?: number;
+    expenseRequestId?: string;
+  } | null | undefined,
+  hasLinkedExpense: boolean,
+  role: RoleType,
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>
+): boolean => {
+  if (!activity) return false;
+  if (!hasViewActivityFinancialsPermission(role, permissionsMatrix)) return false;
+  return Boolean(
+    activity.hasCost ||
+      (activity.costEstimatedInCents || 0) > 0 ||
+      (activity.costApprovedInCents || 0) > 0 ||
+      (activity.costPaidInCents || 0) > 0 ||
+      activity.expenseRequestId ||
+      hasLinkedExpense
+  );
+};
+
+/**
+ * Determina se a secção "Contribuições e Doações da Atividade" deve ser exibida:
+ * exige autorização RBAC na Grelha do Administrador E que a atividade tenha sido marcada com rubrica
+ * de contribuição/doação (ou possua recibos/rubrica associados).
+ */
+export const shouldShowActivityContributionsSection = (
+  activity: {
+    hasMemberContribution?: boolean;
+    feeDefinitionId?: string;
+  } | null | undefined,
+  activityReceiptsCount: number,
+  role: RoleType,
+  permissionsMatrix?: Record<RoleType, Record<ModuleName, PermissionAction[]>>
+): boolean => {
+  if (!activity) return false;
+  if (!hasViewActivityFinancialsPermission(role, permissionsMatrix)) return false;
+  return Boolean(
+    activity.hasMemberContribution ||
+      activity.feeDefinitionId ||
+      activityReceiptsCount > 0
+  );
+};
+
+
