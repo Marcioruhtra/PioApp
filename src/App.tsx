@@ -19,6 +19,7 @@ import {
   isSessionInactive,
 } from './utils/inactivity';
 import { hasMemberPortalAccess } from './services/accountSyncService';
+import { requestPushPermission } from './services/pushService';
 
 // Módulos
 import { DashboardModule } from './components/modules/DashboardModule';
@@ -212,9 +213,7 @@ const MainAppContent: React.FC = () => {
       // Apenas regista subscrição de push se o utilizador já tiver concedido permissão expressa no navegador
       try {
         if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-          import('./services/pushService').then(({ requestPushPermission }) => {
-            requestPushPermission(currentUser.id).catch(() => {});
-          });
+          requestPushPermission(currentUser.id).catch(() => {});
         }
       } catch {
         // Ignorado em caso de iframe restrito

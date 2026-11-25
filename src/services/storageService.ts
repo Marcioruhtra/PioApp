@@ -203,6 +203,7 @@ export function loadInitialState(): ClubDatabaseState {
     associateDirectives: [],
     teamEvaluations: [],
     quotaWaivers: [],
+    musicItems: INITIAL_MUSIC_ITEMS,
     enrollmentRequests: [],
   };
 }
@@ -327,6 +328,7 @@ export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): 
     associateDirectives: [],
     teamEvaluations: [],
     quotaWaivers: [],
+    musicItems: [],
     enrollmentRequests: [],
     updatedAt: now,
   };

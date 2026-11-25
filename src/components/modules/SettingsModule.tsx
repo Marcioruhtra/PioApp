@@ -1,15 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Settings,
   Building,
-  Coins,
   Shield,
   Save,
   CheckCircle,
   RefreshCw,
+  AlertTriangle,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import { formatKz } from '../../utils/currency';
+import { Modal } from '../common/Modal';
 
 export const SettingsModule: React.FC = () => {
   const { state, can, updateSettings, openNewFiscalYear } = useClub();
@@ -26,6 +27,27 @@ export const SettingsModule: React.FC = () => {
 
   const [isSaved, setIsSaved] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [confirmFiscalYear, setConfirmFiscalYear] = useState<number | null>(null);
+
+  useEffect(() => {
+    setForm({
+      clubName: state.settings.clubName || "Clube de Embaixadores Pioneiros D'Alvorada",
+      city: state.settings.city || "Luanda, Município de Talatona",
+      address: state.settings.address || "Rua do Grupo Desportivo da Banca, Maianga, Luanda, Angola",
+      phone: state.settings.phone || "931793101",
+      alternatePhone: state.settings.alternatePhone || "927705324",
+      email: state.settings.email || "ebxpioneirosdalvorada2019@hotmail.com",
+      currentYear: state.settings.currentYear,
+    });
+  }, [
+    state.settings.clubName,
+    state.settings.city,
+    state.settings.address,
+    state.settings.phone,
+    state.settings.alternatePhone,
+    state.settings.email,
+    state.settings.currentYear,
+  ]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -183,16 +205,9 @@ export const SettingsModule: React.FC = () => {
                     onClick={() => {
                       setErrorMessage(null);
                       const targetYear = (Number.isFinite(form.currentYear) ? form.currentYear : state.settings.currentYear) + 1;
-                      const res = openNewFiscalYear(targetYear);
-                      if (res.success) {
-                        setForm((prev) => ({ ...prev, currentYear: targetYear }));
-                        setIsSaved(true);
-                        setTimeout(() => setIsSaved(false), 3000);
-                      } else {
-                        setErrorMessage(res.error || 'Erro ao abrir novo ano fiscal.');
-                      }
+                      setConfirmFiscalYear(targetYear);
                     }}
-                    className="px-4 py-2 text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 rounded-lg shadow-xs flex items-center gap-1.5"
+                    className="px-4 py-2 text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 rounded-lg shadow-xs flex items-center gap-1.5 cursor-pointer"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
                     <span>Abrir Ano {(Number.isFinite(form.currentYear) ? form.currentYear : state.settings.currentYear) + 1}</span>
@@ -200,7 +215,7 @@ export const SettingsModule: React.FC = () => {
                 )}
                 <button
                   type="submit"
-                  className="px-4 py-2 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg shadow-xs flex items-center gap-1.5"
+                  className="px-4 py-2 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg shadow-xs flex items-center gap-1.5 cursor-pointer"
                 >
                   <Save className="w-3.5 h-3.5" />
                   <span>Guardar</span>
@@ -228,6 +243,58 @@ export const SettingsModule: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Modal de Confirmação de Abertura de Novo Ano Fiscal */}
+      <Modal
+        isOpen={confirmFiscalYear !== null}
+        onClose={() => setConfirmFiscalYear(null)}
+        title={`Abrir Ano Fiscal ${confirmFiscalYear ?? ''}?`}
+        description="Confirme a transição institucional do ano fiscal ativo."
+        maxWidth="md"
+      >
+        <div className="space-y-4 text-xs">
+          <div className="p-3.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-950 flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div className="space-y-1.5 leading-relaxed">
+              <p className="font-semibold">
+                O sistema passará do ano fiscal <strong>{state.settings.currentYear}</strong> para <strong>{confirmFiscalYear}</strong>.
+              </p>
+              <p>
+                Todos os dados históricos (membros, recibos, fechos mensais, atas e documentos oficiais de anos anteriores) são integralmente preservados, sem liquidação automática de dívidas anteriores.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={() => setConfirmFiscalYear(null)}
+              className="px-4 py-2 font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (confirmFiscalYear === null) return;
+                const targetYear = confirmFiscalYear;
+                setConfirmFiscalYear(null);
+                const res = openNewFiscalYear(targetYear);
+                if (res.success) {
+                  setForm((prev) => ({ ...prev, currentYear: targetYear }));
+                  setIsSaved(true);
+                  setTimeout(() => setIsSaved(false), 3000);
+                } else {
+                  setErrorMessage(res.error || 'Erro ao abrir novo ano fiscal.');
+                }
+              }}
+              className="px-4 py-2 font-semibold text-white bg-amber-700 hover:bg-amber-800 rounded-lg cursor-pointer"
+            >
+              Confirmar Abertura do Ano {confirmFiscalYear}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };

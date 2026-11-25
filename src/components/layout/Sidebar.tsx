@@ -19,6 +19,7 @@ import {
   Heart,
   Send,
   Briefcase,
+  Music,
 } from 'lucide-react';
 import { ModuleName } from '../../types';
 import { useClub } from '../../context/ClubContext';
@@ -173,6 +174,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Mensagens',
       icon: Send,
       description: 'Enviar mensagens aos membros',
+    },
+    {
+      id: 'music',
+      label: 'Música e Louvor',
+      icon: Music,
+      description: 'Repertório, hinos e letras do clube',
     },
     {
       id: 'audit',

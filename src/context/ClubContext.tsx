@@ -41,6 +41,8 @@ import {
   MemberEnrollmentRequest,
   MemberDocumentationStatus,
   EnrollmentScheduleConfig,
+  ActivityRsvpStatus,
+  ActivityTask,
 } from '../types';
 import {
   ClubDatabaseState,
@@ -78,7 +80,12 @@ import {
   sanitizeRoleType,
 } from '../services/permissionService';
 import { resolveMinuteOfficers } from '../utils/documentSigner';
-import { canActivityHaveMinute } from '../utils/activityUtils';
+import {
+  canActivityHaveMinute,
+  canManageActivityPortalVisibility,
+  getActivityDateOnly,
+  applyBatchAttendanceToActivities,
+} from '../utils/activityUtils';
 import {
   MemberRegistrationFormData,
   MemberReconfirmationInput,
@@ -108,7 +115,7 @@ import { doc, setDoc, getDoc, getDocFromServer, onSnapshot } from 'firebase/fire
 import { verifyAndRepairMembersIntegrity, sanitizeMemberIntegrity, IntegrityCheckResult } from '../services/memberIntegrityService';
 import { ToastMessage } from '../components/common/ToastContainer';
 import { playNotificationSound } from '../utils/notificationSound';
-import { showNativeNotification } from '../services/pushService';
+import { showNativeNotification, removePushSubscription } from '../services/pushService';
 import { isNotificationAuthorizedForUser } from '../utils/notificationSecurity';
 import {
   isInstitutionalAccountRecord,
@@ -289,12 +296,38 @@ interface ClubContextValue {
 
   // Atividades e Reuniões
   createActivity: (data: Omit<ClubActivity, 'id' | 'createdAt' | 'tasks' | 'attendees'>) => { success: boolean; error?: string; activity?: ClubActivity; id?: string };
+  updateActivity: (
+    id: string,
+    data: Partial<Omit<ClubActivity, 'id' | 'createdAt' | 'tasks' | 'attendees' | 'minute' | 'rsvps'>>
+  ) => { success: boolean; error?: string; activity?: ClubActivity };
   updateActivityStage: (id: string, stage: ClubActivity['stage']) => { success: boolean; error?: string };
+  decideActivityApproval: (
+    id: string,
+    decision: 'aprovar' | 'devolver',
+    notes?: string
+  ) => { success: boolean; error?: string };
+  toggleActivityPortalVisibility: (id: string, visible: boolean) => { success: boolean; error?: string };
   deleteActivity: (id: string) => { success: boolean; error?: string };
   toggleAttendance: (activityId: string, memberId: string, present: boolean, notes?: string) => void;
-  addTaskToActivity: (activityId: string, task: Omit<ClubActivity['tasks'][0], 'id'>) => void;
-  updateTaskStatus: (activityId: string, taskId: string, status: ClubActivity['tasks'][0]['status']) => void;
-  saveMinuteToActivity: (activityId: string, minuteData: Omit<NonNullable<ClubActivity['minute']>, 'id' | 'minuteNumber'>) => { success: boolean; minuteNumber?: string; error?: string };
+  batchToggleAttendance: (activityId: string, memberIds: string[], present: boolean, notes?: string) => void;
+  addTaskToActivity: (activityId: string, task: Omit<ClubActivity['tasks'][0], 'id'>) => { success: boolean; error?: string };
+  updateTaskStatus: (activityId: string, taskId: string, status: ClubActivity['tasks'][0]['status']) => { success: boolean; error?: string };
+  updateTaskInActivity: (
+    activityId: string,
+    taskId: string,
+    updates: Partial<Omit<ActivityTask, 'id'>>
+  ) => { success: boolean; error?: string };
+  deleteTaskFromActivity: (activityId: string, taskId: string) => { success: boolean; error?: string };
+  saveMinuteToActivity: (
+    activityId: string,
+    minuteData: Omit<NonNullable<ClubActivity['minute']>, 'id' | 'minuteNumber'>,
+    tasksToAdd?: Omit<ActivityTask, 'id'>[]
+  ) => { success: boolean; minuteNumber?: string; error?: string };
+  submitActivityRsvp: (
+    activityId: string,
+    status: ActivityRsvpStatus,
+    note?: string
+  ) => { success: boolean; error?: string };
 
   // Formação
   updateTrainingProgress: (
@@ -356,7 +389,12 @@ interface ClubContextValue {
   respondToSuggestion: (suggestionId: string, responseContent: string, markAsViewed?: boolean) => { success: boolean; error?: string };
   deleteSuggestion: (suggestionId: string) => { success: boolean; error?: string };
 
-  addAnnouncement: (title: string, content: string, urgency: ClubAnnouncement['urgency'], targetAudience: ClubAnnouncement['targetAudience']) => void;
+  addAnnouncement: (
+    title: string,
+    content: string,
+    urgency: ClubAnnouncement['urgency'],
+    targetAudience: ClubAnnouncement['targetAudience']
+  ) => { success: boolean; error?: string };
   // Circulares
   createCircular: (data: Omit<Circular, 'id' | 'publishedAt' | 'publishedByUserId' | 'publishedByName' | 'readBy'>) => { success: boolean; error?: string };
   markCircularAsRead: (circularId: string) => void;
@@ -458,9 +496,14 @@ interface ClubContextValue {
   deleteTeamEvaluation: (id: string) => { success: boolean; error?: string };
 
   // Módulo de Música e Louvor
-  createMusicItem: (data: Omit<MusicItem, 'id' | 'createdAt'>) => { success: boolean; error?: string };
-  updateMusicItem: (id: string, data: Partial<MusicItem>) => { success: boolean; error?: string };
-  deleteMusicItem: (id: string) => { success: boolean; error?: string };
+  createMusicItem: (
+    data: Omit<MusicItem, 'id' | 'createdAt'>
+  ) => Promise<{ success: boolean; item?: MusicItem; error?: string; warning?: string }>;
+  updateMusicItem: (
+    id: string,
+    data: Partial<MusicItem>
+  ) => Promise<{ success: boolean; item?: MusicItem; error?: string; warning?: string }>;
+  deleteMusicItem: (id: string) => Promise<{ success: boolean; error?: string; warning?: string }>;
 
   isQuotaExceeded?: boolean;
   isCloudLoading: boolean;
@@ -510,7 +553,7 @@ const syncStoredSessionUser = (user: UserAccount) => {
 };
 
 export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [state, setState] = useState<ClubDatabaseState>(() => {
+  const [state, setRawState] = useState<ClubDatabaseState>(() => {
     const loaded = loadInitialState();
     if (loaded && loaded.settings) {
       loaded.settings.permissionsMatrix = syncPermissionsMatrix(loaded.settings.permissionsMatrix);
@@ -522,6 +565,17 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return loaded;
   });
 
+  const stateRef = React.useRef<ClubDatabaseState>(state);
+  const setState = (updater: React.SetStateAction<ClubDatabaseState>) => {
+    const next = typeof updater === 'function' ? updater(stateRef.current) : updater;
+    stateRef.current = next;
+    setRawState(next);
+  };
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
   const isRemoteUpdateRef = React.useRef(false);
   const hasLoadedFromCloudRef = React.useRef(typeof window === 'undefined');
   const cloudConfirmedEmptyRef = React.useRef(false);
@@ -530,7 +584,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const lastMonotonicTimestampRef = React.useRef<string>('');
   const lastCloudStateRef = React.useRef<ClubDatabaseState | null>(null);
   const isPushInFlightRef = React.useRef(false);
-  const activePushDrainPromiseRef = React.useRef<Promise<void> | null>(null);
+  const activePushDrainPromiseRef = React.useRef<
+    Promise<{ success: boolean; queuedOffline?: boolean; error?: string; code?: string }> | null
+  >(null);
   const queuedPushStateRef = React.useRef<{ state: ClubDatabaseState; allowEmptyWrite?: boolean } | null>(null);
   const pendingOfflineStateRef = React.useRef<{ state: ClubDatabaseState; allowEmptyWrite?: boolean } | null>(null);
   const broadcastChannelRef = React.useRef<BroadcastChannel | null>(null);
@@ -695,18 +751,44 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     hasLoadedFromCloudRef.current = true;
     cloudConfirmedEmptyRef.current = false;
     isRemoteUpdateRef.current = true;
-    setState((prev) => normalizeCloudState(remoteData, prev));
+    const normalized = normalizeCloudState(remoteData, stateRef.current);
+    stateRef.current = normalized;
+    setState(normalized);
     setIsCloudLoading(false);
+  };
+
+  // Mantém stateRef.current sincronizado imediatamente mesmo entre múltiplas mutações síncronas na mesma ação
+  const commitState = (
+    updater: ClubDatabaseState | ((prev: ClubDatabaseState) => ClubDatabaseState),
+    options?: { saveLocal?: boolean; pushCloud?: boolean; allowEmptyWrite?: boolean }
+  ): ClubDatabaseState => {
+    const prev = stateRef.current;
+    const next = typeof updater === 'function' ? updater(prev) : updater;
+    stateRef.current = next;
+    setState(next);
+    if (options?.saveLocal !== false) {
+      saveStateToStorage(next);
+    }
+    if (options?.pushCloud) {
+      pushToFirestore(next, { allowEmptyWrite: options.allowEmptyWrite });
+    }
+    return next;
   };
 
   // Executa uma escrita atómica e normalizada para o Firestore
   const executeSingleFirestorePush = async (
     stateToPush: ClubDatabaseState,
     options?: { allowEmptyWrite?: boolean }
-  ) => {
+  ): Promise<{ success: boolean; queuedOffline?: boolean; error?: string; code?: string }> => {
     if (!options?.allowEmptyWrite && !isSafeCloudWritePayload(stateToPush, cloudConfirmedEmptyRef.current)) {
-      return;
+      return {
+        success: false,
+        error: 'A sincronização inicial com a nuvem ainda não foi concluída. Aguarde um instante e tente novamente.',
+      };
     }
+
+    const prevMonotonic = lastMonotonicTimestampRef.current;
+    const prevPushed = lastPushedUpdatedAtRef.current;
 
     try {
       const { currentUser: _localUser, ...cloudState } = stateToPush;
@@ -727,19 +809,18 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const syncTimestamp = getNextMonotonicSyncTimestamp(
         lastMonotonicTimestampRef.current || lastRemoteUpdatedAtRef.current || lastPushedUpdatedAtRef.current
       );
+
+      const serializedPayload = JSON.parse(
+        JSON.stringify({
+          ...cloudState,
+          updatedAt: syncTimestamp,
+        })
+      );
+
+      await setDoc(doc(db, 'club_data', 'main_state'), serializedPayload, { merge: true });
+
       lastMonotonicTimestampRef.current = syncTimestamp;
       lastPushedUpdatedAtRef.current = syncTimestamp;
-
-      await setDoc(
-        doc(db, 'club_data', 'main_state'),
-        JSON.parse(
-          JSON.stringify({
-            ...cloudState,
-            updatedAt: syncTimestamp,
-          })
-        ),
-        { merge: true }
-      );
       pendingOfflineStateRef.current = null;
       cloudConfirmedEmptyRef.current = false;
       setIsQuotaExceeded(false);
@@ -751,24 +832,63 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // Ignorado em navegadores sem canal ativo
         }
       }
+      return { success: true };
     } catch (err: any) {
+      lastMonotonicTimestampRef.current = prevMonotonic;
+      lastPushedUpdatedAtRef.current = prevPushed;
+      const errCode = String(err?.code || '');
+      const errMsg = String(err?.message || err || '');
+
       if (
-        err?.code === 'resource-exhausted' ||
-        err?.message?.includes('resource-exhausted') ||
-        err?.message?.includes('Quota limit exceeded') ||
-        err?.message?.includes('quota')
+        errCode === 'resource-exhausted' ||
+        errMsg.includes('resource-exhausted') ||
+        errMsg.includes('Quota limit exceeded') ||
+        errMsg.includes('quota')
       ) {
         setIsQuotaExceeded(true);
         pendingOfflineStateRef.current = { state: stateToPush, allowEmptyWrite: options?.allowEmptyWrite };
         console.warn('Cota do Firestore atingida temporariamente.');
-      } else if (err?.code === 'permission-denied' || err?.message?.includes('permission')) {
+        return {
+          success: false,
+          queuedOffline: true,
+          code: errCode || 'resource-exhausted',
+          error: 'Limite temporário de escritas no Firestore atingido. A alteração foi guardada localmente para envio posterior.',
+        };
+      } else if (errCode === 'permission-denied' || errMsg.includes('permission')) {
         reportFirestorePermissionError(err, OperationType.WRITE, 'club_data/main_state');
-      } else if (err?.code === 'unavailable' || err?.message?.includes('the client is offline')) {
+        return {
+          success: false,
+          code: 'permission-denied',
+          error: 'Permissão negada ao gravar no Firestore. Verifique as regras de segurança da base de dados.',
+        };
+      } else if (
+        errCode === 'invalid-argument' ||
+        errMsg.toLowerCase().includes('maximum') ||
+        errMsg.toLowerCase().includes('exceeds')
+      ) {
+        console.error('Erro de estrutura ou limite de tamanho no documento Firestore:', err);
+        return {
+          success: false,
+          code: errCode || 'invalid-argument',
+          error: 'O documento global na nuvem excedeu o limite de tamanho (1 MB) ou contém campos inválidos para o Firestore.',
+        };
+      } else if (errCode === 'unavailable' || errMsg.includes('the client is offline')) {
         pendingOfflineStateRef.current = { state: stateToPush, allowEmptyWrite: options?.allowEmptyWrite };
-        console.warn('Sincronização com o Firestore em fila (ligação temporariamente indisponível):', err?.message || err);
+        console.warn('Sincronização com o Firestore em fila (ligação temporariamente indisponível):', errMsg);
+        return {
+          success: false,
+          queuedOffline: true,
+          code: errCode || 'unavailable',
+          error: 'Sem ligação ativa ao servidor Firestore. A alteração foi colocada em fila para sincronização automática.',
+        };
       } else {
         pendingOfflineStateRef.current = { state: stateToPush, allowEmptyWrite: options?.allowEmptyWrite };
         console.error('Erro de escrita na sincronização em tempo real do Firestore:', err);
+        return {
+          success: false,
+          code: errCode || 'unknown',
+          error: errMsg || 'Erro ao gravar dados no Firestore.',
+        };
       }
     }
   };
@@ -777,10 +897,15 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const pushToFirestore = async (
     stateToPush: ClubDatabaseState,
     options?: { allowEmptyWrite?: boolean }
-  ): Promise<void> => {
-    if (!db || !(db as any).app) return;
+  ): Promise<{ success: boolean; queuedOffline?: boolean; error?: string; code?: string }> => {
+    if (!db || !(db as any).app) {
+      return { success: false, error: 'Ligação ao Firestore não disponível neste ambiente.' };
+    }
     if (!options?.allowEmptyWrite && !isSafeCloudWritePayload(stateToPush, cloudConfirmedEmptyRef.current)) {
-      return;
+      return {
+        success: false,
+        error: 'A aguardar sincronização inicial com o Firestore antes de gravar alterações.',
+      };
     }
 
     lastCloudStateRef.current = stateToPush;
@@ -790,14 +915,16 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return activePushDrainPromiseRef.current;
     }
 
-    const drainPromise = (async () => {
+    const drainPromise = (async (): Promise<{ success: boolean; queuedOffline?: boolean; error?: string; code?: string }> => {
       isPushInFlightRef.current = true;
+      let lastResult: { success: boolean; queuedOffline?: boolean; error?: string; code?: string } = { success: true };
       try {
         while (queuedPushStateRef.current) {
           const nextJob = queuedPushStateRef.current;
           queuedPushStateRef.current = null;
-          await executeSingleFirestorePush(nextJob.state, { allowEmptyWrite: nextJob.allowEmptyWrite });
+          lastResult = await executeSingleFirestorePush(nextJob.state, { allowEmptyWrite: nextJob.allowEmptyWrite });
         }
+        return lastResult;
       } finally {
         isPushInFlightRef.current = false;
         activePushDrainPromiseRef.current = null;
@@ -909,6 +1036,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
             cloudData &&
             !isPushInFlightRef.current &&
             !queuedPushStateRef.current &&
+            !pendingOfflineStateRef.current &&
             !shouldSkipIncomingSnapshot({
               remoteUpdatedAt: cloudData.updatedAt,
               lastRemoteUpdatedAt: lastRemoteUpdatedAtRef.current,
@@ -974,6 +1102,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (
             isPushInFlightRef.current ||
             Boolean(queuedPushStateRef.current) ||
+            Boolean(pendingOfflineStateRef.current) ||
             shouldSkipIncomingSnapshot({
               remoteUpdatedAt: remoteData.updatedAt,
               lastRemoteUpdatedAt: lastRemoteUpdatedAtRef.current,
@@ -1436,11 +1565,14 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       entityName,
       reason
     );
-    setState((prev) => ({
-      ...prev,
-      auditLogs: [entry, ...prev.auditLogs],
-      updatedAt: getNowISOString(),
-    }));
+    commitState(
+      (prev) => ({
+        ...prev,
+        auditLogs: [entry, ...prev.auditLogs],
+        updatedAt: getNowISOString(),
+      }),
+      { saveLocal: true, pushCloud: false }
+    );
   };
 
   // --- SISTEMA DE NOTIFICAÇÕES E ALERTAS ---
@@ -1475,17 +1607,22 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const addNotification = (notifData: Omit<ClubNotification, 'id' | 'timestamp' | 'read'>) => {
+    const now = getNowISOString();
     const newNotif: ClubNotification = {
       ...notifData,
       id: `NOTIF-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-      timestamp: getNowISOString(),
+      timestamp: now,
       read: false,
     };
 
-    setState((prev) => {
-      const updated = [newNotif, ...(prev.notifications || [])];
-      return { ...prev, notifications: updated };
-    });
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        notifications: [newNotif, ...(prev.notifications || [])],
+      }),
+      { saveLocal: true, pushCloud: false }
+    );
 
     // Apenas reproduz som, emite push e toast se o utilizador autenticado for destinatário autorizado
     const isTargetedForCurrent = isNotificationAuthorizedForUser(newNotif, currentUser);
@@ -1502,33 +1639,130 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const addAnnouncement = (
+    title: string,
+    content: string,
+    urgency: ClubAnnouncement['urgency'],
+    targetAudience: ClubAnnouncement['targetAudience']
+  ): { success: boolean; error?: string } => {
+    const isAuthorized =
+      can('requests', 'CREATE') ||
+      can('activities', 'CREATE') ||
+      currentUser.role === 'diretor' ||
+      currentUser.role === 'diretor_associado' ||
+      currentUser.role === 'secretario' ||
+      currentUser.role === 'admin_tecnico';
+
+    if (!isAuthorized) {
+      return { success: false, error: 'Sem permissão para publicar alertas institucionais.' };
+    }
+
+    const cleanTitle = title.trim();
+    const cleanContent = content.trim();
+    if (!cleanTitle || !cleanContent) {
+      return { success: false, error: 'O título e a mensagem do alerta são obrigatórios.' };
+    }
+
+    const priority: ClubNotification['priority'] =
+      urgency === 'urgente' ? 'urgente' : urgency === 'importante' ? 'alta' : 'normal';
+
+    const recipientRoles: RoleType[] | undefined =
+      targetAudience === 'lideranca'
+        ? ['diretor', 'diretor_associado', 'secretario', 'tesoureiro', 'instrutor', 'capelao', 'admin_tecnico']
+        : undefined;
+
+    const now = getNowISOString();
+    const notifId = `NOTIF-ANN-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+    const newNotif: ClubNotification = {
+      id: notifId,
+      title: cleanTitle,
+      message: `${cleanContent} (Emitido por ${currentUser.name})`,
+      timestamp: now,
+      read: false,
+      category: 'announcement',
+      priority,
+      recipientRoles,
+    };
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'requests',
+      'EMISSAO_ALERTA_INSTITUCIONAL',
+      `Alerta institucional publicado: "${cleanTitle}" (${urgency})`,
+      notifId,
+      cleanTitle
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        notifications: [newNotif, ...(prev.notifications || [])],
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    if (isNotificationAuthorizedForUser(newNotif, currentUser)) {
+      if (soundEnabled) playNotificationSound();
+      showNativeNotification(newNotif.title, newNotif.message);
+      const toastType = priority === 'urgente' ? 'error' : priority === 'alta' ? 'warning' : 'info';
+      addToast(newNotif.title, newNotif.message, toastType);
+    }
+
+    return { success: true };
+  };
+
   const markNotificationAsRead = (notificationId: string) => {
-    setState((prev) => {
-      const updated = (prev.notifications || []).map((n) =>
-        n.id === notificationId ? { ...n, read: true } : n
-      );
-      return { ...prev, notifications: updated };
-    });
+    const now = getNowISOString();
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        notifications: (prev.notifications || []).map((n) =>
+          n.id === notificationId ? { ...n, read: true } : n
+        ),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
   };
 
   const markAllNotificationsAsRead = () => {
-    setState((prev) => {
-      const updated = (prev.notifications || []).map((n) => ({ ...n, read: true }));
-      return { ...prev, notifications: updated };
-    });
+    const now = getNowISOString();
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        notifications: (prev.notifications || []).map((n) => ({ ...n, read: true })),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
   };
 
   const deleteNotification = (notificationId: string) => {
-    setState((prev) => {
-      const updated = (prev.notifications || []).filter((n) => n.id !== notificationId);
-      return { ...prev, notifications: updated };
-    });
+    const now = getNowISOString();
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        notifications: (prev.notifications || []).filter((n) => n.id !== notificationId),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
   };
 
   const clearAllNotifications = () => {
-    setState((prev) => {
-      return { ...prev, notifications: [] };
-    });
+    const now = getNowISOString();
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        notifications: [],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
   };
 
   // --- MEMBROS ---
@@ -2653,51 +2887,84 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const sendMessage = (data: Omit<Message, 'id' | 'createdAt' | 'read'>) => {
+    if (!can('messaging', 'CREATE')) {
+      return { success: false, error: 'Sem permissão para enviar mensagens.' };
+    }
+    const cleanSubject = (data.subject || '').trim();
+    const cleanContent = (data.content || '').trim();
+    if (!cleanSubject || !cleanContent) {
+      return { success: false, error: 'O assunto e o conteúdo da mensagem são obrigatórios.' };
+    }
+    if (data.recipientType !== 'all' && !data.recipientId) {
+      return { success: false, error: 'Selecione o destinatário da mensagem.' };
+    }
+
+    const now = getNowISOString();
     const newMessage: Message = {
-      id: `MSG-${Date.now()}`,
+      id: `MSG-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       ...data,
-      createdAt: getNowISOString(),
+      subject: cleanSubject,
+      content: cleanContent,
+      createdAt: now,
       read: false,
     };
 
-    const newState = {
-      ...state,
-      messages: [...(state.messages || []), newMessage],
-    };
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'messaging',
+      'ENVIO_MENSAGEM',
+      `Mensagem enviada (${data.recipientType}): "${cleanSubject}"`,
+      newMessage.id,
+      cleanSubject
+    );
 
-    setState(newState);
-    saveStateToStorage(newState);
-    pushToFirestore(newState);
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        messages: [...(prev.messages || []), newMessage],
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
     return { success: true };
   };
 
   const markMessageAsRead = (messageId: string, memberId: string) => {
-    const linked = getStrictLinkedMember(currentUser, state.members);
+    const live = stateRef.current;
+    const linked = getStrictLinkedMember(currentUser, live.members);
     if (!linked || linked.id !== memberId) return;
 
-    const updatedMessages = (state.messages || []).map(m => {
-      if (m.id === messageId) {
-        const readBy = m.readBy || [];
-        if (!readBy.includes(linked.id)) {
-          return { ...m, read: true, readBy: [...readBy, linked.id] };
-        }
-      }
-      return m;
-    });
-    const newState = { ...state, messages: updatedMessages };
-    setState(newState);
-    saveStateToStorage(newState);
-    pushToFirestore(newState);
+    const now = getNowISOString();
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        messages: (prev.messages || []).map((m) => {
+          if (m.id === messageId) {
+            const readBy = m.readBy || [];
+            if (!readBy.includes(linked.id)) {
+              return { ...m, read: true, readBy: [...readBy, linked.id] };
+            }
+          }
+          return m;
+        }),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
   };
 
   const replyToMessage = (messageId: string, content: string) => {
-    const linked = getStrictLinkedMember(currentUser, state.members);
+    const live = stateRef.current;
+    const linked = getStrictLinkedMember(currentUser, live.members);
     if (!linked) {
       return { success: false, error: 'Apenas utilizadores vinculados a um membro podem interagir no Portal do Membro.' };
     }
     if (!content.trim()) return { success: false, error: 'A resposta não pode estar vazia.' };
 
-    const targetMessage = (state.messages || []).find((m) => m.id === messageId);
+    const targetMessage = (live.messages || []).find((m) => m.id === messageId);
     if (!targetMessage) {
       return { success: false, error: 'Mensagem não encontrada.' };
     }
@@ -2714,37 +2981,57 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Só pode responder a mensagens destinadas ao seu registo.' };
     }
 
+    const now = getNowISOString();
     const reply = {
       id: `REP-${Date.now()}`,
       senderId: currentUser.id,
       senderName: linked.fullName || currentUser.name,
       content: content.trim(),
-      createdAt: getNowISOString(),
+      createdAt: now,
     };
 
-    const updatedMessages = (state.messages || []).map(m => {
-      if (m.id === messageId) {
-        return {
-          ...m,
-          replies: [...(m.replies || []), reply],
-        };
-      }
-      return m;
-    });
-
-    const newState = { ...state, messages: updatedMessages };
-    setState(newState);
-    saveStateToStorage(newState);
-    pushToFirestore(newState);
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        messages: (prev.messages || []).map((m) =>
+          m.id === messageId ? { ...m, replies: [...(m.replies || []), reply] } : m
+        ),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
     return { success: true };
   };
 
   const deleteMessage = (messageId: string) => {
-    const updatedMessages = (state.messages || []).filter(m => m.id !== messageId);
-    const newState = { ...state, messages: updatedMessages };
-    setState(newState);
-    saveStateToStorage(newState);
-    pushToFirestore(newState);
+    if (!can('messaging', 'ADMIN')) {
+      return { success: false, error: 'Sem permissão para eliminar mensagens do histórico.' };
+    }
+    const target = (stateRef.current.messages || []).find((m) => m.id === messageId);
+    if (!target) {
+      return { success: false, error: 'Mensagem não encontrada.' };
+    }
+    const now = getNowISOString();
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'messaging',
+      'REMOCAO_MENSAGEM',
+      `Mensagem eliminada do histórico: "${target.subject}"`,
+      messageId,
+      target.subject
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        messages: (prev.messages || []).filter((m) => m.id !== messageId),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
     return { success: true };
   };
 
@@ -3343,9 +3630,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       removedLinkedUsers = removalResult.removedUsers;
 
       if (removedLinkedUsers.length > 0) {
-        import('../services/pushService').then(({ removePushSubscription }) => {
-          removedLinkedUsers.forEach((u) => removePushSubscription(u.id));
-        }).catch(() => {});
+        removedLinkedUsers.forEach((u) => {
+          removePushSubscription(u.id).catch(() => {});
+        });
       }
     }
 
@@ -3482,8 +3769,10 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Apenas a Tesouraria tem autorização para emitir recibos oficiais.' };
     }
 
-    const selectableFees = getSelectableInstitutionalFees(state.fees, state.settings);
-    const fee = selectableFees.find((f) => f.id === data.feeDefinitionId) || selectableFees[0];
+    const liveState = stateRef.current;
+    const directFeeMatch = liveState.fees.find((f) => f.id === data.feeDefinitionId);
+    const selectableFees = getSelectableInstitutionalFees(liveState.fees, liveState.settings);
+    const fee = directFeeMatch || selectableFees.find((f) => f.id === data.feeDefinitionId) || selectableFees[0];
     if (!fee) {
       return { success: false, error: 'Taxa não encontrada. Cadastre uma taxa em Tesouraria.' };
     }
@@ -3495,7 +3784,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       memberName = data.customDonorName.trim();
       memberId = data.memberId && data.memberId !== 'CUSTOM' ? data.memberId : `DONOR-${Date.now()}`;
     } else {
-      const member = state.members.find((m) => m.id === data.memberId) || state.members[0];
+      const member = liveState.members.find((m) => m.id === data.memberId) || liveState.members[0];
       if (!member) {
         return { success: false, error: 'Membro ou titular não especificado. Selecione um membro válido.' };
       }
@@ -3503,23 +3792,23 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       memberName = member.fullName;
     }
 
-    const targetAccountId = (data.accountId && state.accounts.some(a => a.id === data.accountId))
+    const targetAccountId = (data.accountId && liveState.accounts.some(a => a.id === data.accountId))
       ? data.accountId
       : (data.paymentMethod === 'numerario'
-          ? state.accounts.find(a => a.type === 'caixa')?.id || state.accounts.find(a => a.active)?.id || state.accounts[0]?.id
-          : state.accounts.find(a => a.type === 'banco')?.id || state.accounts.find(a => a.active)?.id || state.accounts[0]?.id)
-        || state.accounts[0]?.id;
-    const targetAccount = state.accounts.find(a => a.id === targetAccountId) || state.accounts[0];
+          ? liveState.accounts.find(a => a.type === 'caixa')?.id || liveState.accounts.find(a => a.active)?.id || liveState.accounts[0]?.id
+          : liveState.accounts.find(a => a.type === 'banco')?.id || liveState.accounts.find(a => a.active)?.id || liveState.accounts[0]?.id)
+        || liveState.accounts[0]?.id;
+    const targetAccount = liveState.accounts.find(a => a.id === targetAccountId) || liveState.accounts[0];
     if (!targetAccount) {
       return { success: false, error: 'Conta financeira institucional de destino não encontrada. Adicione uma conta em Contas e Balanço.' };
     }
 
-    const currentYear = state.settings.currentYear;
-    const existingRecNumbers = state.receipts.map((r) => r.receiptNumber);
+    const currentYear = liveState.settings.currentYear;
+    const existingRecNumbers = liveState.receipts.map((r) => r.receiptNumber);
     const receiptNumber = generateNextDocumentNumber('REC', currentYear, existingRecNumbers);
 
     const now = getNowISOString();
-    const lockCheck = isDateInLockedFiscalPeriod(state.monthlyClosings, now);
+    const lockCheck = isDateInLockedFiscalPeriod(liveState.monthlyClosings, now);
     if (lockCheck.locked) {
       return {
         success: false,
@@ -3549,16 +3838,6 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       accountName: targetAccount.name,
     };
 
-    const updatedAccounts = state.accounts.map((acc) => {
-      if (acc.id === targetAccountId) {
-        return {
-          ...acc,
-          currentBalanceInCents: acc.currentBalanceInCents + data.amountPaidInCents,
-        };
-      }
-      return acc;
-    });
-
     const auditEntry = createAuditLog(
       currentUser.id,
       currentUser.name,
@@ -3570,17 +3849,20 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       memberName
     );
 
-    const nextState: ClubDatabaseState = {
-      ...state,
-      updatedAt: now,
-      receipts: [newReceipt, ...state.receipts],
-      accounts: updatedAccounts,
-      auditLogs: [auditEntry, ...state.auditLogs],
-    };
-
-    setState(nextState);
-    saveStateToStorage(nextState);
-    pushToFirestore(nextState);
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        receipts: [newReceipt, ...prev.receipts],
+        accounts: prev.accounts.map((acc) =>
+          acc.id === targetAccountId
+            ? { ...acc, currentBalanceInCents: acc.currentBalanceInCents + data.amountPaidInCents }
+            : acc
+        ),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
 
     return { success: true, receiptNumber, receipt: newReceipt };
   };
@@ -4202,13 +4484,15 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     amountInCents: number;
     accountId?: string;
   }) => {
-    let seq = state.expenses.length + 1;
-    let newId = `EXP-${state.settings.currentYear}-${seq.toString().padStart(3, '0')}`;
-    while (state.expenses.some((e) => e.id === newId)) {
+    const curState = stateRef.current;
+    let seq = curState.expenses.length + 1;
+    let newId = `EXP-${curState.settings.currentYear}-${seq.toString().padStart(3, '0')}`;
+    while (curState.expenses.some((e) => e.id === newId)) {
       seq++;
-      newId = `EXP-${state.settings.currentYear}-${seq.toString().padStart(3, '0')}`;
+      newId = `EXP-${curState.settings.currentYear}-${seq.toString().padStart(3, '0')}`;
     }
 
+    const now = getNowISOString();
     const newExp: ExpenseRequest = {
       id: newId,
       title: data.title,
@@ -4219,13 +4503,17 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       requestedByName: currentUser.name,
       accountId: data.accountId,
       status: 'solicitado',
-      createdAt: getNowISOString(),
+      createdAt: now,
     };
 
-    setState((prev) => ({
-      ...prev,
-      expenses: [newExp, ...prev.expenses],
-    }));
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        expenses: [newExp, ...prev.expenses],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
 
     addNotification({
       title: `Nova Despesa: ${data.title}`,
@@ -4244,61 +4532,67 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Apenas Diretor ou Tesoureiro podem aprovar despesas.' };
     }
 
-    const exp = state.expenses.find((e) => e.id === id);
+    const curState = stateRef.current;
+    const exp = curState.expenses.find((e) => e.id === id);
     if (!exp) return { success: false, error: 'Despesa não encontrada.' };
 
+    const now = getNowISOString();
     // REGRA DE INTEGRIDADE: Se for solicitada pelo próprio utilizador, exige 2º aprovador independente!
     const isOwnRequest = exp.requestedByUserId === currentUser.id;
 
     if (isOwnRequest && !exp.approvedByUserId) {
       // Primeira aprovação em despesa própria: aguarda 2º aprovador
-      setState((prev) => {
-        const updated = prev.expenses.map((e) => {
-          if (e.id === id) {
-            return {
-              ...e,
-              approvedByUserId: currentUser.id,
-              approvedByName: currentUser.name,
-              approvalReason: reason || 'Pré-aprovação própria; requer 2º aprovador independente.',
-            };
-          }
-          return e;
-        });
-        return { ...prev, expenses: updated };
-      });
+      commitState(
+        (prev) => ({
+          ...prev,
+          updatedAt: now,
+          expenses: prev.expenses.map((e) =>
+            e.id === id
+              ? {
+                  ...e,
+                  approvedByUserId: currentUser.id,
+                  approvedByName: currentUser.name,
+                  approvalReason: reason || 'Pré-aprovação própria; requer 2º aprovador independente.',
+                }
+              : e
+          ),
+        }),
+        { saveLocal: true, pushCloud: true }
+      );
       logAction('treasury', 'PRE_APROVACAO_DESPESA', `Despesa própria pré-aprovada. Aguarda segundo aprovador independente.`, id, exp.title);
       return { success: true, error: 'Despesa própria: registada primeira assinatura. Requer segundo aprovador independente.' };
     }
 
     // Se já tinha 1º aprovador ou é de outro utilizador
-    setState((prev) => {
-      const updatedExpenses = prev.expenses.map((e) => {
-        if (e.id === id) {
-          return {
-            ...e,
-            status: 'aprovado' as const,
-            approvedByUserId: e.approvedByUserId || currentUser.id,
-            approvedByName: e.approvedByName || currentUser.name,
-            secondApproverUserId: isOwnRequest ? undefined : currentUser.id,
-            secondApproverName: isOwnRequest ? undefined : currentUser.name,
-            approvalReason: reason || e.approvalReason || 'Despesa aprovada em conformidade orçamental.',
-          };
-        }
-        return e;
-      });
+    commitState(
+      (prev) => {
+        const updatedExpenses = prev.expenses.map((e) =>
+          e.id === id
+            ? {
+                ...e,
+                status: 'aprovado' as const,
+                approvedByUserId: e.approvedByUserId || currentUser.id,
+                approvedByName: e.approvedByName || currentUser.name,
+                secondApproverUserId: isOwnRequest ? undefined : currentUser.id,
+                secondApproverName: isOwnRequest ? undefined : currentUser.name,
+                approvalReason: reason || e.approvalReason || 'Despesa aprovada em conformidade orçamental.',
+              }
+            : e
+        );
 
-      const updatedActivities = prev.activities.map((a) => {
-        if (a.expenseRequestId === id || (exp.activityId && a.id === exp.activityId)) {
-          return {
-            ...a,
-            costApprovedInCents: exp.amountInCents,
-          };
-        }
-        return a;
-      });
+        const updatedActivities = prev.activities.map((a) =>
+          a.expenseRequestId === id || (exp.activityId && a.id === exp.activityId)
+            ? {
+                ...a,
+                costApprovedInCents: exp.amountInCents,
+              }
+            : a
+        );
 
-      return { ...prev, expenses: updatedExpenses, activities: updatedActivities };
-    });
+        return { ...prev, updatedAt: now, expenses: updatedExpenses, activities: updatedActivities };
+      },
+      { saveLocal: true, pushCloud: true }
+    );
 
     addNotification({
       title: 'Despesa Aprovada pela Direção/Tesouraria',
@@ -4316,13 +4610,21 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!can('treasury', 'APPROVE') && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'diretor' && currentUser.role !== 'tesoureiro') {
       return { success: false, error: 'Apenas Diretor ou Tesoureiro podem rejeitar despesas.' };
     }
-    const exp = state.expenses.find((e) => e.id === id);
+    const curState = stateRef.current;
+    const exp = curState.expenses.find((e) => e.id === id);
     if (!exp) return { success: false, error: 'Despesa não encontrada.' };
-    
-    setState((prev) => ({
-      ...prev,
-      expenses: prev.expenses.map(e => e.id === id ? { ...e, status: 'rejeitado' as const, approvalReason: reason || 'Despesa não autorizada.' } : e)
-    }));
+
+    const now = getNowISOString();
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        expenses: prev.expenses.map((e) =>
+          e.id === id ? { ...e, status: 'rejeitado' as const, approvalReason: reason || 'Despesa não autorizada.' } : e
+        ),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
     logAction('treasury', 'REJEICAO_DESPESA', `Despesa rejeitada: ${reason}`, id, exp.title);
     return { success: true };
   };
@@ -4332,28 +4634,29 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Sem autorização para efetuar pagamento de despesa.' };
     }
 
-    const exp = state.expenses.find((e) => e.id === id);
+    const curState = stateRef.current;
+    const exp = curState.expenses.find((e) => e.id === id);
     if (!exp) return { success: false, error: 'Despesa não encontrada.' };
     if (exp.status !== 'aprovado') {
       return { success: false, error: 'Apenas despesas com aprovação prévia podem ser pagas.' };
     }
 
     let targetAccountId = accountId;
-    let account = state.accounts.find((a) => a.id === targetAccountId);
+    let account = curState.accounts.find((a) => a.id === targetAccountId);
     if (!account) {
-      account = state.accounts.find(a => a.active) || state.accounts[0];
+      account = curState.accounts.find((a) => a.active) || curState.accounts[0];
       if (account) targetAccountId = account.id;
     }
     if (!account) return { success: false, error: 'Conta financeira não encontrada.' };
     if (account.currentBalanceInCents < exp.amountInCents) {
-      return { 
-        success: false, 
-        error: `Saldo insuficiente na conta ${account.name}. Saldo disponível: ${(account.currentBalanceInCents / 100).toLocaleString('pt-AO')} Kz (Valor da despesa: ${(exp.amountInCents / 100).toLocaleString('pt-AO')} Kz).` 
+      return {
+        success: false,
+        error: `Saldo insuficiente na conta ${account.name}. Saldo disponível: ${(account.currentBalanceInCents / 100).toLocaleString('pt-AO')} Kz (Valor da despesa: ${(exp.amountInCents / 100).toLocaleString('pt-AO')} Kz).`,
       };
     }
 
     const now = getNowISOString();
-    const periodLock = isDateInLockedFiscalPeriod(state.monthlyClosings, now);
+    const periodLock = isDateInLockedFiscalPeriod(curState.monthlyClosings, now);
     if (periodLock.locked) {
       return {
         success: false,
@@ -4361,47 +4664,48 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
-    setState((prev) => {
-      const updatedExpenses = prev.expenses.map((e) => {
-        if (e.id === id) {
-          return {
-            ...e,
-            status: 'pago' as const,
-            accountId: targetAccountId,
-            paymentProofUrl: proofUrl || 'Comprovativo_Pagamento.pdf',
-            paidAt: now,
-          };
-        }
-        return e;
-      });
+    commitState(
+      (prev) => {
+        const updatedExpenses = prev.expenses.map((e) =>
+          e.id === id
+            ? {
+                ...e,
+                status: 'pago' as const,
+                accountId: targetAccountId,
+                paymentProofUrl: proofUrl || 'Comprovativo_Pagamento.pdf',
+                paidAt: now,
+              }
+            : e
+        );
 
-      const updatedAccounts = prev.accounts.map((a) => {
-        if (a.id === targetAccountId) {
-          return {
-            ...a,
-            currentBalanceInCents: a.currentBalanceInCents - exp.amountInCents,
-          };
-        }
-        return a;
-      });
+        const updatedAccounts = prev.accounts.map((a) =>
+          a.id === targetAccountId
+            ? {
+                ...a,
+                currentBalanceInCents: a.currentBalanceInCents - exp.amountInCents,
+              }
+            : a
+        );
 
-      const updatedActivities = prev.activities.map((a) => {
-        if (a.expenseRequestId === id || (exp.activityId && a.id === exp.activityId)) {
-          return {
-            ...a,
-            costPaidInCents: exp.amountInCents,
-          };
-        }
-        return a;
-      });
+        const updatedActivities = prev.activities.map((a) =>
+          a.expenseRequestId === id || (exp.activityId && a.id === exp.activityId)
+            ? {
+                ...a,
+                costPaidInCents: exp.amountInCents,
+              }
+            : a
+        );
 
-      return {
-        ...prev,
-        expenses: updatedExpenses,
-        accounts: updatedAccounts,
-        activities: updatedActivities,
-      };
-    });
+        return {
+          ...prev,
+          updatedAt: now,
+          expenses: updatedExpenses,
+          accounts: updatedAccounts,
+          activities: updatedActivities,
+        };
+      },
+      { saveLocal: true, pushCloud: true }
+    );
 
     logAction('treasury', 'PAGAMENTO_DESPESA', `Pagamento da despesa ${exp.title} debitado na conta ${account.name}`, id, exp.title);
     return { success: true };
@@ -4572,18 +4876,21 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // --- ATIVIDADES ---
   const createActivity = (data: Omit<ClubActivity, 'id' | 'createdAt' | 'tasks' | 'attendees'>) => {
-    console.log("[DEBUG] createActivity called with data:", data);
     if (!can('activities', 'CREATE')) {
-      console.warn("[DEBUG] createActivity: permission denied");
       return { success: false, error: 'Sem permissão para agendar atividades.' };
     }
 
+    if (data.endDate && getActivityDateOnly(data.endDate) < getActivityDateOnly(data.startDate)) {
+      return { success: false, error: 'A data de término não pode ser anterior à data de início.' };
+    }
+
+    const curState = stateRef.current;
     const now = getNowISOString();
-    const currentYr = state.settings?.currentYear || new Date().getFullYear();
-    
-    let seq = state.activities.length + 1;
+    const currentYr = curState.settings?.currentYear || new Date().getFullYear();
+
+    let seq = curState.activities.length + 1;
     let newId = `ACT-${currentYr}-${seq.toString().padStart(3, '0')}`;
-    while (state.activities.some((a) => a.id === newId)) {
+    while (curState.activities.some((a) => a.id === newId)) {
       seq++;
       newId = `ACT-${currentYr}-${seq.toString().padStart(3, '0')}`;
     }
@@ -4592,9 +4899,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let expenseId: string | undefined = undefined;
 
     if (data.costEstimatedInCents && data.costEstimatedInCents > 0) {
-      let expSeq = state.expenses.length + 1;
+      let expSeq = curState.expenses.length + 1;
       expenseId = `EXP-${currentYr}-${expSeq.toString().padStart(3, '0')}`;
-      while (state.expenses.some((e) => e.id === expenseId)) {
+      while (curState.expenses.some((e) => e.id === expenseId)) {
         expSeq++;
         expenseId = `EXP-${currentYr}-${expSeq.toString().padStart(3, '0')}`;
       }
@@ -4612,10 +4919,20 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
+    const canAuthorizePortal = canManageActivityPortalVisibility(
+      currentUser.role,
+      curState.settings.permissionsMatrix
+    );
+    const allowPortalVisibility = canAuthorizePortal ? Boolean(data.visibleInMemberPortal) : false;
+
     const newActivity: ClubActivity = {
       ...data,
       department: data.department || 'Instrução Geral',
       id: newId,
+      visibleInMemberPortal: allowPortalVisibility,
+      memberPortalPublishedByName: allowPortalVisibility ? currentUser.name : undefined,
+      memberPortalPublishedAt: allowPortalVisibility ? now : undefined,
+      rsvps: [],
       tasks: [],
       attendees: [],
       expenseRequestId: expenseId,
@@ -4624,14 +4941,6 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       costPaidInCents: 0,
       createdAt: now,
     };
-
-    const updatedActivities = [newActivity, ...state.activities.filter((a) => a.id !== newId)];
-    const updatedExpenses = generatedExpense
-      ? [generatedExpense, ...state.expenses.filter((e) => e.id !== expenseId)]
-      : state.expenses;
-
-    console.log("[DEBUG] createActivity: newActivity created:", newActivity);
-    console.log("[DEBUG] createActivity: updatedActivities length:", updatedActivities.length);
 
     const auditEntry = createAuditLog(
       currentUser.id,
@@ -4643,20 +4952,6 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       newId,
       data.title
     );
-    const updatedAuditLogs = [auditEntry, ...state.auditLogs];
-
-    if (generatedExpense) {
-      updatedAuditLogs.unshift(createAuditLog(
-        currentUser.id,
-        currentUser.name,
-        currentUser.role,
-        'treasury',
-        'SOLICITACAO_DESPESA_AUTOMATICA',
-        `Solicitação de custo gerada automaticamente para a atividade: ${data.title}`,
-        generatedExpense.id,
-        formatKz(data.costEstimatedInCents)
-      ));
-    }
 
     const newNotif: ClubNotification = {
       id: `NOTIF-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
@@ -4669,19 +4964,40 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       read: false,
     };
 
-    const nextState: ClubDatabaseState = {
-      ...state,
-      updatedAt: now,
-      activities: updatedActivities,
-      expenses: updatedExpenses,
-      notifications: [newNotif, ...(state.notifications || [])],
-      auditLogs: updatedAuditLogs,
-    };
+    commitState(
+      (prev) => {
+        const updatedActivities = [newActivity, ...prev.activities.filter((a) => a.id !== newId)];
+        const updatedExpenses = generatedExpense
+          ? [generatedExpense, ...prev.expenses.filter((e) => e.id !== expenseId)]
+          : prev.expenses;
+        const updatedAuditLogs = generatedExpense
+          ? [
+              createAuditLog(
+                currentUser.id,
+                currentUser.name,
+                currentUser.role,
+                'treasury',
+                'SOLICITACAO_DESPESA_AUTOMATICA',
+                `Solicitação de custo gerada automaticamente para a atividade: ${data.title}`,
+                generatedExpense.id,
+                formatKz(data.costEstimatedInCents)
+              ),
+              auditEntry,
+              ...prev.auditLogs,
+            ]
+          : [auditEntry, ...prev.auditLogs];
 
-    console.log("[DEBUG] createActivity: saving nextState...");
-    saveStateToStorage(nextState);
-    setState(nextState);
-    pushToFirestore(nextState).then(() => console.log("[DEBUG] createActivity: pushToFirestore successful"));
+        return {
+          ...prev,
+          updatedAt: now,
+          activities: updatedActivities,
+          expenses: updatedExpenses,
+          notifications: [newNotif, ...(prev.notifications || [])],
+          auditLogs: updatedAuditLogs,
+        };
+      },
+      { saveLocal: true, pushCloud: true }
+    );
 
     // Reproduzir feedback auditivo e nativo se o utilizador atual for destinatário
     const isTargetedForCurrent = isNotificationAuthorizedForUser(newNotif, currentUser);
@@ -4696,19 +5012,168 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true, activity: newActivity, id: newId };
   };
 
+  const updateActivity = (
+    id: string,
+    data: Partial<Omit<ClubActivity, 'id' | 'createdAt' | 'tasks' | 'attendees' | 'minute' | 'rsvps'>>
+  ) => {
+    if (!can('activities', 'EDIT')) {
+      return { success: false, error: 'Sem permissão para editar atividades.' };
+    }
+
+    const curState = stateRef.current;
+    const existing = curState.activities.find((a) => a.id === id);
+    if (!existing) {
+      return { success: false, error: 'Atividade não encontrada.' };
+    }
+
+    const nextTitle = (data.title !== undefined ? data.title : existing.title).trim();
+    const nextLocation = (data.location !== undefined ? data.location : existing.location).trim();
+    const nextStart = data.startDate !== undefined ? data.startDate : existing.startDate;
+    const nextEnd = data.endDate !== undefined ? data.endDate : existing.endDate;
+
+    if (!nextTitle) return { success: false, error: 'O título da atividade é obrigatório.' };
+    if (!nextLocation) return { success: false, error: 'O local da atividade é obrigatório.' };
+    if (!nextStart) return { success: false, error: 'A data de início é obrigatória.' };
+    if (nextEnd && getActivityDateOnly(nextEnd) < getActivityDateOnly(nextStart)) {
+      return { success: false, error: 'A data de término não pode ser anterior à data de início.' };
+    }
+
+    const now = getNowISOString();
+    const currentYr = curState.settings?.currentYear || new Date().getFullYear();
+    const canAuthorizePortal = canManageActivityPortalVisibility(
+      currentUser.role,
+      curState.settings.permissionsMatrix
+    );
+
+    const nextVisibleInPortal =
+      data.visibleInMemberPortal !== undefined && canAuthorizePortal
+        ? Boolean(data.visibleInMemberPortal)
+        : Boolean(existing.visibleInMemberPortal);
+
+    const nextHasCost = data.hasCost !== undefined ? Boolean(data.hasCost) : Boolean(existing.hasCost);
+    const nextEstimatedCost =
+      nextHasCost && data.costEstimatedInCents !== undefined
+        ? Math.max(0, data.costEstimatedInCents)
+        : nextHasCost
+        ? existing.costEstimatedInCents
+        : 0;
+
+    let updatedActivityResult: ClubActivity = existing;
+
+    commitState(
+      (prev) => {
+        let updatedExpenses = prev.expenses;
+        let nextExpenseId = existing.expenseRequestId;
+
+        if (nextHasCost && nextEstimatedCost > 0) {
+          const linkedExpense = prev.expenses.find(
+            (e) => e.id === existing.expenseRequestId || e.activityId === existing.id
+          );
+          if (linkedExpense) {
+            nextExpenseId = linkedExpense.id;
+            if (linkedExpense.status === 'solicitado') {
+              updatedExpenses = prev.expenses.map((e) =>
+                e.id === linkedExpense.id
+                  ? {
+                      ...e,
+                      title: `Custo de Atividade: ${nextTitle}`,
+                      amountInCents: nextEstimatedCost,
+                    }
+                  : e
+              );
+            }
+          } else {
+            let expSeq = prev.expenses.length + 1;
+            let newExpenseId = `EXP-${currentYr}-${expSeq.toString().padStart(3, '0')}`;
+            while (prev.expenses.some((e) => e.id === newExpenseId)) {
+              expSeq++;
+              newExpenseId = `EXP-${currentYr}-${expSeq.toString().padStart(3, '0')}`;
+            }
+            nextExpenseId = newExpenseId;
+            const createdExpense: ExpenseRequest = {
+              id: newExpenseId,
+              activityId: existing.id,
+              title: `Custo de Atividade: ${nextTitle}`,
+              description: `Orçamento operacional solicitado após edição da atividade "${nextTitle}" em ${nextLocation}.`,
+              category: 'Atividades e Eventos',
+              amountInCents: nextEstimatedCost,
+              requestedByUserId: currentUser.id,
+              requestedByName: currentUser.name,
+              status: 'solicitado',
+              createdAt: now,
+            };
+            updatedExpenses = [createdExpense, ...prev.expenses];
+          }
+        } else {
+          // Se o custo foi desativado na edição, remove pedidos pendentes ainda em "solicitado"
+          const linkedPending = prev.expenses.find(
+            (e) =>
+              (e.id === existing.expenseRequestId || e.activityId === existing.id) &&
+              e.status === 'solicitado'
+          );
+          if (linkedPending) {
+            updatedExpenses = prev.expenses.filter((e) => e.id !== linkedPending.id);
+            if (nextExpenseId === linkedPending.id) {
+              nextExpenseId = undefined;
+            }
+          } else if (!nextHasCost) {
+            nextExpenseId = undefined;
+          }
+        }
+
+        updatedActivityResult = {
+          ...existing,
+          ...data,
+          title: nextTitle,
+          location: nextLocation,
+          startDate: nextStart,
+          endDate: nextEnd || undefined,
+          department: (data.department !== undefined ? data.department : existing.department) || 'Instrução Geral',
+          hasCost: nextHasCost && nextEstimatedCost > 0,
+          costEstimatedInCents: nextEstimatedCost,
+          expenseRequestId: nextExpenseId,
+          visibleInMemberPortal: nextVisibleInPortal,
+          memberPortalPublishedByName:
+            nextVisibleInPortal && !existing.visibleInMemberPortal
+              ? currentUser.name
+              : existing.memberPortalPublishedByName,
+          memberPortalPublishedAt:
+            nextVisibleInPortal && !existing.visibleInMemberPortal
+              ? now
+              : existing.memberPortalPublishedAt,
+        };
+
+        const auditEntry = createAuditLog(
+          currentUser.id,
+          currentUser.name,
+          currentUser.role,
+          'activities',
+          'EDICAO_ATIVIDADE',
+          `Atividade atualizada: ${updatedActivityResult.title}`,
+          id,
+          updatedActivityResult.title
+        );
+
+        return {
+          ...prev,
+          updatedAt: now,
+          activities: prev.activities.map((a) => (a.id === id ? updatedActivityResult : a)),
+          expenses: updatedExpenses,
+          auditLogs: [auditEntry, ...prev.auditLogs],
+        };
+      },
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true, activity: updatedActivityResult };
+  };
+
   const updateActivityStage = (id: string, stage: ClubActivity['stage']) => {
     if (!can('activities', 'EDIT') && !can('associate_director', 'EDIT')) {
       return { success: false, error: 'Sem autorização para alterar a fase da atividade.' };
     }
 
     const now = getNowISOString();
-    const updated = state.activities.map((a) => {
-      if (a.id === id) {
-        return { ...a, stage };
-      }
-      return a;
-    });
-
     const auditEntry = createAuditLog(
       currentUser.id,
       currentUser.name,
@@ -4719,34 +5184,156 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       id
     );
 
-    const nextState: ClubDatabaseState = {
-      ...state,
-      updatedAt: now,
-      activities: updated,
-      auditLogs: [auditEntry, ...state.auditLogs],
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        activities: prev.activities.map((a) => (a.id === id ? { ...a, stage } : a)),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true };
+  };
+
+  const decideActivityApproval = (
+    id: string,
+    decision: 'aprovar' | 'devolver',
+    notes?: string
+  ) => {
+    const curState = stateRef.current;
+    if (!canManageActivityPortalVisibility(currentUser.role, curState.settings.permissionsMatrix)) {
+      return { success: false, error: 'Apenas o Diretor ou responsável autorizado pode aprovar ou devolver atividades.' };
+    }
+
+    const target = curState.activities.find((a) => a.id === id);
+    if (!target) {
+      return { success: false, error: 'Atividade não encontrada.' };
+    }
+
+    if (decision === 'devolver' && !notes?.trim()) {
+      return { success: false, error: 'Indique o parecer ou motivo ao devolver a atividade para ajustes.' };
+    }
+
+    const now = getNowISOString();
+    const nextStage: ClubActivity['stage'] =
+      decision === 'aprovar'
+        ? target.stage === 'planeamento' || target.stage === 'aprovacao'
+          ? 'preparacao'
+          : target.stage
+        : 'planeamento';
+
+    const updatedActivity: ClubActivity = {
+      ...target,
+      isApprovedByDirector: decision === 'aprovar',
+      stage: nextStage,
+      directorDecisionNotes: notes?.trim() || undefined,
+      directorDecisionByName: currentUser.name,
+      directorDecisionAt: now,
     };
 
-    setState(nextState);
-    saveStateToStorage(nextState);
-    pushToFirestore(nextState);
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'activities',
+      decision === 'aprovar' ? 'APROVACAO_ATIVIDADE' : 'DEVOLUCAO_ATIVIDADE',
+      decision === 'aprovar'
+        ? `Atividade aprovada pela Direção: ${target.title}`
+        : `Atividade devolvida para planeamento (${target.title}): ${notes?.trim()}`,
+      id,
+      target.title
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        activities: prev.activities.map((a) => (a.id === id ? updatedActivity : a)),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true };
+  };
+
+  const toggleActivityPortalVisibility = (id: string, visible: boolean) => {
+    const curState = stateRef.current;
+    if (!canManageActivityPortalVisibility(currentUser.role, curState.settings.permissionsMatrix)) {
+      return {
+        success: false,
+        error: 'Apenas o Diretor pode autorizar ou ocultar atividades no Portal do Membro.',
+      };
+    }
+
+    const target = curState.activities.find((a) => a.id === id);
+    if (!target) {
+      return { success: false, error: 'Atividade não encontrada.' };
+    }
+
+    const now = getNowISOString();
+    const updatedActivity: ClubActivity = {
+      ...target,
+      visibleInMemberPortal: visible,
+      memberPortalPublishedByName: visible ? currentUser.name : target.memberPortalPublishedByName,
+      memberPortalPublishedAt: visible ? now : target.memberPortalPublishedAt,
+    };
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'activities',
+      'VISIBILIDADE_PORTAL_ATIVIDADE',
+      visible
+        ? `Atividade autorizada no Portal do Membro pelo Diretor: ${target.title}`
+        : `Atividade ocultada do Portal do Membro: ${target.title}`,
+      id,
+      target.title
+    );
+
+    const nextNotif: ClubNotification | null = visible
+      ? {
+          id: `NOTIF-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          title: `Agenda do Clube: ${target.title}`,
+          message: `Nova atividade disponível no Portal do Membro para ${formatDateAO(target.startDate)} em ${target.location}. Confirme a sua presença!`,
+          category: 'announcement',
+          targetModule: 'member_portal',
+          targetId: target.id,
+          recipientRoles: ['membro', 'diretor', 'diretor_associado', 'secretario', 'tesoureiro', 'instrutor', 'capelao'],
+          priority: 'normal',
+          timestamp: now,
+          read: false,
+        }
+      : null;
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        activities: prev.activities.map((a) => (a.id === id ? updatedActivity : a)),
+        notifications: nextNotif ? [nextNotif, ...(prev.notifications || [])] : prev.notifications,
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
 
     return { success: true };
   };
 
   const deleteActivity = (id: string) => {
-    console.log("[DEBUG] deleteActivity called for id:", id);
     if (!can('activities', 'ARCHIVE') && !can('activities', 'EDIT') && currentUser.role !== 'diretor' && currentUser.role !== 'admin_tecnico') {
-      console.warn("[DEBUG] deleteActivity: permission denied");
       return { success: false, error: 'Sem autorização para eliminar atividades.' };
     }
-    const act = state.activities.find((a) => a.id === id);
+    const curState = stateRef.current;
+    const act = curState.activities.find((a) => a.id === id);
     if (!act) {
-      console.warn("[DEBUG] deleteActivity: activity not found");
       return { success: false, error: 'Atividade não encontrada.' };
     }
 
     const now = getNowISOString();
-    const updatedActivities = state.activities.filter((a) => a.id !== id);
     const auditEntry = createAuditLog(
       currentUser.id,
       currentUser.name,
@@ -4758,17 +5345,15 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       act.title
     );
 
-    const nextState: ClubDatabaseState = {
-      ...state,
-      updatedAt: now,
-      activities: updatedActivities,
-      auditLogs: [auditEntry, ...state.auditLogs],
-    };
-
-    console.log("[DEBUG] deleteActivity: saving state and pushing to Firestore...");
-    saveStateToStorage(nextState);
-    setState(nextState);
-    pushToFirestore(nextState).then(() => console.log("[DEBUG] deleteActivity: pushToFirestore successful"));
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        activities: prev.activities.filter((a) => a.id !== id),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
 
     return { success: true };
   };
@@ -4777,86 +5362,243 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!can('activities', 'EDIT')) return;
 
     const now = getNowISOString();
-    const updated = state.activities.map((act) => {
-      if (act.id === activityId) {
-        const existing = act.attendees.filter((att) => att.memberId !== memberId);
-        return {
-          ...act,
-          attendees: [...existing, { memberId, present, notes }],
-        };
-      }
-      return act;
-    });
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        activities: prev.activities.map((act) => {
+          if (act.id === activityId) {
+            const existing = act.attendees.filter((att) => att.memberId !== memberId);
+            return {
+              ...act,
+              attendees: [...existing, { memberId, present, notes }],
+            };
+          }
+          return act;
+        }),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+  };
 
-    const nextState: ClubDatabaseState = {
-      ...state,
-      updatedAt: now,
-      activities: updated,
-    };
+  const batchToggleAttendance = (activityId: string, memberIds: string[], present: boolean) => {
+    if (!can('activities', 'EDIT')) {
+      return { success: false, error: 'Sem permissão para registar presenças.' };
+    }
+    if (!memberIds || memberIds.length === 0) {
+      return { success: false, error: 'Nenhum membro selecionado para marcação em lote.' };
+    }
 
-    setState(nextState);
-    saveStateToStorage(nextState);
-    pushToFirestore(nextState);
+    const curState = stateRef.current;
+    const targetAct = curState.activities.find((a) => a.id === activityId);
+    if (!targetAct) {
+      return { success: false, error: 'Atividade não encontrada.' };
+    }
+
+    const now = getNowISOString();
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'activities',
+      'CHAMADA_EM_LOTE',
+      `Chamada em lote (${present ? 'Presente' : 'Ausente'}) aplicada a ${memberIds.length} membro(s) em "${targetAct.title}".`,
+      activityId,
+      targetAct.title
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        activities: applyBatchAttendanceToActivities(prev.activities, activityId, memberIds, present),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true };
   };
 
   const addTaskToActivity = (activityId: string, task: Omit<ClubActivity['tasks'][0], 'id'>) => {
-    const taskId = `TSK-${Date.now()}`;
+    if (!can('activities', 'EDIT') && !can('associate_director', 'EDIT')) {
+      return { success: false, error: 'Sem permissão para atribuir tarefas.' };
+    }
+    if (!task.title || !task.title.trim()) {
+      return { success: false, error: 'A descrição da tarefa é obrigatória.' };
+    }
+
+    const taskId = `TSK-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const now = getNowISOString();
-
-    const updated = state.activities.map((act) => {
-      if (act.id === activityId) {
-        return {
-          ...act,
-          tasks: [...act.tasks, { ...task, id: taskId }],
-        };
-      }
-      return act;
-    });
-
-    const nextState: ClubDatabaseState = {
-      ...state,
-      updatedAt: now,
-      activities: updated,
+    const cleanTask = {
+      ...task,
+      title: task.title.trim(),
+      id: taskId,
     };
 
-    setState(nextState);
-    saveStateToStorage(nextState);
-    pushToFirestore(nextState);
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'activities',
+      'CRIACAO_TAREFA',
+      `Nova tarefa atribuída: ${cleanTask.title} (${cleanTask.assigneeName || 'Sem responsável'})`,
+      taskId,
+      cleanTask.title
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        activities: prev.activities.map((act) =>
+          act.id === activityId
+            ? { ...act, tasks: [...act.tasks, cleanTask] }
+            : act
+        ),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true };
   };
 
   const updateTaskStatus = (activityId: string, taskId: string, status: ClubActivity['tasks'][0]['status']) => {
+    if (!can('activities', 'EDIT') && !can('associate_director', 'EDIT')) {
+      return { success: false, error: 'Sem permissão para atualizar estado de tarefas.' };
+    }
+
     const now = getNowISOString();
-    const updated = state.activities.map((act) => {
-      if (act.id === activityId) {
-        return {
-          ...act,
-          tasks: act.tasks.map((t) => (t.id === taskId ? { ...t, status } : t)),
-        };
-      }
-      return act;
-    });
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'activities',
+      'ALTERACAO_ESTADO_TAREFA',
+      `Estado da tarefa atualizado para ${status}`,
+      taskId
+    );
 
-    const nextState: ClubDatabaseState = {
-      ...state,
-      updatedAt: now,
-      activities: updated,
-    };
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        activities: prev.activities.map((act) =>
+          act.id === activityId
+            ? {
+                ...act,
+                tasks: act.tasks.map((t) => (t.id === taskId ? { ...t, status } : t)),
+              }
+            : act
+        ),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
 
-    setState(nextState);
-    saveStateToStorage(nextState);
-    pushToFirestore(nextState);
+    return { success: true };
+  };
+
+  const updateTaskInActivity = (
+    activityId: string,
+    taskId: string,
+    updates: Partial<Omit<ActivityTask, 'id'>>
+  ) => {
+    if (!can('activities', 'EDIT') && !can('associate_director', 'EDIT')) {
+      return { success: false, error: 'Sem permissão para editar tarefas.' };
+    }
+    if (updates.title !== undefined && !updates.title.trim()) {
+      return { success: false, error: 'A descrição da tarefa não pode estar vazia.' };
+    }
+
+    const now = getNowISOString();
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'activities',
+      'EDICAO_TAREFA',
+      `Tarefa atualizada na atividade`,
+      taskId
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        activities: prev.activities.map((act) =>
+          act.id === activityId
+            ? {
+                ...act,
+                tasks: act.tasks.map((t) =>
+                  t.id === taskId
+                    ? {
+                        ...t,
+                        ...updates,
+                        title: updates.title !== undefined ? updates.title.trim() : t.title,
+                      }
+                    : t
+                ),
+              }
+            : act
+        ),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true };
+  };
+
+  const deleteTaskFromActivity = (activityId: string, taskId: string) => {
+    if (!can('activities', 'EDIT') && !can('associate_director', 'EDIT')) {
+      return { success: false, error: 'Sem permissão para eliminar tarefas.' };
+    }
+
+    const now = getNowISOString();
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'activities',
+      'REMOCAO_TAREFA',
+      `Tarefa removida da atividade`,
+      taskId
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        activities: prev.activities.map((act) =>
+          act.id === activityId
+            ? {
+                ...act,
+                tasks: act.tasks.filter((t) => t.id !== taskId),
+              }
+            : act
+        ),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true };
   };
 
   const saveMinuteToActivity = (
     activityId: string,
-    minuteData: Omit<NonNullable<ClubActivity['minute']>, 'id' | 'minuteNumber'>
+    minuteData: Omit<NonNullable<ClubActivity['minute']>, 'id' | 'minuteNumber'>,
+    tasksToAdd?: Omit<ActivityTask, 'id'>[]
   ) => {
     if (!can('activities', 'CREATE')) {
       return { success: false, error: 'Sem permissão para redigir atas.' };
     }
 
-    const currentYear = state.settings.currentYear;
-    const targetActivity = state.activities.find((a) => a.id === activityId);
+    const curState = stateRef.current;
+    const currentYear = curState.settings.currentYear;
+    const targetActivity = curState.activities.find((a) => a.id === activityId);
     if (!targetActivity || !canActivityHaveMinute(targetActivity.type)) {
       return {
         success: false,
@@ -4865,16 +5607,18 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const existingMinuteNumber = targetActivity.minute?.minuteNumber;
-    const existingDocNumbers = state.documents.map((d) => d.documentNumber);
+    const existingDocNumbers = curState.documents.map((d) => d.documentNumber);
     const minuteNumber =
       existingMinuteNumber ||
       generateNextDocumentNumber('ATA', currentYear, existingDocNumbers);
     const now = getNowISOString();
 
-    const resolvedOfficers = resolveMinuteOfficers(state.users, currentUser);
+    const resolvedOfficers = resolveMinuteOfficers(curState.users, currentUser);
+    const minuteStatus = minuteData.status || 'aprovada';
 
     const minute = {
       ...minuteData,
+      status: minuteStatus,
       chairPerson: resolvedOfficers.chairPerson,
       secretary: resolvedOfficers.secretary,
       id: minuteNumber,
@@ -4888,77 +5632,162 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       secretaryUserId: resolvedOfficers.secretaryUserId,
       local: minuteData.location,
       presentes: minuteData.attendeesCount,
+      quorumMet: minuteData.quorumMet,
+      minuteStatus,
       agenda: minuteData.agenda,
       deliberacao: minuteData.deliberations,
       deliberations: minuteData.deliberations,
     };
 
-    const docTitle = targetActivity
-      ? `Ata da Reunião - ${targetActivity.title}`
-      : `Ata da Reunião - ${minuteData.date}`;
+    const docTitle = `Ata da Reunião - ${targetActivity.title}`;
 
-    const existingOfficialDoc = state.documents.find(
-      (d) => d.documentNumber === minuteNumber
-    );
+    const generatedTasks: ActivityTask[] = (tasksToAdd || [])
+      .filter((t) => t.title && t.title.trim().length > 0)
+      .map((t, index) => ({
+        ...t,
+        title: t.title.trim(),
+        id: `TSK-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 5)}`,
+      }));
 
-    const officialDoc: OfficialDocument = existingOfficialDoc
-      ? {
-          ...existingOfficialDoc,
-          title: docTitle,
-          issuedByUserId: currentUser.id,
-          issuedByName: currentUser.name,
-          issuedByRole: currentUser.role,
-          issuedAt: now,
-          contentData,
-        }
-      : {
-          id: `DOC-${Date.now()}`,
-          documentNumber: minuteNumber,
-          documentType: 'ata',
-          title: docTitle,
-          year: currentYear,
-          issuedByUserId: currentUser.id,
-          issuedByName: currentUser.name,
-          issuedByRole: currentUser.role,
-          issuedAt: now,
-          contentData,
-          isCancelled: false,
-        };
-
-    const updatedActivities = state.activities.map((a) => {
-      if (a.id === activityId) {
-        return { ...a, minute };
-      }
-      return a;
-    });
-
-    const updatedDocuments = existingOfficialDoc
-      ? state.documents.map((d) =>
-          d.documentNumber === minuteNumber ? officialDoc : d
-        )
-      : [officialDoc, ...state.documents];
-
-    const nextState: ClubDatabaseState = {
-      ...state,
-      updatedAt: now,
-      activities: updatedActivities,
-      documents: updatedDocuments,
-    };
-
-    setState(nextState);
-    saveStateToStorage(nextState);
-    pushToFirestore(nextState);
-
-    logAction(
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
       'activities',
       'EMISSAO_ATA',
-      existingMinuteNumber
-        ? `Ata ${minuteNumber} atualizada`
-        : `Ata ${minuteNumber} redigida e anexada`,
+      `${existingMinuteNumber ? `Ata ${minuteNumber} atualizada` : `Ata ${minuteNumber} redigida e anexada`} (${minuteStatus === 'rascunho' ? 'Rascunho' : 'Aprovada'})${generatedTasks.length > 0 ? ` com ${generatedTasks.length} tarefa(s) gerada(s)` : ''}`,
       activityId,
       minuteNumber
     );
+
+    commitState(
+      (prev) => {
+        const existingOfficialDoc = prev.documents.find(
+          (d) => d.documentNumber === minuteNumber
+        );
+
+        const officialDoc: OfficialDocument = existingOfficialDoc
+          ? {
+              ...existingOfficialDoc,
+              title: docTitle,
+              issuedByUserId: currentUser.id,
+              issuedByName: currentUser.name,
+              issuedByRole: currentUser.role,
+              issuedAt: now,
+              contentData,
+            }
+          : {
+              id: `DOC-${Date.now()}`,
+              documentNumber: minuteNumber,
+              documentType: 'ata',
+              title: docTitle,
+              year: currentYear,
+              issuedByUserId: currentUser.id,
+              issuedByName: currentUser.name,
+              issuedByRole: currentUser.role,
+              issuedAt: now,
+              contentData,
+              isCancelled: false,
+            };
+
+        return {
+          ...prev,
+          updatedAt: now,
+          activities: prev.activities.map((a) =>
+            a.id === activityId
+              ? {
+                  ...a,
+                  minute,
+                  tasks: generatedTasks.length > 0 ? [...a.tasks, ...generatedTasks] : a.tasks,
+                }
+              : a
+          ),
+          documents: existingOfficialDoc
+            ? prev.documents.map((d) =>
+                d.documentNumber === minuteNumber ? officialDoc : d
+              )
+            : [officialDoc, ...prev.documents],
+          auditLogs: [auditEntry, ...prev.auditLogs],
+        };
+      },
+      { saveLocal: true, pushCloud: true }
+    );
+
     return { success: true, minuteNumber };
+  };
+
+  const submitActivityRsvp = (
+    activityId: string,
+    status: ActivityRsvpStatus,
+    note?: string
+  ) => {
+    const curState = stateRef.current;
+    const member = getStrictLinkedMember(currentUser, curState.members);
+    if (!member) {
+      return {
+        success: false,
+        error: 'A sua conta não está vinculada a nenhuma ficha oficial de membro.',
+      };
+    }
+
+    const targetActivity = curState.activities.find((a) => a.id === activityId);
+    if (!targetActivity) {
+      return { success: false, error: 'Atividade não encontrada.' };
+    }
+    if (targetActivity.visibleInMemberPortal !== true) {
+      return {
+        success: false,
+        error: 'Esta atividade não está autorizada pelo Diretor para visualização no Portal do Membro.',
+      };
+    }
+    if (targetActivity.stage === 'encerrado') {
+      return {
+        success: false,
+        error: 'Esta atividade já foi encerrada.',
+      };
+    }
+
+    const now = getNowISOString();
+    const statusLabel =
+      status === 'vou' ? 'Vou Participar' : status === 'talvez' ? 'Talvez' : 'Não Posso Ir';
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'member_portal',
+      'CONFIRMACAO_PRESENCA_ATIVIDADE',
+      `${member.fullName} confirmou "${statusLabel}" para "${targetActivity.title}"`,
+      activityId,
+      targetActivity.title
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        activities: prev.activities.map((act) => {
+          if (act.id !== activityId) return act;
+          const filtered = (act.rsvps || []).filter((r) => r.memberId !== member.id);
+          return {
+            ...act,
+            rsvps: [
+              ...filtered,
+              {
+                memberId: member.id,
+                memberName: member.fullName,
+                status,
+                note: note?.trim() || undefined,
+                updatedAt: now,
+              },
+            ],
+          };
+        }),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true };
   };
 
   // --- FORMAÇÃO ---
@@ -4972,22 +5801,24 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const now = getNowISOString();
-
-    setState((prev) => {
-      const updated = prev.trainingProgress.map((prg) => {
-        if (prg.id === progressId) {
-          return {
-            ...prg,
-            completedRequirements: completedReqs,
-            instructorValidated: true,
-            observations: notes || prg.observations,
-            updatedAt: now,
-          };
-        }
-        return prg;
-      });
-      return { ...prev, trainingProgress: updated };
-    });
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        trainingProgress: prev.trainingProgress.map((prg) =>
+          prg.id === progressId
+            ? {
+                ...prg,
+                completedRequirements: completedReqs,
+                instructorValidated: true,
+                observations: notes || prg.observations,
+                updatedAt: now,
+              }
+            : prg
+        ),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
 
     logAction('training', 'ATUALIZACAO_REQUISITOS', `Progresso de formação atualizado pelo instrutor`, progressId);
     return { success: true };
@@ -5004,7 +5835,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Sem permissão para inscrever membro em módulo ou medalha.' };
     }
 
-    const nextId = `PRG-${Date.now().toString().slice(-4)}`;
+    const now = getNowISOString();
+    const nextId = `PRG-${Date.now().toString().slice(-4)}-${Math.random().toString(36).slice(2, 5)}`;
     const newProgress: MemberTrainingProgress = {
       id: nextId,
       memberId,
@@ -5017,13 +5849,17 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       instructorName: currentUser.name,
       instructorValidated: false,
       finalAuthorizedApproval: false,
-      updatedAt: getNowISOString(),
+      updatedAt: now,
     };
 
-    setState((prev) => ({
-      ...prev,
-      trainingProgress: [newProgress, ...prev.trainingProgress],
-    }));
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        trainingProgress: [newProgress, ...prev.trainingProgress],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
 
     logAction('training', 'INICIO_CLASSE', `Membro inscrito em ${targetTitle}`, nextId, targetTitle);
     return { success: true };
@@ -5039,14 +5875,15 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Apenas a Direção ou Instrutores autorizados têm permissão para aprovar investiduras.' };
     }
 
-    const item = state.trainingProgress.find((p) => p.id === progressId);
+    const curState = stateRef.current;
+    const item = curState.trainingProgress.find((p) => p.id === progressId);
     if (!item) return { success: false, error: 'Registo de formação não encontrado.' };
 
     const classObj = item.type === 'classe'
-      ? state.classes.find((c) => c.id === item.targetId || c.code === item.targetId || c.title?.toLowerCase() === item.targetTitle?.toLowerCase())
+      ? curState.classes.find((c) => c.id === item.targetId || c.code === item.targetId || c.title?.toLowerCase() === item.targetTitle?.toLowerCase())
       : null;
     const specObj = item.type === 'especialidade'
-      ? state.specialties.find((s) => s.id === item.targetId || s.code === item.targetId || s.title?.toLowerCase() === item.targetTitle?.toLowerCase())
+      ? curState.specialties.find((s) => s.id === item.targetId || s.code === item.targetId || s.title?.toLowerCase() === item.targetTitle?.toLowerCase())
       : null;
 
     const actualReqs = (item.type === 'classe' ? classObj?.requirements : specObj?.requirements) || [];
@@ -5054,24 +5891,27 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const allCompleted = Array.from({ length: totalCount }, (_, i) => i + 1);
     const now = getNowISOString();
 
-    setState((prev) => {
-      const updated = prev.trainingProgress.map((p) => {
-        if (p.id === progressId) {
-          return {
-            ...p,
-            totalRequirements: totalCount,
-            completedRequirements: allCompleted,
-            instructorValidated: true,
-            finalAuthorizedApproval: true,
-            approvedByDirectorId: currentUser.id,
-            approvedAt: now,
-            updatedAt: now,
-          };
-        }
-        return p;
-      });
-      return { ...prev, trainingProgress: updated };
-    });
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        trainingProgress: prev.trainingProgress.map((p) =>
+          p.id === progressId
+            ? {
+                ...p,
+                totalRequirements: totalCount,
+                completedRequirements: allCompleted,
+                instructorValidated: true,
+                finalAuthorizedApproval: true,
+                approvedByDirectorId: currentUser.id,
+                approvedAt: now,
+                updatedAt: now,
+              }
+            : p
+        ),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
 
     logAction(
       'training',
@@ -5093,26 +5933,29 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Apenas a Direção ou Instrutores autorizados têm permissão para reabrir aprovações de investidura.' };
     }
 
-    const item = state.trainingProgress.find((p) => p.id === progressId);
+    const curState = stateRef.current;
+    const item = curState.trainingProgress.find((p) => p.id === progressId);
     if (!item) return { success: false, error: 'Registo de formação não encontrado.' };
 
     const now = getNowISOString();
-
-    setState((prev) => ({
-      ...prev,
-      trainingProgress: prev.trainingProgress.map((p) => {
-        if (p.id === progressId) {
-          return {
-            ...p,
-            finalAuthorizedApproval: false,
-            approvedByDirectorId: undefined,
-            approvedAt: undefined,
-            updatedAt: now,
-          };
-        }
-        return p;
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        trainingProgress: prev.trainingProgress.map((p) =>
+          p.id === progressId
+            ? {
+                ...p,
+                finalAuthorizedApproval: false,
+                approvedByDirectorId: undefined,
+                approvedAt: undefined,
+                updatedAt: now,
+              }
+            : p
+        ),
       }),
-    }));
+      { saveLocal: true, pushCloud: true }
+    );
 
     logAction('training', 'REVOGACAO_INVESTIDURA', `Aprovação de investidura reaberta para reavaliação de ${item.targetTitle}`, progressId, item.targetTitle);
     return { success: true };
@@ -5127,13 +5970,19 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Apenas a Direção possui permissão para retirar/desmatricular um membro do módulo ou medalha.' };
     }
 
-    const item = state.trainingProgress.find((p) => p.id === progressId);
+    const curState = stateRef.current;
+    const item = curState.trainingProgress.find((p) => p.id === progressId);
     if (!item) return { success: false, error: 'Registo de formação não encontrado.' };
 
-    setState((prev) => ({
-      ...prev,
-      trainingProgress: prev.trainingProgress.filter((p) => p.id !== progressId),
-    }));
+    const now = getNowISOString();
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        trainingProgress: prev.trainingProgress.filter((p) => p.id !== progressId),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
 
     logAction('training', 'DESMATRICULA_CLASSE', `Membro desmatriculado/retirado de ${item.targetTitle}`, progressId, item.targetTitle);
     return { success: true };
@@ -5707,9 +6556,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // E elimina automaticamente qualquer conta de utilizador vinculada sem exigir autorização prévia do administrador
     const { updatedUsers, removedUsers } = removeLinkedAccountsForMember(state.users, target);
     if (removedUsers.length > 0) {
-      import('../services/pushService').then(({ removePushSubscription }) => {
-        removedUsers.forEach((u) => removePushSubscription(u.id));
-      }).catch(() => {});
+      removedUsers.forEach((u) => {
+        removePushSubscription(u.id).catch(() => {});
+      });
     }
 
     const auditEntries: AuditLogEntry[] = [
@@ -5804,6 +6653,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const finalIssuedToName = issuedToName && issuedToName.trim() ? issuedToName.trim() : (state.members[0]?.fullName || 'Membro do Clube');
     const finalIssuedToMemberId = issuedToMemberId && issuedToMemberId.trim() ? issuedToMemberId.trim() : state.members[0]?.id;
 
+    const now = getNowISOString();
     const newDoc: OfficialDocument = {
       id: `DOC-${Date.now()}`,
       documentNumber: docNumber,
@@ -5815,17 +6665,32 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       issuedByUserId: currentUser.id,
       issuedByName: currentUser.name,
       issuedByRole: currentUser.role,
-      issuedAt: getNowISOString(),
+      issuedAt: now,
       contentData: content,
       isCancelled: false,
     };
 
-    setState((prev) => ({
-      ...prev,
-      documents: [newDoc, ...prev.documents],
-    }));
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'documents',
+      'EMISSAO_DOCUMENTO',
+      `Emissão de documento ${docNumber}: ${title}`,
+      docNumber,
+      title
+    );
 
-    logAction('documents', 'EMISSAO_DOCUMENTO', `Emissão de documento ${docNumber}: ${title}`, docNumber, title);
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      documents: [newDoc, ...state.documents],
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
     return { success: true, docNumber };
   };
 
@@ -5837,26 +6702,49 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Obrigatório especificar o motivo da anulação.' };
     }
 
-    const now = getNowISOString();
-    let docNumber = '';
+    const targetDoc = state.documents.find((d) => d.id === id);
+    if (!targetDoc) {
+      return { success: false, error: 'Documento oficial não encontrado.' };
+    }
+    if (targetDoc.isCancelled) {
+      return { success: false, error: 'Este documento já se encontra anulado.' };
+    }
 
-    setState((prev) => {
-      const updated = prev.documents.map((d) => {
-        if (d.id === id) {
-          docNumber = d.documentNumber;
-          return {
+    const now = getNowISOString();
+    const cleanReason = reason.trim();
+    const updatedDocuments = state.documents.map((d) =>
+      d.id === id
+        ? {
             ...d,
             isCancelled: true,
-            cancellationReason: reason,
+            cancellationReason: cleanReason,
             cancelledAt: now,
-          };
-        }
-        return d;
-      });
-      return { ...prev, documents: updated };
-    });
+          }
+        : d
+    );
 
-    logAction('documents', 'ANULACAO_DOCUMENTO', `Documento ${docNumber} anulado: ${reason}`, id, docNumber, reason);
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'documents',
+      'ANULACAO_DOCUMENTO',
+      `Documento ${targetDoc.documentNumber} anulado: ${cleanReason}`,
+      id,
+      targetDoc.documentNumber,
+      cleanReason
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...state,
+      updatedAt: now,
+      documents: updatedDocuments,
+      auditLogs: [auditEntry, ...state.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
     return { success: true };
   };
 
@@ -5969,13 +6857,19 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'O assunto e a mensagem são obrigatórios.' };
     }
 
+    const curState = stateRef.current;
     const memberId = currentUser.linkedMemberId || currentUser.id;
-    const member = state.members.find((m) => m.id === memberId);
+    const member = curState.members.find((m) => m.id === memberId);
     const memberName = member ? member.fullName : currentUser.name;
 
-    const nextSeq = ((state.chaplaincyRequests || []).length + 1).toString().padStart(3, '0');
-    const newId = `CHAP-${state.settings.currentYear}-${nextSeq}`;
+    let seq = (curState.chaplaincyRequests || []).length + 1;
+    let newId = `CHAP-${curState.settings.currentYear}-${seq.toString().padStart(3, '0')}`;
+    while ((curState.chaplaincyRequests || []).some((r) => r.id === newId)) {
+      seq++;
+      newId = `CHAP-${curState.settings.currentYear}-${seq.toString().padStart(3, '0')}`;
+    }
 
+    const now = getNowISOString();
     const newReq: ChaplaincyRequest = {
       id: newId,
       memberId,
@@ -5985,15 +6879,17 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       message: data.message.trim(),
       confidential: data.confidential,
       status: 'pendente',
-      createdAt: getNowISOString(),
+      createdAt: now,
     };
 
-    const newState = {
-      ...state,
-      chaplaincyRequests: [newReq, ...(state.chaplaincyRequests || [])],
-    };
-    setState(newState);
-    saveStateToStorage(newState);
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        chaplaincyRequests: [newReq, ...(prev.chaplaincyRequests || [])],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
 
     addNotification({
       title: 'Novo Pedido de Capelania Digital',
@@ -6021,38 +6917,38 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'É obrigatório escrever uma resposta ou nota de acompanhamento.' };
     }
 
+    const curState = stateRef.current;
+    const targetReq = (curState.chaplaincyRequests || []).find((r) => r.id === requestId);
+    if (!targetReq) {
+      return { success: false, error: 'Pedido de capelania não encontrado.' };
+    }
+
     const now = getNowISOString();
-    let targetMemberId = '';
-    let targetSubject = '';
-
-    const updatedChaplaincy = (state.chaplaincyRequests || []).map((r) => {
-      if (r.id === requestId) {
-        targetMemberId = r.memberId;
-        targetSubject = r.subject;
-        return {
-          ...r,
-          status,
-          responseNotes: responseNotes.trim(),
-          respondedBy: `${currentUser.name} (${ROLE_LABELS[currentUser.role]?.label || currentUser.role})`,
-          respondedAt: now,
-        };
-      }
-      return r;
-    });
-
-    const newState = {
-      ...state,
-      chaplaincyRequests: updatedChaplaincy,
-    };
-    setState(newState);
-    saveStateToStorage(newState);
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        chaplaincyRequests: (prev.chaplaincyRequests || []).map((r) =>
+          r.id === requestId
+            ? {
+                ...r,
+                status,
+                responseNotes: responseNotes.trim(),
+                respondedBy: `${currentUser.name} (${ROLE_LABELS[currentUser.role]?.label || currentUser.role})`,
+                respondedAt: now,
+              }
+            : r
+        ),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
 
     addNotification({
       title: `Pedido de Capelania Respondido`,
-      message: `O Capelão / Diretor respondeu ao seu pedido confidencial de capelania: "${targetSubject || requestId}"`,
+      message: `O Capelão / Diretor respondeu ao seu pedido confidencial de capelania: "${targetReq.subject || requestId}"`,
       category: 'request',
       targetModule: 'chaplaincy',
-      recipientUserId: targetMemberId,
+      recipientUserId: targetReq.memberId,
       isConfidential: true,
       priority: status === 'respondido' ? 'normal' : 'alta',
     });
@@ -6678,9 +7574,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const updatedUsers = state.users.filter(u => u.id !== userId);
 
     // Revoga subscrição push se existir
-    import('../services/pushService').then(({ removePushSubscription }) => {
-      removePushSubscription(userId);
-    }).catch(() => {});
+    removePushSubscription(userId).catch(() => {});
 
     // Se a conta a ser eliminada for a conta atualmente com sessão neste dispositivo, transita para conta institucional
     const nextCurrentUser = currentUser.id === userId ? {
@@ -6975,23 +7869,56 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updateSettings = (newSettings: Partial<ClubSettings>) => {
     if (!can('settings', 'EDIT') && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'diretor') return;
     const now = getNowISOString();
-    const nextState = {
-      ...state,
-      updatedAt: now,
-      settings: { ...state.settings, ...newSettings },
-    };
-    setState(nextState);
-    saveStateToStorage(nextState);
-    pushToFirestore(nextState);
-    logAction('settings', 'ATUALIZACAO_CONFIGURACAO', 'Configurações do clube atualizadas');
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'settings',
+      'ATUALIZACAO_CONFIGURACAO',
+      'Configurações do clube atualizadas'
+    );
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        settings: { ...prev.settings, ...newSettings },
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
   };
 
   const openNewFiscalYear = (year: number) => {
     if (!can('settings', 'ADMIN')) {
       return { success: false, error: 'Apenas o Administrador Técnico tem autorização para abrir um novo ano fiscal.' };
     }
-    setState((prev) => openNewFiscalYearService(prev, year));
-    logAction('settings', 'ABERTURA_ANO_FISCAL', `Novo ano fiscal aberto: ${year}`);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+      return { success: false, error: 'Informe um ano fiscal válido (entre 2000 e 2100).' };
+    }
+    if (year === state.settings.currentYear) {
+      return { success: false, error: `O ano fiscal ${year} já se encontra ativo.` };
+    }
+
+    const rolledState = openNewFiscalYearService(state, year);
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'settings',
+      'ABERTURA_ANO_FISCAL',
+      `Novo ano fiscal aberto: ${year}`,
+      String(year),
+      `Ano Fiscal ${year}`
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...rolledState,
+      auditLogs: [auditEntry, ...rolledState.auditLogs],
+    };
+
+    setState(nextState);
+    saveStateToStorage(nextState);
+    pushToFirestore(nextState);
     return { success: true };
   };
 
@@ -7172,17 +8099,32 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!can('treasury', 'CREATE_ACCOUNT')) {
       return { success: false, error: 'Não possui permissão para criar novas contas financeiras.' };
     }
+    const now = getNowISOString();
     const newAccount: TreasuryAccount = {
       ...data,
       id: `ACC-${Date.now()}`,
       currentBalanceInCents: data.initialBalanceInCents,
       active: true,
     };
-    setState((prev) => ({
-      ...prev,
-      accounts: [...prev.accounts, newAccount],
-    }));
-    logAction('treasury', 'CRIACAO_CONTA', `Nova conta financeira criada: ${data.name}`, newAccount.id, data.name);
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'treasury',
+      'CRIACAO_CONTA',
+      `Nova conta financeira criada: ${data.name}`,
+      newAccount.id,
+      data.name
+    );
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        accounts: [...prev.accounts, newAccount],
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
     return { success: true, id: newAccount.id };
   };
 
@@ -7190,12 +8132,26 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!can('treasury', 'DELETE_ACCOUNT')) {
       return { success: false, error: 'Não possui permissão para remover contas financeiras.' };
     }
-    
-    setState((prev) => ({
-      ...prev,
-      accounts: prev.accounts.filter((a) => a.id !== id),
-    }));
-    logAction('treasury', 'REMOCAO_CONTA', `Conta financeira removida: ${id}`, id, '');
+    const now = getNowISOString();
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'treasury',
+      'REMOCAO_CONTA',
+      `Conta financeira removida: ${id}`,
+      id,
+      ''
+    );
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        accounts: prev.accounts.filter((a) => a.id !== id),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
     return { success: true };
   };
 
@@ -7203,15 +8159,30 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!can('treasury', 'CREATE_RUBRIC')) {
       return { success: false, error: 'Não possui permissão para criar novas rubricas financeiras.' };
     }
+    const now = getNowISOString();
     const newFee: FeeDefinition = {
       ...data,
-      id: `FEE-${Date.now()}`,
+      id: `FEE-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
     };
-    setState((prev) => ({
-      ...prev,
-      fees: [...prev.fees, newFee],
-    }));
-    logAction('treasury', 'CRIACAO_RUBRICA', `Nova rubrica criada: ${data.title}`, newFee.id, data.title);
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'treasury',
+      'CRIACAO_RUBRICA',
+      `Nova rubrica criada: ${data.title}`,
+      newFee.id,
+      data.title
+    );
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        fees: [...prev.fees, newFee],
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
     return { success: true, id: newFee.id };
   };
 
@@ -7220,33 +8191,46 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Não possui permissão para atualizar rubricas financeiras.' };
     }
     const now = getNowISOString();
-    setState((prev) => {
-      const activeQuotaId = resolveQuotaConfig(prev.settings, prev.fees).activeQuotaFeeId;
-      const shouldSyncQuotaAmount =
-        id === activeQuotaId && typeof data.amountInCents === 'number' && data.amountInCents >= 0;
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'treasury',
+      'ATUALIZACAO_RUBRICA',
+      `Rubrica atualizada: ${id}`,
+      id,
+      data.title || ''
+    );
+    commitState(
+      (prev) => {
+        const activeQuotaId = resolveQuotaConfig(prev.settings, prev.fees).activeQuotaFeeId;
+        const shouldSyncQuotaAmount =
+          id === activeQuotaId && typeof data.amountInCents === 'number' && data.amountInCents >= 0;
 
-      const updatedFees = prev.fees.map((f) => (f.id === id ? { ...f, ...data } : f));
-      const nextSettings = shouldSyncQuotaAmount
-        ? {
-            ...prev.settings,
-            quotaConfig: {
-              ...resolveQuotaConfig(prev.settings, updatedFees),
-              amountInCents: Math.round(data.amountInCents!),
-              updatedAt: now,
-              updatedByUserId: currentUser.id,
-              updatedByName: currentUser.name,
-            },
-          }
-        : prev.settings;
+        const updatedFees = prev.fees.map((f) => (f.id === id ? { ...f, ...data } : f));
+        const nextSettings = shouldSyncQuotaAmount
+          ? {
+              ...prev.settings,
+              quotaConfig: {
+                ...resolveQuotaConfig(prev.settings, updatedFees),
+                amountInCents: Math.round(data.amountInCents!),
+                updatedAt: now,
+                updatedByUserId: currentUser.id,
+                updatedByName: currentUser.name,
+              },
+            }
+          : prev.settings;
 
-      return {
-        ...prev,
-        updatedAt: now,
-        fees: updatedFees,
-        settings: nextSettings,
-      };
-    });
-    logAction('treasury', 'ATUALIZACAO_RUBRICA', `Rubrica atualizada: ${id}`, id, data.title || '');
+        return {
+          ...prev,
+          updatedAt: now,
+          fees: updatedFees,
+          settings: nextSettings,
+          auditLogs: [auditEntry, ...prev.auditLogs],
+        };
+      },
+      { saveLocal: true, pushCloud: true }
+    );
     return { success: true };
   };
 
@@ -7254,18 +8238,34 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!can('treasury', 'DELETE_RUBRIC')) {
       return { success: false, error: 'Não possui permissão para remover rubricas financeiras.' };
     }
-    const targetFee = state.fees.find((f) => f.id === id);
-    if (targetFee && isFixedQuotaRubric(targetFee, state.settings, state.fees)) {
+    const live = stateRef.current;
+    const targetFee = live.fees.find((f) => f.id === id);
+    if (targetFee && isFixedQuotaRubric(targetFee, live.settings, live.fees)) {
       return {
         success: false,
         error: 'A Quota Regular é gerida exclusivamente na aba Quotas e não pode ser removida nas Rubricas Financeiras.',
       };
     }
-    setState((prev) => ({
-      ...prev,
-      fees: prev.fees.filter((f) => f.id !== id),
-    }));
-    logAction('treasury', 'REMOCAO_RUBRICA', `Rubrica removida: ${id}`, id, '');
+    const now = getNowISOString();
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'treasury',
+      'REMOCAO_RUBRICA',
+      `Rubrica removida: ${id}`,
+      id,
+      ''
+    );
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        fees: prev.fees.filter((f) => f.id !== id),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
     return { success: true };
   };
 
@@ -7461,67 +8461,242 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   // Módulo de Música e Louvor
-  const createMusicItem = (data: Omit<MusicItem, 'id' | 'createdAt'>) => {
+  const createMusicItem = async (
+    data: Omit<MusicItem, 'id' | 'createdAt'>
+  ): Promise<{ success: boolean; item?: MusicItem; error?: string; warning?: string }> => {
     if (!can('music', 'CREATE')) {
       return { success: false, error: 'Sem permissão na grelha para adicionar hinos ao repertório.' };
     }
+    const cleanTitle = (data.title || '').trim();
+    if (!cleanTitle) {
+      return { success: false, error: 'O título do hino/cântico é obrigatório.' };
+    }
+
+    let baseState = stateRef.current;
+    if (
+      db &&
+      (db as any).app &&
+      (!hasLoadedFromCloudRef.current || !Array.isArray(baseState.musicItems))
+    ) {
+      try {
+        let snap: any = null;
+        try {
+          snap = await getDocFromServer(doc(db, 'club_data', 'main_state'));
+        } catch {
+          snap = await getDoc(doc(db, 'club_data', 'main_state')).catch(() => null);
+        }
+        if (snap && snap.exists()) {
+          const cloudData = snap.data() as ClubDatabaseState;
+          if (cloudData) {
+            baseState = normalizeCloudState(cloudData, stateRef.current);
+            hasLoadedFromCloudRef.current = true;
+            cloudConfirmedEmptyRef.current = false;
+          }
+        } else if (snap && !snap.exists()) {
+          hasLoadedFromCloudRef.current = true;
+          cloudConfirmedEmptyRef.current = true;
+        }
+      } catch {
+        // Continua com stateRef.current
+      }
+    }
+
     const now = getNowISOString();
     const newItem: MusicItem = {
-      ...data,
-      id: `MUS-${Date.now()}`,
+      id: `MUS-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+      title: cleanTitle,
+      category: data.category || 'louvor_jovem',
       createdAt: now,
+      ...(data.composer?.trim() ? { composer: data.composer.trim() } : {}),
+      ...(data.keySignature?.trim() ? { keySignature: data.keySignature.trim() } : {}),
+      ...(data.lyrics?.trim() ? { lyrics: data.lyrics.trim() } : {}),
+      ...(data.chordChartUrl?.trim() ? { chordChartUrl: data.chordChartUrl.trim() } : {}),
+      ...(data.audioUrl?.trim() ? { audioUrl: data.audioUrl.trim() } : {}),
     };
-    const nextList = [newItem, ...(state.musicItems || [])];
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'music',
+      'CRIAR_HINO',
+      `Registo de hino: ${newItem.title}`,
+      newItem.id,
+      newItem.title
+    );
+
     const nextState: ClubDatabaseState = {
-      ...state,
+      ...baseState,
       updatedAt: now,
-      musicItems: nextList,
+      musicItems: [newItem, ...(baseState.musicItems || [])],
+      auditLogs: [auditEntry, ...(baseState.auditLogs || [])],
     };
-    setState(nextState);
-    saveStateToStorage(nextState);
-    pushToFirestore(nextState);
-    logAction('music', 'CRIAR_HINO', `Registo de hino: ${newItem.title}`, newItem.id, newItem.title);
-    return { success: true };
+
+    lastCloudStateRef.current = nextState;
+    commitState(nextState, { saveLocal: true, pushCloud: false });
+
+    const pushRes = await pushToFirestore(nextState, {
+      allowEmptyWrite: cloudConfirmedEmptyRef.current,
+    });
+
+    if (!pushRes.success) {
+      if (pushRes.queuedOffline) {
+        return {
+          success: true,
+          item: newItem,
+          warning: pushRes.error || 'Hino adicionado localmente e colocado em fila para envio ao Firestore.',
+        };
+      }
+      lastCloudStateRef.current = baseState;
+      commitState(baseState, { saveLocal: true, pushCloud: false });
+      return {
+        success: false,
+        error: pushRes.error || 'Não foi possível gravar o hino no banco de dados Firestore.',
+      };
+    }
+
+    return { success: true, item: newItem };
   };
 
-  const updateMusicItem = (id: string, data: Partial<MusicItem>) => {
+  const updateMusicItem = async (
+    id: string,
+    data: Partial<MusicItem>
+  ): Promise<{ success: boolean; item?: MusicItem; error?: string; warning?: string }> => {
     if (!can('music', 'EDIT')) {
       return { success: false, error: 'Sem permissão na grelha para editar este hino.' };
     }
-    const now = getNowISOString();
-    const list = state.musicItems || [];
+    const baseState = stateRef.current;
+    const list = baseState.musicItems || [];
     const existing = list.find((m) => m.id === id);
     if (!existing) return { success: false, error: 'Hino não encontrado no repertório.' };
 
-    const nextList = list.map((m) => (m.id === id ? { ...m, ...data } : m));
-    const nextState: ClubDatabaseState = {
-      ...state,
-      updatedAt: now,
-      musicItems: nextList,
+    const now = getNowISOString();
+    const nextTitle = data.title !== undefined ? data.title.trim() : existing.title;
+    if (!nextTitle) {
+      return { success: false, error: 'O título do hino/cântico é obrigatório.' };
+    }
+
+    const resolveOptionalField = (fieldKey: 'composer' | 'keySignature' | 'lyrics' | 'chordChartUrl' | 'audioUrl') => {
+      if (Object.prototype.hasOwnProperty.call(data, fieldKey)) {
+        const val = data[fieldKey];
+        return typeof val === 'string' && val.trim() ? val.trim() : undefined;
+      }
+      return existing[fieldKey];
     };
-    setState(nextState);
-    saveStateToStorage(nextState);
-    pushToFirestore(nextState);
-    logAction('music', 'EDITAR_HINO', `Atualização de hino: ${existing.title}`, id, existing.title);
-    return { success: true };
+
+    const composer = resolveOptionalField('composer');
+    const keySignature = resolveOptionalField('keySignature');
+    const lyrics = resolveOptionalField('lyrics');
+    const chordChartUrl = resolveOptionalField('chordChartUrl');
+    const audioUrl = resolveOptionalField('audioUrl');
+
+    const updatedItem: MusicItem = {
+      id: existing.id,
+      title: nextTitle,
+      category: data.category || existing.category,
+      createdAt: existing.createdAt,
+      ...(composer ? { composer } : {}),
+      ...(keySignature ? { keySignature } : {}),
+      ...(lyrics ? { lyrics } : {}),
+      ...(chordChartUrl ? { chordChartUrl } : {}),
+      ...(audioUrl ? { audioUrl } : {}),
+    };
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'music',
+      'EDITAR_HINO',
+      `Atualização de hino: ${nextTitle}`,
+      id,
+      nextTitle
+    );
+
+    const nextState: ClubDatabaseState = {
+      ...baseState,
+      updatedAt: now,
+      musicItems: list.map((m) => (m.id === id ? updatedItem : m)),
+      auditLogs: [auditEntry, ...(baseState.auditLogs || [])],
+    };
+
+    lastCloudStateRef.current = nextState;
+    commitState(nextState, { saveLocal: true, pushCloud: false });
+
+    const pushRes = await pushToFirestore(nextState, {
+      allowEmptyWrite: cloudConfirmedEmptyRef.current,
+    });
+
+    if (!pushRes.success) {
+      if (pushRes.queuedOffline) {
+        return {
+          success: true,
+          item: updatedItem,
+          warning: pushRes.error || 'Alteração mantida localmente e em fila para envio ao Firestore.',
+        };
+      }
+      lastCloudStateRef.current = baseState;
+      commitState(baseState, { saveLocal: true, pushCloud: false });
+      return {
+        success: false,
+        error: pushRes.error || 'Não foi possível gravar a atualização no Firestore.',
+      };
+    }
+
+    return { success: true, item: updatedItem };
   };
 
-  const deleteMusicItem = (id: string) => {
+  const deleteMusicItem = async (
+    id: string
+  ): Promise<{ success: boolean; error?: string; warning?: string }> => {
     if (!can('music', 'EDIT') && !can('music', 'CREATE')) {
       return { success: false, error: 'Sem permissão na grelha para remover hinos.' };
     }
+    const baseState = stateRef.current;
+    const existing = (baseState.musicItems || []).find((m) => m.id === id);
+    if (!existing) return { success: false, error: 'Hino não encontrado no repertório.' };
+
     const now = getNowISOString();
-    const list = state.musicItems || [];
-    const nextList = list.filter((m) => m.id !== id);
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'music',
+      'REMOVER_HINO',
+      `Remoção de hino do repertório: ${existing.title}`,
+      id,
+      existing.title
+    );
+
     const nextState: ClubDatabaseState = {
-      ...state,
+      ...baseState,
       updatedAt: now,
-      musicItems: nextList,
+      musicItems: (baseState.musicItems || []).filter((m) => m.id !== id),
+      auditLogs: [auditEntry, ...(baseState.auditLogs || [])],
     };
-    setState(nextState);
-    saveStateToStorage(nextState);
-    pushToFirestore(nextState);
-    logAction('music', 'REMOVER_HINO', `Remoção de hino do repertório`, id);
+
+    lastCloudStateRef.current = nextState;
+    commitState(nextState, { saveLocal: true, pushCloud: false });
+
+    const pushRes = await pushToFirestore(nextState, {
+      allowEmptyWrite: cloudConfirmedEmptyRef.current,
+    });
+
+    if (!pushRes.success) {
+      if (pushRes.queuedOffline) {
+        return {
+          success: true,
+          warning: pushRes.error || 'Remoção registada localmente e em fila para envio ao Firestore.',
+        };
+      }
+      lastCloudStateRef.current = baseState;
+      commitState(baseState, { saveLocal: true, pushCloud: false });
+      return {
+        success: false,
+        error: pushRes.error || 'Não foi possível remover o hino no Firestore.',
+      };
+    }
+
     return { success: true };
   };
 
@@ -7701,12 +8876,19 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         closeFiscalMonth,
         reopenFiscalMonth,
         createActivity,
+        updateActivity,
         updateActivityStage,
+        decideActivityApproval,
+        toggleActivityPortalVisibility,
         deleteActivity,
         toggleAttendance,
+        batchToggleAttendance,
         addTaskToActivity,
         updateTaskStatus,
+        updateTaskInActivity,
+        deleteTaskFromActivity,
         saveMinuteToActivity,
+        submitActivityRsvp,
         updateTrainingProgress,
         createTrainingProgress,
         approveFinalTraining,
@@ -7727,7 +8909,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         createCircular,
         markCircularAsRead,
         deleteCircular,
-        addAnnouncement: () => {},
+        addAnnouncement,
         addNotification,
         markNotificationAsRead,
         markAllNotificationsAsRead,

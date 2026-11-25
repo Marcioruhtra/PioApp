@@ -13,6 +13,7 @@ export const MessagingModule: React.FC = () => {
   const [content, setContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [messageToDelete, setMessageToDelete] = useState<{ id: string; subject: string } | null>(null);
 
   const units = state.settings.units || [];
   const categories = [
@@ -256,7 +257,7 @@ export const MessagingModule: React.FC = () => {
 
                     {can('messaging', 'ADMIN') && (
                       <button
-                        onClick={() => deleteMessage(msg.id)}
+                        onClick={() => setMessageToDelete({ id: msg.id, subject: msg.subject })}
                         className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer"
                         title="Eliminar mensagem"
                       >
@@ -290,6 +291,46 @@ export const MessagingModule: React.FC = () => {
           </div>
         )}
       </div>
+
+      {messageToDelete && (
+        <Modal
+          isOpen={Boolean(messageToDelete)}
+          onClose={() => setMessageToDelete(null)}
+          title="Eliminar Mensagem / Comunicado"
+          description="Esta operação remove permanentemente a mensagem do histórico."
+          maxWidth="sm"
+        >
+          <div className="space-y-4 text-xs">
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-900">
+              Tem a certeza que deseja eliminar o comunicado <strong>{messageToDelete.subject}</strong>?
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setMessageToDelete(null)}
+                className="px-3 py-1.5 text-slate-600 hover:text-slate-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const res = deleteMessage(messageToDelete.id);
+                  if (res.success) {
+                    setFeedback({ type: 'success', message: 'Mensagem eliminada com sucesso.' });
+                  } else {
+                    setFeedback({ type: 'error', message: res.error || 'Erro ao eliminar mensagem.' });
+                  }
+                  setMessageToDelete(null);
+                }}
+                className="px-4 py-1.5 font-semibold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs cursor-pointer"
+              >
+                Sim, Eliminar
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

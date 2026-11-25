@@ -30,6 +30,11 @@ import {
   QrCode,
   Bell,
   RefreshCw,
+  MapPin,
+  Download,
+  ChevronRight,
+  XCircle,
+  HelpCircle,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import { formatKz, parseKzToCents } from '../../utils/currency';
@@ -42,6 +47,7 @@ import {
   MemberSuggestion,
   SuggestionCategory,
   SuggestionStatus,
+  ActivityRsvpStatus,
 } from '../../types';
 import { PrintDocumentModal } from '../common/PrintDocumentModal';
 import { ProofDocumentViewerModal } from '../common/ProofDocumentViewerModal';
@@ -58,6 +64,15 @@ import {
   resolveQuotaConfig,
 } from '../../services/quotaService';
 import { getStrictLinkedMember, getMemberTeamLabel } from '../../services/accountSyncService';
+import {
+  ACTIVITY_TYPE_COLORS,
+  downloadActivityICS,
+  getActivityDateOnly,
+  getActivityStageLabel,
+  getActivityTimeRangeLabel,
+  getActivityTypeLabel,
+  getMemberPortalVisibleActivities,
+} from '../../utils/activityUtils';
 
 const SUGGESTION_CATEGORY_MAP: Record<SuggestionCategory, { label: string; badgeBg: string; text: string }> = {
   geral: { label: 'Geral', badgeBg: 'bg-slate-100 border-slate-300 text-slate-800', text: 'text-slate-800' },
@@ -86,6 +101,7 @@ export const MemberPortalModule: React.FC = () => {
     markMessageAsRead,
     replyToMessage,
     submitMemberReconfirmation,
+    submitActivityRsvp,
   } = useClub();
 
   const [isProofModalOpen, setIsProofModalOpen] = useState(false);
@@ -96,10 +112,35 @@ export const MemberPortalModule: React.FC = () => {
   const [selectedProofToView, setSelectedProofToView] = useState<PaymentProofReport | null>(null);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const [fileUploadError, setFileUploadError] = useState<string | null>(null);
+  const [suggestionToDelete, setSuggestionToDelete] = useState<{ id: string; subject: string } | null>(null);
 
   // Membro estritamente vinculado ao utilizador autenticado (sem fallback para outros membros)
   const member = getStrictLinkedMember(currentUser, state.members);
   const memberId = member?.id || '';
+
+  // Atividades estritamente autorizadas pelo Diretor para o Portal do Membro
+  const todayISO = getTodayISODate();
+  const portalActivities = getMemberPortalVisibleActivities(state.activities);
+  const upcomingPortalActivities = portalActivities.filter((a) => {
+    const refDate = getActivityDateOnly(a.endDate) || getActivityDateOnly(a.startDate);
+    return refDate >= todayISO && a.stage !== 'encerrado';
+  });
+  const pastPortalActivities = portalActivities
+    .filter((a) => {
+      const refDate = getActivityDateOnly(a.endDate) || getActivityDateOnly(a.startDate);
+      return refDate < todayISO || a.stage === 'encerrado';
+    })
+    .slice()
+    .reverse();
+
+  const myRecordedAttendances = member
+    ? (state.activities || []).filter((act) => act.attendees?.some((att) => att.memberId === member.id))
+    : [];
+  const myPresentCount = member
+    ? myRecordedAttendances.filter((act) => act.attendees.some((att) => att.memberId === member.id && att.present)).length
+    : 0;
+  const myAttendancePct =
+    myRecordedAttendances.length > 0 ? Math.round((myPresentCount / myRecordedAttendances.length) * 100) : null;
 
   // Dados exclusivos do membro
   const myReceipts = state.receipts.filter((r) => r.memberId === member?.id);
@@ -267,8 +308,15 @@ export const MemberPortalModule: React.FC = () => {
 
 
 
-  // Estados da Aba de Sugestões e Direção
-  const [activePortalTab, setActivePortalTab] = useState<'geral' | 'sugestoes' | 'mensagens'>('geral');
+  // Estados das Abas do Portal
+  const [activePortalTab, setActivePortalTab] = useState<'geral' | 'agenda' | 'sugestoes' | 'mensagens'>('geral');
+  const [agendaScopeFilter, setAgendaScopeFilter] = useState<'proximas' | 'anteriores'>('proximas');
+  const [rsvpNoteMap, setRsvpNoteMap] = useState<Record<string, string>>({});
+  const [rsvpFeedback, setRsvpFeedback] = useState<{
+    activityId: string;
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   React.useEffect(() => {
     if (activePortalTab === 'mensagens' && member) {
@@ -494,7 +542,7 @@ export const MemberPortalModule: React.FC = () => {
         <div className="flex items-center gap-2 overflow-x-auto">
           <button
             onClick={() => setActivePortalTab('geral')}
-            className={`px-3 py-2 text-xs font-bold rounded-lg flex items-center gap-2 transition-colors cursor-pointer ${
+            className={`px-3 py-2 text-xs font-bold rounded-lg flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
               activePortalTab === 'geral'
                 ? 'bg-blue-900 text-white shadow-xs'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
@@ -502,6 +550,22 @@ export const MemberPortalModule: React.FC = () => {
           >
             <UserCheck className="w-4 h-4" />
             <span>Meu Painel Pessoal & Registos</span>
+          </button>
+          <button
+            onClick={() => setActivePortalTab('agenda')}
+            className={`px-3 py-2 text-xs font-bold rounded-lg flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
+              activePortalTab === 'agenda'
+                ? 'bg-blue-900 text-white shadow-xs'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
+            }`}
+          >
+            <Calendar className="w-4 h-4" />
+            <span>Agenda do Clube</span>
+            {upcomingPortalActivities.length > 0 && (
+              <span className="px-1.5 py-0.5 text-[10px] font-black bg-emerald-600 text-white rounded-full">
+                {upcomingPortalActivities.length}
+              </span>
+            )}
           </button>
           <button
             onClick={() => setActivePortalTab('sugestoes')}
@@ -743,6 +807,77 @@ export const MemberPortalModule: React.FC = () => {
               </div>
             </div>
           )}
+
+          {/* Cartão Resumo: Próximas Atividades Autorizadas pelo Diretor */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-5 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <div>
+                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+                  <Calendar className="w-4 h-4 text-blue-900" />
+                  <span>Próximas Atividades do Clube ({upcomingPortalActivities.length})</span>
+                </h2>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Atividades oficiais autorizadas pelo Diretor para consulta e confirmação de presença.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActivePortalTab('agenda')}
+                className="inline-flex items-center gap-1 text-xs font-bold text-blue-900 hover:underline cursor-pointer self-start sm:self-auto"
+              >
+                <span>Ver Agenda Completa</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {upcomingPortalActivities.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                Nenhuma atividade futura publicada pelo Diretor no momento.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {upcomingPortalActivities.slice(0, 3).map((act) => {
+                  const myRsvp = act.rsvps?.find((r) => r.memberId === member.id);
+                  const tRange = getActivityTimeRangeLabel(act);
+                  return (
+                    <div
+                      key={act.id}
+                      className="p-3 rounded-lg border border-slate-200 bg-slate-50/70 space-y-1.5 text-xs"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-bold text-blue-900 uppercase">
+                          {getActivityTypeLabel(act.type)}
+                        </span>
+                        {myRsvp && (
+                          <span
+                            className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${
+                              myRsvp.status === 'vou'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : myRsvp.status === 'talvez'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}
+                          >
+                            {myRsvp.status === 'vou'
+                              ? 'Confirmado'
+                              : myRsvp.status === 'talvez'
+                              ? 'Talvez'
+                              : 'Não Posso'}
+                          </span>
+                        )}
+                      </div>
+                      <h3 className="font-bold text-slate-900 truncate">{act.title}</h3>
+                      <p className="text-[11px] text-slate-600">
+                        {formatDateAO(act.startDate)}
+                        {tRange ? ` · ${tRange}` : ''}
+                      </p>
+                      <p className="text-[11px] text-slate-500 truncate">{act.location}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
       {/* Grid de Seções do Membro */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1034,6 +1169,292 @@ export const MemberPortalModule: React.FC = () => {
         </div>
       </div>
     </div>
+        );
+      })()}
+
+      {/* ABA AGENDA DO CLUBE (ATIVIDADES AUTORIZADAS PELO DIRETOR) */}
+      {activePortalTab === 'agenda' && (() => {
+        const displayedAgendaActivities =
+          agendaScopeFilter === 'proximas' ? upcomingPortalActivities : pastPortalActivities;
+
+        const handleRsvp = (activityId: string, status: ActivityRsvpStatus) => {
+          const note = rsvpNoteMap[activityId];
+          const res = submitActivityRsvp(activityId, status, note);
+          if (res.success) {
+            setRsvpFeedback({
+              activityId,
+              type: 'success',
+              message:
+                status === 'vou'
+                  ? 'Presença confirmada! A direção foi notificada.'
+                  : status === 'talvez'
+                  ? 'Resposta «Talvez» registada.'
+                  : 'Ausência justificada/registada.',
+            });
+            setTimeout(() => setRsvpFeedback(null), 4000);
+          } else {
+            setRsvpFeedback({
+              activityId,
+              type: 'error',
+              message: res.error || 'Erro ao enviar confirmação.',
+            });
+          }
+        };
+
+        return (
+          <div className="space-y-5">
+            {/* Barra Informativa & Resumo Pessoal */}
+            <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <h2 className="text-sm font-black uppercase tracking-wider text-slate-900 flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-blue-900" />
+                  <span>Agenda Oficial do Clube</span>
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Visualização exclusiva das atividades autorizadas pela Direção para os membros, com exportação para calendário pessoal e confirmação de presença.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3 flex-wrap shrink-0">
+                {myAttendancePct !== null && (
+                  <div className="px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-xs">
+                    <span className="text-[10px] font-bold uppercase text-blue-800 block">Minha Assiduidade</span>
+                    <span className="font-black text-blue-950">
+                      {myPresentCount} / {myRecordedAttendances.length} ({myAttendancePct}%)
+                    </span>
+                  </div>
+                )}
+
+                <div className="flex items-center bg-slate-100 p-1 rounded-lg text-xs font-bold">
+                  <button
+                    type="button"
+                    onClick={() => setAgendaScopeFilter('proximas')}
+                    className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
+                      agendaScopeFilter === 'proximas'
+                        ? 'bg-blue-900 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Próximas ({upcomingPortalActivities.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAgendaScopeFilter('anteriores')}
+                    className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
+                      agendaScopeFilter === 'anteriores'
+                        ? 'bg-blue-900 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Anteriores ({pastPortalActivities.length})
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {displayedAgendaActivities.length === 0 ? (
+              <div className="bg-white rounded-xl border border-slate-200 p-10 text-center space-y-2">
+                <Calendar className="w-8 h-8 text-slate-300 mx-auto" />
+                <p className="text-sm font-bold text-slate-800">
+                  {agendaScopeFilter === 'proximas'
+                    ? 'Nenhuma atividade futura autorizada para visualização'
+                    : 'Nenhuma atividade anterior publicada neste histórico'}
+                </p>
+                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                  Apenas atividades expressamente liberadas pelo Diretor do Clube ficam visíveis no Portal do Membro.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {displayedAgendaActivities.map((act) => {
+                  const typeStyle = ACTIVITY_TYPE_COLORS[act.type] || ACTIVITY_TYPE_COLORS.reuniao_regular;
+                  const timeRange = getActivityTimeRangeLabel(act);
+                  const endDateOnly = getActivityDateOnly(act.endDate);
+                  const startDateOnly = getActivityDateOnly(act.startDate);
+                  const hasDistinctEnd = Boolean(endDateOnly && endDateOnly !== startDateOnly);
+                  const myRsvp = act.rsvps?.find((r) => r.memberId === member.id);
+                  const linkedFee =
+                    act.hasMemberContribution && act.feeDefinitionId
+                      ? state.fees.find((f) => f.id === act.feeDefinitionId)
+                      : undefined;
+                  const currentFeedback = rsvpFeedback?.activityId === act.id ? rsvpFeedback : null;
+
+                  return (
+                    <div
+                      key={act.id}
+                      className={`bg-white rounded-xl border border-slate-200 border-l-4 ${typeStyle.border} p-5 shadow-xs space-y-4`}
+                    >
+                      <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                        <div className="space-y-1.5 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded border ${typeStyle.badge}`}>
+                              {getActivityTypeLabel(act.type)}
+                            </span>
+                            <span className="text-[10px] font-bold uppercase text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                              {act.department}
+                            </span>
+                            <span className="text-[10px] font-bold uppercase text-blue-900 bg-blue-50 px-2 py-0.5 rounded">
+                              {getActivityStageLabel(act.stage)}
+                            </span>
+                          </div>
+
+                          <h3 className="text-base font-black text-slate-900">{act.title}</h3>
+
+                          <div className="text-xs text-slate-600 flex items-center gap-3 flex-wrap">
+                            <span className="flex items-center gap-1 font-semibold">
+                              <Calendar className="w-3.5 h-3.5 text-blue-900" />
+                              <span>
+                                {formatDateAO(act.startDate)}
+                                {hasDistinctEnd ? ` até ${formatDateAO(act.endDate)}` : ''}
+                              </span>
+                            </span>
+                            {timeRange && (
+                              <>
+                                <span className="text-slate-300">·</span>
+                                <span className="flex items-center gap-1 font-semibold">
+                                  <Clock className="w-3.5 h-3.5 text-blue-900" />
+                                  <span>{timeRange}</span>
+                                </span>
+                              </>
+                            )}
+                            <span className="text-slate-300">·</span>
+                            <span className="flex items-center gap-1">
+                              <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                              <span>{act.location}</span>
+                            </span>
+                          </div>
+
+                          {act.description && (
+                            <p className="text-xs text-slate-700 bg-slate-50 border border-slate-100 rounded-lg p-3 leading-relaxed mt-2">
+                              {act.description}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => downloadActivityICS(act, state.settings.clubName)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Exportar .ics</span>
+                          </button>
+
+                          {linkedFee && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setProofForm((prev) => ({
+                                  ...prev,
+                                  feeDefinitionId: linkedFee.id,
+                                  amountStr: String(Math.round(linkedFee.amountInCents / 100)),
+                                }));
+                                setIsProofModalOpen(true);
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg shadow-xs transition-colors cursor-pointer"
+                            >
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>Pagar Inscrição ({formatKz(linkedFee.amountInCents)})</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Secção de Confirmação de Presença (RSVP) */}
+                      {act.stage !== 'encerrado' && (
+                        <div className="pt-3 border-t border-slate-100 space-y-2.5">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <span className="text-xs font-bold text-slate-800">
+                              Confirmação de Presença (RSVP):
+                            </span>
+                            {myRsvp && (
+                              <span
+                                className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full self-start sm:self-auto ${
+                                  myRsvp.status === 'vou'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : myRsvp.status === 'talvez'
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-rose-100 text-rose-800'
+                                }`}
+                              >
+                                A sua resposta atual:{' '}
+                                {myRsvp.status === 'vou'
+                                  ? 'Vou Participar'
+                                  : myRsvp.status === 'talvez'
+                                  ? 'Talvez'
+                                  : 'Não Posso Ir'}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex flex-col md:flex-row gap-2 items-stretch md:items-center">
+                            <input
+                              type="text"
+                              placeholder="Observação opcional (ex: Chego 15 min depois, levo material...)"
+                              value={rsvpNoteMap[act.id] ?? myRsvp?.note ?? ''}
+                              onChange={(e) =>
+                                setRsvpNoteMap((prev) => ({ ...prev, [act.id]: e.target.value }))
+                              }
+                              className="flex-1 px-3 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
+                            />
+                            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => handleRsvp(act.id, 'vou')}
+                                className={`inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
+                                  myRsvp?.status === 'vou'
+                                    ? 'bg-emerald-700 text-white border-emerald-700'
+                                    : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                                }`}
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>Vou Participar</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRsvp(act.id, 'talvez')}
+                                className={`inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
+                                  myRsvp?.status === 'talvez'
+                                    ? 'bg-amber-600 text-white border-amber-600'
+                                    : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                                }`}
+                              >
+                                <HelpCircle className="w-3.5 h-3.5" />
+                                <span>Talvez</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRsvp(act.id, 'nao_posso')}
+                                className={`inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
+                                  myRsvp?.status === 'nao_posso'
+                                    ? 'bg-rose-700 text-white border-rose-700'
+                                    : 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
+                                }`}
+                              >
+                                <XCircle className="w-3.5 h-3.5" />
+                                <span>Não Posso Ir</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          {currentFeedback && (
+                            <p
+                              className={`text-[11px] font-semibold ${
+                                currentFeedback.type === 'success' ? 'text-emerald-700' : 'text-rose-700'
+                              }`}
+                            >
+                              {currentFeedback.message}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         );
       })()}
 
@@ -1364,11 +1785,7 @@ export const MemberPortalModule: React.FC = () => {
                         </button>
 
                         <button
-                          onClick={() => {
-                            if (confirm('Tem a certeza de que deseja eliminar esta sugestão?')) {
-                              deleteSuggestion(sug.id);
-                            }
-                          }}
+                          onClick={() => setSuggestionToDelete({ id: sug.id, subject: sug.subject })}
                           className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors"
                           title="Eliminar sugestão"
                         >
@@ -1518,11 +1935,7 @@ export const MemberPortalModule: React.FC = () => {
                       </span>
 
                       <button
-                        onClick={() => {
-                          if (confirm('Deseja cancelar e eliminar esta sugestão?')) {
-                            deleteSuggestion(sug.id);
-                          }
-                        }}
+                        onClick={() => setSuggestionToDelete({ id: sug.id, subject: sug.subject })}
                         className="text-slate-400 hover:text-rose-600 text-[11px] flex items-center gap-1 transition-colors"
                       >
                         <Trash2 className="w-3 h-3" />
@@ -2236,6 +2649,40 @@ export const MemberPortalModule: React.FC = () => {
             }}
             onCancel={() => setIsReconfirmationModalOpen(false)}
           />
+        </Modal>
+      )}
+      {suggestionToDelete && (
+        <Modal
+          isOpen={Boolean(suggestionToDelete)}
+          onClose={() => setSuggestionToDelete(null)}
+          title="Eliminar Sugestão"
+          description="Esta operação remove permanentemente a sugestão selecionada."
+          maxWidth="sm"
+        >
+          <div className="space-y-4 text-xs">
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-900">
+              Tem a certeza de que deseja eliminar a sugestão <strong>{suggestionToDelete.subject}</strong>?
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setSuggestionToDelete(null)}
+                className="px-3 py-1.5 text-slate-600 hover:text-slate-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteSuggestion(suggestionToDelete.id);
+                  setSuggestionToDelete(null);
+                }}
+                className="px-4 py-1.5 font-semibold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs cursor-pointer"
+              >
+                Sim, Eliminar
+              </button>
+            </div>
+          </div>
         </Modal>
       )}
     </div>

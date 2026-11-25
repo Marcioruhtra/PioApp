@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   FileText,
   Printer,
@@ -27,6 +27,16 @@ const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
   relatorio_anual: 'Relatório Anual',
 };
 
+const DEFAULT_DOCUMENT_TEMPLATES: Record<DocumentType, string> = {
+  recibo: 'Certifica-se para os devidos efeitos que o Clube D\'Alvorada recebeu de {nome} a quantia referente a {mes}, liquidada através de {metodo} no valor de {valor}.',
+  mapa_financeiro: 'Mapa financeiro oficial do Clube D\'Alvorada referente ao período ativo.',
+  folha_presenca: 'Folha de presença oficial das atividades e reuniões do Clube D\'Alvorada.',
+  ata: 'Ata da reunião oficial do Clube D\'Alvorada realizada na sede com os membros presentes.',
+  declaracao_membro: 'A Direção do Clube D\'Alvorada declara, para os efeitos convenientes junto das entidades a quem interessar, que {nome} é membro ativo e em pleno gozo dos seus direitos associativos neste clube para o ano de {ano}. Finalidade declarada: {finalidade}.',
+  certificado: 'Confere-se o presente certificado a {nome} pela conclusão satisfatória dos requisitos oficiais no ano de {ano}.',
+  relatorio_anual: 'Relatório anual de atividades e contas do Clube D\'Alvorada.',
+};
+
 export const DocumentsModule: React.FC = () => {
   const { state, can, currentUser, createOfficialDoc, cancelOfficialDoc, updateSettings } = useClub();
   const isDirectorOrAdmin = currentUser?.role === 'diretor' || currentUser?.role === 'admin_tecnico' || can('settings', 'EDIT');
@@ -40,18 +50,18 @@ export const DocumentsModule: React.FC = () => {
   const [selectedDocToCancel, setSelectedDocToCancel] = useState<OfficialDocument | null>(null);
   const [cancelReason, setCancelReason] = useState('');
 
-  // Editable Document Templates State
-  const [editableTemplates, setEditableTemplates] = useState<Record<DocumentType, string>>(
-    state.settings.documentTemplates || {
-      recibo: 'Certifica-se para os devidos efeitos que o Clube D\'Alvorada recebeu de {nome} a quantia referente a {mes}, liquidada através de {metodo} no valor de {valor}.',
-      mapa_financeiro: 'Mapa financeiro oficial do Clube D\'Alvorada referente ao período ativo.',
-      folha_presenca: 'Folha de presença oficial das atividades e reuniões do Clube D\'Alvorada.',
-      ata: 'Ata da reunião oficial do Clube D\'Alvorada realizada na sede com os membros presentes.',
-      declaracao_membro: 'A Direção do Clube D\'Alvorada declara, para os efeitos convenientes junto das entidades a quem interessar, que {nome} é membro ativo e em pleno gozo dos seus direitos associativos neste clube para o ano de {ano}. Finalidade declarada: {finalidade}.',
-      certificado: 'Confere-se o presente certificado a {nome} pela conclusão satisfatória dos requisitos oficiais no ano de {ano}.',
-      relatorio_anual: 'Relatório anual de atividades e contas do Clube D\'Alvorada.',
-    }
-  );
+  // Editable Document Templates State (sincronizado com alterações remotas da nuvem)
+  const [editableTemplates, setEditableTemplates] = useState<Record<DocumentType, string>>(() => ({
+    ...DEFAULT_DOCUMENT_TEMPLATES,
+    ...(state.settings.documentTemplates || {}),
+  }));
+
+  useEffect(() => {
+    setEditableTemplates({
+      ...DEFAULT_DOCUMENT_TEMPLATES,
+      ...(state.settings.documentTemplates || {}),
+    });
+  }, [state.settings.documentTemplates]);
 
   // Formulário de Nova Declaração / Certificado
   const [newDocForm, setNewDocForm] = useState({
@@ -60,6 +70,12 @@ export const DocumentsModule: React.FC = () => {
     issuedToMemberId: state.members[0]?.id || '',
     finalidade: 'Apresentação escolar para justificação de ausência em acampamento',
   });
+
+  useEffect(() => {
+    if (!newDocForm.issuedToMemberId && state.members.length > 0) {
+      setNewDocForm((prev) => ({ ...prev, issuedToMemberId: state.members[0].id }));
+    }
+  }, [state.members, newDocForm.issuedToMemberId]);
 
   const filteredDocs = state.documents.filter((doc) => {
     const matchSearch =
@@ -78,7 +94,10 @@ export const DocumentsModule: React.FC = () => {
     e.preventDefault();
     setNewDocError(null);
     const member = state.members.find((m) => m.id === newDocForm.issuedToMemberId);
-    if (!member) return;
+    if (!member) {
+      setNewDocError('Selecione um membro válido para emitir o documento oficial.');
+      return;
+    }
 
     const res = createOfficialDoc(
       newDocForm.type,

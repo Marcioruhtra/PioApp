@@ -45,7 +45,11 @@ const MODULE_LABELS: Record<string, string> = {
   training: 'Formação',
   documents: 'Documentos',
   member_portal: 'Portal do Membro',
-  requests: 'Solicitações',
+  requests: 'Circulares & Avisos',
+  chaplaincy: 'Capelania Digital',
+  suggestions: 'Sugestões à Direção',
+  messaging: 'Mensagens',
+  music: 'Música e Louvor',
   reports: 'Relatórios',
   settings: 'Configurações',
   audit: 'Auditoria',
@@ -87,6 +91,7 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
 }) => {
   const {
     state,
+    can,
     currentUser,
     markNotificationAsRead,
     markAllNotificationsAsRead,
@@ -126,9 +131,19 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
   const [showOnlyUnread, setShowOnlyUnread] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddReminderModal, setShowAddReminderModal] = useState(false);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [reminderError, setReminderError] = useState<string | null>(null);
   const [reminderTitle, setReminderTitle] = useState('');
   const [reminderMessage, setReminderMessage] = useState('');
   const [reminderUrgency, setReminderUrgency] = useState<'normal' | 'importante' | 'urgente'>('normal');
+
+  const canPublishAlert =
+    can('requests', 'CREATE') ||
+    can('activities', 'CREATE') ||
+    currentUser.role === 'diretor' ||
+    currentUser.role === 'admin_tecnico' ||
+    currentUser.role === 'secretario' ||
+    currentUser.role === 'diretor_associado';
 
 
 
@@ -166,18 +181,26 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
 
   const handleCreateCustomReminder = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!reminderTitle.trim() || !reminderMessage.trim()) return;
+    setReminderError(null);
+    if (!reminderTitle.trim() || !reminderMessage.trim()) {
+      setReminderError('Preencha o título e a mensagem do alerta.');
+      return;
+    }
 
-    addAnnouncement(
+    const res = addAnnouncement(
       reminderTitle.trim(),
       reminderMessage.trim(),
       reminderUrgency,
       'todos'
     );
 
-    setReminderTitle('');
-    setReminderMessage('');
-    setShowAddReminderModal(false);
+    if (res.success) {
+      setReminderTitle('');
+      setReminderMessage('');
+      setShowAddReminderModal(false);
+    } else {
+      setReminderError(res.error || 'Não foi possível publicar o alerta.');
+    }
   };
 
   const getCategoryIcon = (category: string) => {
@@ -249,14 +272,19 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
             </button>
 
             {/* Criar Alerta Manual */}
-            <button
-              onClick={() => setShowAddReminderModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white rounded-lg text-xs font-bold transition-all shadow-md cursor-pointer"
-              title="Publicar novo alerta ou lembrete para todos"
-            >
-              <Plus className="w-4 h-4" />
-              <span className="hidden sm:inline">Criar Alerta</span>
-            </button>
+            {canPublishAlert && (
+              <button
+                onClick={() => {
+                  setReminderError(null);
+                  setShowAddReminderModal(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white rounded-lg text-xs font-bold transition-all shadow-md cursor-pointer"
+                title="Publicar novo alerta ou lembrete para todos"
+              >
+                <Plus className="w-4 h-4" />
+                <span className="hidden sm:inline">Criar Alerta</span>
+              </button>
+            )}
 
             {/* Fechar */}
             <button
@@ -378,19 +406,37 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                   <span>Marcar Todas</span>
                 </button>
               )}
-              {authorizedNotifications.length > 0 && (
+              {authorizedNotifications.length > 0 && !confirmClearAll && (
                 <button
-                  onClick={() => {
-                    if (confirm('Deseja eliminar todas as notificações do centro de alertas?')) {
-                      clearAllNotifications();
-                    }
-                  }}
+                  onClick={() => setConfirmClearAll(true)}
                   className="px-2.5 py-1 bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 rounded-lg font-semibold flex items-center gap-1 transition-colors cursor-pointer border border-transparent hover:border-rose-900/40"
                   title="Eliminar todas as notificações"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">Limpar Tudo</span>
                 </button>
+              )}
+              {authorizedNotifications.length > 0 && confirmClearAll && (
+                <div className="flex items-center gap-1.5 bg-rose-950/70 border border-rose-500/40 px-2 py-1 rounded-lg">
+                  <span className="text-[11px] font-semibold text-rose-200">Limpar alertas?</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearAllNotifications();
+                      setConfirmClearAll(false);
+                    }}
+                    className="px-2 py-0.5 bg-rose-600 hover:bg-rose-500 text-white rounded font-bold cursor-pointer"
+                  >
+                    Sim
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClearAll(false)}
+                    className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded cursor-pointer"
+                  >
+                    Não
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -613,6 +659,11 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
             </p>
 
             <form onSubmit={handleCreateCustomReminder} className="space-y-4 text-xs">
+              {reminderError && (
+                <div className="p-2.5 bg-rose-950/70 border border-rose-500/50 text-rose-200 rounded-lg text-xs">
+                  {reminderError}
+                </div>
+              )}
               <div>
                 <label className="block font-semibold text-slate-300 mb-1">Título do Alerta</label>
                 <input

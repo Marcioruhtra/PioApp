@@ -5,6 +5,7 @@ import {
   isMemberNumberUnique,
   findPotentialDuplicateMember,
   cleanSystemStorageSpace,
+  openNewFiscalYear,
   ClubDatabaseState,
 } from '../src/services/storageService';
 import {
@@ -88,9 +89,20 @@ import { getDocumentPreviewKind, dataUrlToBlob, MAX_UPLOAD_FILE_BYTES, validateU
 import { resolveMinuteOfficers } from '../src/utils/documentSigner';
 import {
   getActivityTypeLabel,
+  getActivityStageLabel,
   canActivityHaveMinute,
   getActivitiesRequiringMinute,
+  canManageActivityPortalVisibility,
+  getMemberPortalVisibleActivities,
+  doesActivityOccurOnDate,
+  getActivityTimeRangeLabel,
+  getPreviousCommissionMinute,
+  parseDeliberationsToTaskDrafts,
+  formatRsvpSummary,
+  buildActivityICS,
   calculateTeamAttendanceStats,
+  applyBatchAttendanceToActivities,
+  formatTaskStatusLabel,
 } from '../src/utils/activityUtils';
 import { sanitizeMemberIntegrity } from '../src/services/memberIntegrityService';
 import {
@@ -137,13 +149,14 @@ import {
   resolveReceiptOperatorSigner,
 } from '../src/utils/documentSigner';
 import {
+  CLOUD_STATE_KEYS,
   getNextMonotonicSyncTimestamp,
   hasCloudPayloadChanged,
   isSafeCloudWritePayload,
   shouldSkipIncomingSnapshot,
   getReconnectDelayMs,
 } from '../src/services/realtimeSyncService';
-import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver, FeeDefinition, EnrollmentScheduleConfig, MonthlyClosing, TreasuryAccount, PaymentProofReport } from '../src/types';
+import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver, FeeDefinition, EnrollmentScheduleConfig, MonthlyClosing, TreasuryAccount, PaymentProofReport, MusicItem } from '../src/types';
 
 function runTests() {
   console.log("=== INICIANDO BATERIA COMPLETA DE TESTES DO SISTEMA ===");
@@ -5502,6 +5515,216 @@ function runTests() {
       emptyAttendanceStats64.totalSlots === 0 &&
       emptyAttendanceStats64.participationPct === 0,
     "Quando nenhuma atividade possui lista de presenças iniciada, totalSlots e recordedActivitiesCount são zero"
+  );
+
+  // =========================================================================
+  // TESTE 65: Abertura de Novo Ano Fiscal & Numeração Sequencial de Documentos
+  // =========================================================================
+  console.log("\n[TESTE 65] Verificação da transição de ano fiscal e numeração por ano de documentos...");
+  const base65 = loadInitialState();
+  const nextYear65 = base65.settings.currentYear + 1;
+  const rolled65 = openNewFiscalYear(base65, nextYear65);
+
+  assert(
+    rolled65.settings.currentYear === nextYear65 &&
+      rolled65.members.length === base65.members.length &&
+      rolled65.receipts.length === base65.receipts.length &&
+      rolled65.documents.length === base65.documents.length &&
+      Boolean(rolled65.updatedAt),
+    "Abertura de novo ano fiscal atualiza currentYear e updatedAt preservando integralmente membros, recibos e documentos históricos"
+  );
+
+  const existingDocs65 = [
+    `DEC-${base65.settings.currentYear}-0001`,
+    `DEC-${base65.settings.currentYear}-0002`,
+  ];
+  assert(
+    generateNextDocumentNumber('DEC', base65.settings.currentYear, existingDocs65) ===
+      `DEC-${base65.settings.currentYear}-0003` &&
+      generateNextDocumentNumber('DEC', nextYear65, existingDocs65) ===
+      `DEC-${nextYear65}-0001`,
+    "Numeração de documentos oficiais mantém sequência do ano anterior e inicia em 0001 no novo ano fiscal"
+  );
+
+  // =========================================================================
+  // TESTE 66: Calendário Multi-dia, Exportação .ics, Atas/Tarefas & Visibilidade no Portal
+  // =========================================================================
+  console.log("\n[TESTE 66] Verificação de calendário multi-dia, .ics, atas da comissão e controlo do Portal pelo Diretor...");
+  const multiDayCamp66: ClubActivity = {
+    id: 'ACT-66-CAMP',
+    title: 'Acampamento Anual da Primavera',
+    type: 'acampamento',
+    department: 'Instrução Geral',
+    location: 'Parque Ambiental da Quiçama',
+    startDate: '2026-08-14',
+    endDate: '2026-08-16',
+    startTime: '07:30',
+    endTime: '17:00',
+    description: 'Levar uniforme oficial, tenda e cantil.',
+    stage: 'preparacao',
+    requiresDirectorApproval: true,
+    isApprovedByDirector: true,
+    visibleInMemberPortal: true,
+    rsvps: [
+      { memberId: 'MEM-1', memberName: 'Ana Luísa', status: 'vou', updatedAt: '2026-08-01T10:00:00.000Z' },
+      { memberId: 'MEM-2', memberName: 'Carlos Neto', status: 'talvez', updatedAt: '2026-08-01T10:05:00.000Z' },
+      { memberId: 'MEM-3', memberName: 'Paulo João', status: 'nao_posso', updatedAt: '2026-08-01T10:10:00.000Z' },
+    ],
+    costEstimatedInCents: 150000,
+    costApprovedInCents: 150000,
+    costPaidInCents: 0,
+    tasks: [],
+    attendees: [],
+    createdAt: '2026-07-20T10:00:00.000Z',
+  };
+
+  const hiddenInternalMeeting66: ClubActivity = {
+    id: 'ACT-66-INT',
+    title: 'Reunião da Comissão — Orçamento Interno',
+    type: 'diretoria',
+    department: 'Direção',
+    location: 'Sala da Direção',
+    startDate: '2026-08-05',
+    stage: 'encerrado',
+    requiresDirectorApproval: false,
+    visibleInMemberPortal: false,
+    costEstimatedInCents: 0,
+    costApprovedInCents: 0,
+    costPaidInCents: 0,
+    tasks: [],
+    attendees: [],
+    minute: {
+      id: 'MIN-66-PREV',
+      minuteNumber: 'ATA-2026-0066',
+      date: '2026-08-05',
+      location: 'Sala da Direção',
+      chairPerson: 'Diretor Principal',
+      secretary: 'Secretário Geral',
+      attendeesCount: 8,
+      quorumMet: true,
+      status: 'aprovada',
+      agenda: ['Orçamento', 'Calendário'],
+      deliberations: '- Alugar autocarro para o acampamento\n1. Confirmar reservas de primeiros socorros',
+    },
+    createdAt: '2026-08-01T10:00:00.000Z',
+  };
+
+  assert(
+    doesActivityOccurOnDate(multiDayCamp66, '2026-08-14') === true &&
+      doesActivityOccurOnDate(multiDayCamp66, '2026-08-15') === true &&
+      doesActivityOccurOnDate(multiDayCamp66, '2026-08-16') === true &&
+      doesActivityOccurOnDate(multiDayCamp66, '2026-08-17') === false &&
+      getActivityTimeRangeLabel(multiDayCamp66) === '07:30 – 17:00' &&
+      getActivityStageLabel('preparacao') === 'Preparação',
+    "Eventos multi-dia ocorrem em todos os dias do intervalo e exibem faixa horária e fase corretamente"
+  );
+
+  const icsText66 = buildActivityICS(multiDayCamp66);
+  assert(
+    icsText66.includes('BEGIN:VCALENDAR') &&
+      icsText66.includes('DTSTART:20260814T073000') &&
+      icsText66.includes('DTEND:20260816T170000') &&
+      icsText66.includes('SUMMARY:Acampamento Anual da Primavera'),
+    "Exportação .ics gera evento iCalendar RFC 5545 válido com data e horário exatos"
+  );
+
+  const visiblePortalActs66 = getMemberPortalVisibleActivities([hiddenInternalMeeting66, multiDayCamp66]);
+  assert(
+    visiblePortalActs66.length === 1 &&
+      visiblePortalActs66[0].id === 'ACT-66-CAMP' &&
+      canManageActivityPortalVisibility('diretor') === true &&
+      canManageActivityPortalVisibility('admin_tecnico') === true &&
+      canManageActivityPortalVisibility('secretario') === false &&
+      canManageActivityPortalVisibility('diretor_associado') === false &&
+      canManageActivityPortalVisibility('membro') === false,
+    "Portal do Membro exibe apenas atividades explicitamente permitidas pelo Diretor e impede outros cargos de autorizar"
+  );
+
+  const prevMinute66 = getPreviousCommissionMinute([hiddenInternalMeeting66, multiDayCamp66], 'ACT-66-NEW');
+  const extractedDrafts66 = parseDeliberationsToTaskDrafts(hiddenInternalMeeting66.minute!.deliberations);
+  const rsvpSummary66 = formatRsvpSummary(multiDayCamp66.rsvps);
+  assert(
+    prevMinute66?.minute.minuteNumber === 'ATA-2026-0066' &&
+      extractedDrafts66.length === 2 &&
+      extractedDrafts66[0] === 'Alugar autocarro para o acampamento' &&
+      extractedDrafts66[1] === 'Confirmar reservas de primeiros socorros' &&
+      rsvpSummary66.vou === 1 &&
+      rsvpSummary66.talvez === 1 &&
+      rsvpSummary66.nao_posso === 1 &&
+      rsvpSummary66.total === 3,
+    "Ata da comissão consulta ata anterior, extrai deliberações limpas em tarefas e resume confirmações RSVP"
+  );
+
+  // -------------------------------------------------------------------------
+  // TESTE 67: Chamada em lote atómica + Formatação de estados de tarefas
+  // -------------------------------------------------------------------------
+  console.log("\n=== TESTE 67: CHAMADA EM LOTE ATÓMICA E ESTADOS DE TAREFA ===");
+  const actWithExistingAttendee67: ClubActivity = {
+    ...multiDayCamp66,
+    id: 'ACT-67-BATCH',
+    attendees: [
+      { memberId: 'MEM-1', present: false, notes: 'Chegou atrasado na última chamada' },
+      { memberId: 'MEM-99', present: true, notes: 'Fora do filtro atual' },
+    ],
+  };
+
+  const batchResult67 = applyBatchAttendanceToActivities(
+    [actWithExistingAttendee67, hiddenInternalMeeting66],
+    'ACT-67-BATCH',
+    ['MEM-1', 'MEM-2', 'MEM-3'],
+    true
+  );
+
+  const updatedAct67 = batchResult67.find((a) => a.id === 'ACT-67-BATCH')!;
+  const untouchedAct67 = batchResult67.find((a) => a.id === 'ACT-66-INT')!;
+  const mem1Att67 = updatedAct67.attendees.find((a) => a.memberId === 'MEM-1');
+  const mem99Att67 = updatedAct67.attendees.find((a) => a.memberId === 'MEM-99');
+
+  assert(
+    updatedAct67.attendees.length === 4 &&
+      mem1Att67?.present === true &&
+      mem1Att67?.notes === 'Chegou atrasado na última chamada' &&
+      mem99Att67?.present === true &&
+      mem99Att67?.notes === 'Fora do filtro atual' &&
+      untouchedAct67.attendees.length === 0,
+    "applyBatchAttendanceToActivities atualiza múltiplos membros atomicamente preservando notas e registos fora do lote"
+  );
+
+  assert(
+    formatTaskStatusLabel('pendente') === 'Pendente' &&
+      formatTaskStatusLabel('em_progresso') === 'Em Progresso' &&
+      formatTaskStatusLabel('concluido') === 'Concluído',
+    "formatTaskStatusLabel devolve rótulos legíveis corretos para todos os estados de tarefa"
+  );
+
+  // -------------------------------------------------------------------------
+  // TESTE 68: Repertório Musical (musicItems) e Proteção de Escrita no Firestore
+  // -------------------------------------------------------------------------
+  console.log("\n=== TESTE 68: REPERTÓRIO MUSICAL E PERSISTÊNCIA NO FIRESTORE ===");
+  const emptyShell68 = createCleanCloudShellState();
+  const newHymn68: MusicItem = {
+    id: 'MUS-68-1',
+    title: 'Hino Oficial dos Embaixadores',
+    category: 'hinos_culto',
+    composer: 'Clube Alvorada',
+    keySignature: 'Dó Maior (C)',
+    lyrics: 'Avante Embaixadores do Rei...',
+    createdAt: '2026-11-25T10:00:00.000Z',
+  };
+  const updatedShell68: ClubDatabaseState = {
+    ...emptyShell68,
+    musicItems: [newHymn68],
+    updatedAt: '2026-11-25T10:00:00.000Z',
+  };
+
+  assert(
+    CLOUD_STATE_KEYS.includes('musicItems') &&
+      Array.isArray(emptyShell68.musicItems) &&
+      isSafeCloudWritePayload(emptyShell68, false) === false &&
+      isSafeCloudWritePayload(updatedShell68, false) === true &&
+      hasCloudPayloadChanged(emptyShell68, updatedShell68) === true &&
+      JSON.parse(JSON.stringify(newHymn68)).title === 'Hino Oficial dos Embaixadores',
+    "musicItems é reconhecido na lista de chaves da nuvem, ativa isSafeCloudWritePayload e deteta alterações para gravação no Firestore"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");

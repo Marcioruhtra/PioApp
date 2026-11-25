@@ -6,9 +6,27 @@
       "type": "object",
       "properties": {
         "id": { "type": "string" },
+        "musicItems": { "type": "array" },
         "updatedAt": { "type": "string" }
       },
       "required": ["id", "updatedAt"]
+    },
+    "MusicItem": {
+      "title": "MusicItem",
+      "description": "Hymn or worship song entry stored inside ClubState.musicItems",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "composer": { "type": "string" },
+        "category": { "type": "string", "enum": ["hinos_culto", "hino_chamada_pregador", "hino_marcha", "outros"] },
+        "keySignature": { "type": "string" },
+        "lyrics": { "type": "string" },
+        "chordChartUrl": { "type": "string" },
+        "audioUrl": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "title", "category", "createdAt"]
     },
     "PushSubscription": {
       "title": "PushSubscription",

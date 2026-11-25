@@ -141,6 +141,7 @@ export const AuditAndAdminModule: React.FC = () => {
   };
 
   const [roleChangeTargetUser, setRoleChangeTargetUser] = useState<UserAccount | null>(null);
+  const [userToDelete, setUserToDelete] = useState<UserAccount | null>(null);
   const [isResetCleanModalOpen, setIsResetCleanModalOpen] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState('');
   const [isResetting, setIsResetting] = useState(false);
@@ -746,13 +747,7 @@ export const AuditAndAdminModule: React.FC = () => {
                                   {u.active ? 'Desativar' : 'Reativar'}
                                 </button>
                                 <button
-                                  onClick={() => {
-                                    if(confirm('Tem certeza que deseja eliminar esta conta permanentemente?')) {
-                                      const res = deleteUserAccount(u.id);
-                                      if (res.success) showFeedback('success', 'Conta eliminada com sucesso.');
-                                      else showFeedback('error', res.error || 'Erro ao eliminar conta.');
-                                    }
-                                  }}
+                                  onClick={() => setUserToDelete(u)}
                                   className="px-2 py-1 text-[11px] font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded hover:bg-rose-100 transition-colors"
                                   title="Eliminar conta definitivamente"
                                 >
@@ -1518,7 +1513,7 @@ export const AuditAndAdminModule: React.FC = () => {
               }}
               className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"
             >
-              {(['membro', 'instrutor', 'tesoureiro', 'secretario', 'capelao', 'diretor_associado', 'diretor', 'admin_tecnico'] as RoleType[]).map((roleOption) => (
+              {(['membro', 'instrutor', 'tesoureiro', 'secretario', 'capelao', 'diretor_musica', 'diretor_associado', 'diretor', 'admin_tecnico'] as RoleType[]).map((roleOption) => (
                 <option key={roleOption} value={roleOption}>
                   {ROLE_LABELS[roleOption]?.label || roleOption}
                 </option>
@@ -1628,7 +1623,7 @@ export const AuditAndAdminModule: React.FC = () => {
             )}
 
             <div className="space-y-2">
-              {(['diretor_associado', 'secretario', 'tesoureiro', 'instrutor', 'capelao', 'membro', 'diretor', 'admin_tecnico'] as RoleType[])
+              {(['diretor_musica', 'diretor_associado', 'secretario', 'tesoureiro', 'instrutor', 'capelao', 'membro', 'diretor', 'admin_tecnico'] as RoleType[])
                 .filter((r) => {
                   // Se for Diretor: NÃO pode promover a Administrador nem a Diretor
                   if (currentUser.role === 'diretor' && !can('audit', 'ADMIN')) {
@@ -2027,7 +2022,7 @@ export const AuditAndAdminModule: React.FC = () => {
                   onChange={(e) => setEditUserForm({ ...editUserForm, role: e.target.value as RoleType })}
                   className="w-full p-2 border border-slate-200 rounded"
                 >
-                  {(['membro', 'instrutor', 'tesoureiro', 'secretario', 'capelao', 'diretor_associado', 'diretor', 'admin_tecnico'] as RoleType[]).map((roleOption) => (
+                  {(['membro', 'instrutor', 'tesoureiro', 'secretario', 'capelao', 'diretor_musica', 'diretor_associado', 'diretor', 'admin_tecnico'] as RoleType[]).map((roleOption) => (
                     <option key={roleOption} value={roleOption}>
                       {ROLE_LABELS[roleOption]?.label || roleOption}
                     </option>
@@ -2247,6 +2242,43 @@ export const AuditAndAdminModule: React.FC = () => {
                   className="px-4 py-2 bg-blue-900 hover:bg-blue-800 text-white font-semibold rounded-lg shadow-xs transition-colors"
                 >
                   Concluir e Fechar
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
+
+        {userToDelete && (
+          <Modal
+            isOpen={Boolean(userToDelete)}
+            onClose={() => setUserToDelete(null)}
+            title="Eliminar Conta de Acesso"
+            description="Esta operação revoga permanentemente o acesso deste utilizador ao sistema."
+            maxWidth="sm"
+          >
+            <div className="space-y-4 text-xs">
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-900 leading-relaxed">
+                Tem a certeza que deseja eliminar permanentemente a conta de <strong>{userToDelete.name}</strong> ({userToDelete.email})?
+              </div>
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setUserToDelete(null)}
+                  className="px-3 py-1.5 text-slate-600 hover:text-slate-900 font-medium"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const res = deleteUserAccount(userToDelete.id);
+                    if (res.success) showFeedback('success', 'Conta eliminada com sucesso.');
+                    else showFeedback('error', res.error || 'Erro ao eliminar conta.');
+                    setUserToDelete(null);
+                  }}
+                  className="px-4 py-1.5 font-semibold text-white bg-rose-700 hover:bg-rose-800 rounded-lg shadow-xs"
+                >
+                  Sim, Eliminar Conta
                 </button>
               </div>
             </div>

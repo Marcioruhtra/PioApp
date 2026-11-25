@@ -43,6 +43,7 @@ import {
   ACTIVITY_TYPE_LABELS,
   calculateTeamAttendanceStats,
   canActivityHaveMinute,
+  formatTaskStatusLabel,
   getActivitiesRequiringMinute,
 } from '../../utils/activityUtils';
 
@@ -1544,7 +1545,9 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
                           <option value="concluido">Concluído</option>
                         </select>
                       ) : (
-                        <span className="text-[11px] font-semibold text-slate-600 shrink-0">{task.status}</span>
+                        <span className="text-[11px] font-semibold text-slate-600 shrink-0">
+                          {formatTaskStatusLabel(task.status)}
+                        </span>
                       )}
                     </div>
                   ))}

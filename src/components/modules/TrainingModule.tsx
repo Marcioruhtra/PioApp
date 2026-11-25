@@ -251,6 +251,11 @@ export const TrainingModule: React.FC = () => {
     id: string;
     title: string;
   } | null>(null);
+  const [progressToDelete, setProgressToDelete] = useState<{
+    id: string;
+    memberName: string;
+    targetTitle: string;
+  } | null>(null);
 
   const confirmDeleteAction = () => {
     if (!deleteTarget) return;
@@ -798,17 +803,13 @@ export const TrainingModule: React.FC = () => {
                         {(currentUser.role === 'diretor' || currentUser.role === 'admin_tecnico' || can('training', 'APPROVE')) && (
                           <button
                             type="button"
-                            onClick={() => {
-                              if (confirm(`Tem a certeza que deseja retirar / desmatricular ${member?.fullName || 'o membro'} de ${currentItem.targetTitle}?`)) {
-                                const res = deleteTrainingProgress(currentItem.id);
-                                if (res.success) {
-                                  setSelectedProgressId('');
-                                  showFeedback('success', 'Membro desmatriculado da formação com sucesso.');
-                                } else {
-                                  showFeedback('error', res.error || 'Erro ao desmatricular membro.');
-                                }
-                              }
-                            }}
+                            onClick={() =>
+                              setProgressToDelete({
+                                id: currentItem.id,
+                                memberName: member?.fullName || 'o membro',
+                                targetTitle: currentItem.targetTitle,
+                              })
+                            }
                             className="p-2 text-rose-600 hover:text-white hover:bg-rose-700 bg-rose-50 border border-rose-200 rounded-lg transition-colors ml-2"
                             title="Desmatricular / Retirar membro do Módulo ou Medalha (Apenas Diretor)"
                           >
@@ -1631,6 +1632,47 @@ export const TrainingModule: React.FC = () => {
                 className="px-3.5 py-1.5 rounded bg-rose-600 hover:bg-rose-700 text-white font-semibold shadow-xs"
               >
                 Sim, Eliminar Definitivamente
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {progressToDelete && (
+        <Modal
+          isOpen={Boolean(progressToDelete)}
+          onClose={() => setProgressToDelete(null)}
+          title="Desmatricular Membro da Formação"
+          description="Esta operação remove o registo de inscrição e progresso nesta formação."
+          maxWidth="sm"
+        >
+          <div className="space-y-4 text-xs">
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-900 leading-relaxed">
+              Tem a certeza que deseja retirar / desmatricular <strong>{progressToDelete.memberName}</strong> de <strong>{progressToDelete.targetTitle}</strong>?
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setProgressToDelete(null)}
+                className="px-3 py-1.5 rounded border border-slate-200 text-slate-700 hover:bg-slate-100"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const res = deleteTrainingProgress(progressToDelete.id);
+                  if (res.success) {
+                    setSelectedProgressId('');
+                    showFeedback('success', 'Membro desmatriculado da formação com sucesso.');
+                  } else {
+                    showFeedback('error', res.error || 'Erro ao desmatricular membro.');
+                  }
+                  setProgressToDelete(null);
+                }}
+                className="px-3.5 py-1.5 rounded bg-rose-600 hover:bg-rose-700 text-white font-semibold shadow-xs"
+              >
+                Sim, Desmatricular
               </button>
             </div>
           </div>

@@ -11,7 +11,8 @@ export type RoleType =
   | 'tesoureiro' 
   | 'instrutor' 
   | 'membro'
-  | 'capelao';
+  | 'capelao'
+  | 'diretor_musica';
 
 export type PermissionAction =
   | 'VIEW'
@@ -317,6 +318,16 @@ export interface ActivityAttendanceRecord {
   notes?: string;
 }
 
+export type ActivityRsvpStatus = 'vou' | 'talvez' | 'nao_posso';
+
+export interface ActivityRsvpRecord {
+  memberId: string;
+  memberName: string;
+  status: ActivityRsvpStatus;
+  note?: string;
+  updatedAt: string;
+}
+
 export interface StructuredMinute {
   id: string;
   minuteNumber: string; // ex: ATA-2026-0001
@@ -325,6 +336,9 @@ export interface StructuredMinute {
   chairPerson: string;
   secretary: string;
   attendeesCount: number;
+  presentMemberIds?: string[];
+  quorumMet?: boolean;
+  status?: 'rascunho' | 'aprovada';
   agenda: string[];
   deliberations: string;
   observations?: string;
@@ -338,9 +352,19 @@ export interface ClubActivity {
   location: string;
   startDate: string;
   endDate?: string;
+  startTime?: string;
+  endTime?: string;
+  description?: string;
   stage: ActivityStage;
   requiresDirectorApproval: boolean;
   isApprovedByDirector?: boolean;
+  directorDecisionNotes?: string;
+  directorDecisionByName?: string;
+  directorDecisionAt?: string;
+  visibleInMemberPortal?: boolean;
+  memberPortalPublishedByName?: string;
+  memberPortalPublishedAt?: string;
+  rsvps?: ActivityRsvpRecord[];
   hasCost?: boolean;
   hasMemberContribution?: boolean;
   costEstimatedInCents: number;
@@ -750,7 +774,7 @@ export interface TeamEvaluation {
   evaluatedAt: string;
 }
 
-export type MusicCategory = 'hino_oficial' | 'louvor_jovem' | 'marcha' | 'coral' | 'especial';
+export type MusicCategory = 'hinos_culto' | 'hino_chamada_pregador' | 'hino_marcha' | 'outros';
 
 export interface MusicItem {
   id: string;

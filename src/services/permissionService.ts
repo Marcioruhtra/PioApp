@@ -305,6 +305,26 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     awards: [],
     music: ['VIEW'],
   },
+  diretor_musica: {
+    dashboard: ['VIEW'],
+    associate_director: [],
+    members: ['VIEW'],
+    treasury: [],
+    activities: ['VIEW'],
+    training: ['VIEW'],
+    documents: ['VIEW'],
+    member_portal: ['VIEW'],
+    requests: ['VIEW', 'CREATE'],
+    reports: ['VIEW'],
+    settings: [],
+    audit: ['VIEW'],
+    chaplaincy: ['VIEW'],
+    suggestions: [],
+    messaging: ['VIEW', 'CREATE'],
+    inventory: ['VIEW'],
+    awards: ['VIEW'],
+    music: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
+  },
 };
 
 export const getRolePermissions = (role: RoleType) => ROLE_PERMISSIONS_MATRIX[role];
@@ -364,6 +384,10 @@ export const ROLE_LABELS: Record<RoleType, { label: string; description: string 
   capelao: {
     label: 'Capelão',
     description: 'Gestão da capelania digital, acompanhamento pastoral e intercessão.',
+  },
+  diretor_musica: {
+    label: 'Diretor de Música',
+    description: 'Gestão completa do repertório, hinos oficiais, cânticos e escalas do módulo de Música e Louvor.',
   },
 };
 

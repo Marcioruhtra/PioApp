@@ -70,22 +70,46 @@ export async function syncActivityToGoogleCalendar(activity: {
   title: string;
   startDate: string;
   endDate?: string;
+  startTime?: string;
+  endTime?: string;
+  description?: string;
   location?: string;
   department?: string;
 }, accessToken: string) {
-  const startDateTime = new Date(activity.startDate);
-  // Se não houver fim, assume 2 horas de duração
-  const endDateTime = activity.endDate ? new Date(activity.endDate) : new Date(startDateTime.getTime() + 2 * 60 * 60 * 1000);
+  const parseDateTime = (dateStr: string, timeStr?: string, fallbackHour = '08:30') => {
+    const dateOnly = dateStr.split('T')[0];
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
+      const timePart = timeStr && /^\d{2}:\d{2}/.test(timeStr) ? timeStr.slice(0, 5) : fallbackHour;
+      return new Date(`${dateOnly}T${timePart}:00`);
+    }
+    return new Date(dateStr);
+  };
+
+  const startDateTime = parseDateTime(activity.startDate, activity.startTime, '08:30');
+  const endDateTime = activity.endDate
+    ? parseDateTime(activity.endDate, activity.endTime, '12:00')
+    : activity.endTime
+    ? parseDateTime(activity.startDate, activity.endTime, '12:00')
+    : new Date(startDateTime.getTime() + 2 * 60 * 60 * 1000);
+
+  const safeEnd = endDateTime.getTime() > startDateTime.getTime()
+    ? endDateTime
+    : new Date(startDateTime.getTime() + 2 * 60 * 60 * 1000);
+
+  const descriptionLines = [
+    activity.description?.trim(),
+    `Atividade do departamento: ${activity.department || 'Geral'}. Sincronizado automaticamente via PioApp.`,
+  ].filter(Boolean);
 
   const event = {
     summary: `[Clube D'Alvorada] ${activity.title}`,
-    description: `Atividade do departamento: ${activity.department || 'Geral'}. Sincronizado automaticamente via PioApp.`,
+    description: descriptionLines.join('\n\n'),
     location: activity.location || "Sede do Clube de Embaixadores Pioneiros D'Alvorada",
     start: {
       dateTime: startDateTime.toISOString(),
     },
     end: {
-      dateTime: endDateTime.toISOString(),
+      dateTime: safeEnd.toISOString(),
     },
   };
 

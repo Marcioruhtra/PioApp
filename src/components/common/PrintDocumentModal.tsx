@@ -468,6 +468,26 @@ export const PrintDocumentModal: React.FC<PrintDocumentModalProps> = ({
                         </span>
                         <span className="font-bold text-slate-900">{ataSecretaryDisplay}</span>
                       </div>
+                      {(Boolean(content.minuteStatus) || content.quorumMet !== undefined) && (
+                        <div className="sm:col-span-2 pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                          {Boolean(content.minuteStatus) && (
+                            <span>
+                              Estado da Ata:{' '}
+                              <strong className={content.minuteStatus === 'rascunho' ? 'text-amber-800' : 'text-emerald-800'}>
+                                {content.minuteStatus === 'rascunho' ? 'Rascunho (Em Revisão)' : 'Aprovada em Sessão'}
+                              </strong>
+                            </span>
+                          )}
+                          {content.quorumMet !== undefined && (
+                            <span>
+                              Quórum Regimental:{' '}
+                              <strong className={content.quorumMet ? 'text-emerald-800' : 'text-amber-800'}>
+                                {content.quorumMet ? 'Verificado' : 'Não Verificado / Sessão Informativa'}
+                              </strong>
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="border border-slate-900 overflow-hidden">

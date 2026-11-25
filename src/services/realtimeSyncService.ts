@@ -78,7 +78,8 @@ export function isSafeCloudWritePayload(
   const hasMembers = Array.isArray(state.members) && state.members.length > 0;
   const hasLogs = Array.isArray(state.auditLogs) && state.auditLogs.length > 0;
   const hasEnrollments = Array.isArray(state.enrollmentRequests) && state.enrollmentRequests.length > 0;
-  return hasUsers || hasMembers || hasLogs || hasEnrollments;
+  const hasMusic = Array.isArray(state.musicItems) && state.musicItems.length > 0;
+  return hasUsers || hasMembers || hasLogs || hasEnrollments || hasMusic;
 }
 
 /**

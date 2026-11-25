@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut as fbSignOut, signInWithEmailAndPassword, setPersistence, browserLocalPersistence, browserSessionPersistence } from 'firebase/auth';
-import { getFirestore, initializeFirestore } from 'firebase/firestore';
+import { getFirestore, initializeFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import { getMessaging } from 'firebase/messaging';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -53,6 +53,18 @@ try {
   authInstance = getAuth(appInstance);
   // Default to session persistence to avoid localStorage, but we can upgrade to local for 'remember me'
   setPersistence(authInstance, browserSessionPersistence).catch(() => {});
+
+  if (typeof window !== 'undefined' && dbInstance && (dbInstance as any).app) {
+    (async function testConnection() {
+      try {
+        await getDocFromServer(doc(dbInstance, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error('Please check your Firebase configuration.');
+        }
+      }
+    })();
+  }
 } catch (e) {
   console.warn('Firebase initialization warning (running in offline/mock mode):', e);
   appInstance = { name: '[DEFAULT]' };
