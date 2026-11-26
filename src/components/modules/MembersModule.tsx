@@ -49,6 +49,7 @@ import {
   DeletionRequest,
   OfficialDocument,
   MemberEnrollmentRequest,
+  MemberPortalRequest,
 } from '../../types';
 import {
   evaluateIdentityCardValidity,
@@ -86,6 +87,7 @@ import {
 } from '../../services/enrollmentService';
 import {
   downloadDocumentFile,
+  getDocumentPreviewKind,
   processProfilePhoto,
   processProofFile,
   triggerPdfDownload,
@@ -137,6 +139,7 @@ export const MembersModule: React.FC = () => {
     approvePendingMemberAccount,
     rejectPendingMemberAccount,
     exportEnrollmentReconfirmationList,
+    respondToRequest,
   } = useClub();
 
   const isAdmin = currentUser.role === 'admin_tecnico' || can('audit', 'ADMIN');
@@ -177,9 +180,24 @@ export const MembersModule: React.FC = () => {
   );
 
   // Visualização e Navegação
-  const [activeView, setActiveView] = useState<'members' | 'enrollments' | 'authorizations'>('members');
+  const [activeView, setActiveView] = useState<'members' | 'enrollments' | 'authorizations' | 'updates'>('members');
   const [enrollmentFilter, setEnrollmentFilter] = useState<'todos' | 'pendente' | 'em_analise' | 'rejeitado'>('todos');
   const [authFilter, setAuthFilter] = useState<'todos' | 'pendente' | 'aprovado' | 'rejeitado' | 'executado'>('todos');
+  const [updatesFilter, setUpdatesFilter] = useState<'todos' | 'pendente' | 'em_analise' | 'concluidos' | 'rejeitado'>('todos');
+  const [updatesSearch, setUpdatesSearch] = useState('');
+  const [requestDecisionModal, setRequestDecisionModal] = useState<{
+    request: MemberPortalRequest;
+    action: 'aprovado' | 'concluido' | 'rejeitado';
+    applyChanges: boolean;
+  } | null>(null);
+  const [requestDecisionNotes, setRequestDecisionNotes] = useState('');
+  const [requestDecisionError, setRequestDecisionError] = useState<string | null>(null);
+  const [viewingUpdateAttachment, setViewingUpdateAttachment] = useState<{
+    title: string;
+    fileName: string;
+    base64: string;
+  } | null>(null);
+  const [updatesFeedback, setUpdatesFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // Filtros e Pesquisa
   const [searchQuery, setSearchQuery] = useState('');
@@ -1106,6 +1124,28 @@ export const MembersModule: React.FC = () => {
               {pendingAuthCount}
             </span>
           )}
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveView('updates')}
+          className={`pb-3 px-3 text-xs font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap shrink-0 ${
+            activeView === 'updates'
+              ? 'border-blue-900 text-blue-900'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <MessageSquare className="w-4 h-4" />
+          <span>
+            Pedidos de Atualização
+            {(() => {
+              const pendingUpd = (state.requests || []).filter(
+                (r) =>
+                  r.category === 'atualizacao_dados' &&
+                  (r.status === 'pendente' || r.status === 'em_analise')
+              ).length;
+              return pendingUpd > 0 ? ` (${pendingUpd})` : '';
+            })()}
+          </span>
         </button>
       </div>
 
@@ -2296,6 +2336,319 @@ export const MembersModule: React.FC = () => {
           </div>
         </div>
       )}
+
+      {activeView === 'updates' && (() => {
+        const allUpdateRequests = (state.requests || [])
+          .filter((r) => r.category === 'atualizacao_dados')
+          .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+        const cleanQ = updatesSearch.trim().toLowerCase();
+        const filteredUpdates = allUpdateRequests.filter((req) => {
+          if (updatesFilter === 'pendente' && req.status !== 'pendente') return false;
+          if (updatesFilter === 'em_analise' && req.status !== 'em_analise') return false;
+          if (updatesFilter === 'concluidos' && req.status !== 'aprovado' && req.status !== 'concluido') {
+            return false;
+          }
+          if (updatesFilter === 'rejeitado' && req.status !== 'rejeitado') return false;
+          if (cleanQ) {
+            const hay = `${req.id} ${req.memberName} ${req.subject} ${req.details}`.toLowerCase();
+            if (!hay.includes(cleanQ)) return false;
+          }
+          return true;
+        });
+
+        const fieldLabels: Record<string, string> = {
+          phone: 'Telefone',
+          address: 'Morada',
+          email: 'Email',
+          identityCardNumber: 'Nº do B.I.',
+          identityCardExpiryDate: 'Validade do B.I.',
+          guardianName: 'Encarregado',
+          guardianPhone: 'Tel. Encarregado',
+          emergencyContactName: 'Contacto Emergência',
+          emergencyContactPhone: 'Tel. Emergência',
+        };
+
+        return (
+          <div className="space-y-4 w-full max-w-full min-w-0">
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">
+                  Pedidos de Atualização Cadastral dos Membros
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Receba solicitações de alteração de contacto, morada ou B.I. fora da janela de reconfirmação e aplique diretamente na ficha oficial.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={updatesSearch}
+                    onChange={(e) => setUpdatesSearch(e.target.value)}
+                    placeholder="Pesquisar membro ou assunto..."
+                    className="pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <select
+                  value={updatesFilter}
+                  onChange={(e) => setUpdatesFilter(e.target.value as any)}
+                  className="px-3 py-1.5 border border-slate-200 rounded-lg bg-white"
+                >
+                  <option value="todos">Todos ({allUpdateRequests.length})</option>
+                  <option value="pendente">
+                    Pendentes ({allUpdateRequests.filter((r) => r.status === 'pendente').length})
+                  </option>
+                  <option value="em_analise">
+                    Em Análise ({allUpdateRequests.filter((r) => r.status === 'em_analise').length})
+                  </option>
+                  <option value="concluidos">
+                    Aprovados / Concluídos (
+                    {allUpdateRequests.filter((r) => r.status === 'aprovado' || r.status === 'concluido').length})
+                  </option>
+                  <option value="rejeitado">
+                    Rejeitados ({allUpdateRequests.filter((r) => r.status === 'rejeitado').length})
+                  </option>
+                </select>
+              </div>
+            </div>
+
+            {updatesFeedback && (
+              <div
+                className={`p-3 rounded-xl border text-xs flex items-center justify-between ${
+                  updatesFeedback.type === 'success'
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                    : 'bg-rose-50 border-rose-200 text-rose-900'
+                }`}
+              >
+                <span>{updatesFeedback.message}</span>
+                <button
+                  type="button"
+                  onClick={() => setUpdatesFeedback(null)}
+                  className="font-bold underline cursor-pointer"
+                >
+                  Fechar
+                </button>
+              </div>
+            )}
+
+            <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+              {filteredUpdates.length === 0 ? (
+                <EmptyState
+                  icon={MessageSquare}
+                  title="Nenhum pedido de atualização cadastral"
+                  description="Os pedidos enviados pelos membros através do Portal do Membro aparecerão aqui para validação da Secretaria."
+                />
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {filteredUpdates.map((req) => {
+                    const targetMember = state.members.find((m) => m.id === req.memberId);
+                    const proposedEntries = req.proposedChanges
+                      ? Object.entries(req.proposedChanges).filter(([, val]) => Boolean(val))
+                      : [];
+                    const isOpen = req.status === 'pendente' || req.status === 'em_analise';
+                    const canProcess = isDirectorOrSecretary || can('members', 'EDIT');
+
+                    return (
+                      <div key={req.id} className="p-4 sm:p-5 space-y-3 hover:bg-slate-50/50 transition-colors">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="font-mono text-[11px] text-slate-500">{req.id}</span>
+                              <span aria-hidden="true">·</span>
+                              <span className="font-bold text-slate-900">{req.memberName}</span>
+                              {targetMember?.manualNumber && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="font-mono text-slate-500">{targetMember.manualNumber}</span>
+                                </>
+                              )}
+                            </div>
+                            <h3 className="text-sm font-bold text-slate-900 mt-0.5">{req.subject}</h3>
+                          </div>
+                          <div className="text-xs flex items-center gap-2 shrink-0">
+                            <span className="text-slate-500">{formatDateTimeAO(req.createdAt)}</span>
+                            <span aria-hidden="true">·</span>
+                            <span
+                              className={`font-bold ${
+                                req.status === 'aprovado' || req.status === 'concluido'
+                                  ? 'text-emerald-700'
+                                  : req.status === 'rejeitado'
+                                  ? 'text-rose-700'
+                                  : req.status === 'em_analise'
+                                  ? 'text-blue-800'
+                                  : 'text-amber-700'
+                              }`}
+                            >
+                              {req.status === 'aprovado'
+                                ? 'Aprovado'
+                                : req.status === 'concluido'
+                                ? 'Concluído'
+                                : req.status === 'rejeitado'
+                                ? 'Rejeitado'
+                                : req.status === 'em_analise'
+                                ? 'Em Análise'
+                                : 'Pendente'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <p className="text-xs text-slate-700">{req.details}</p>
+
+                        {proposedEntries.length > 0 && (
+                          <div className="border border-slate-200 rounded-lg overflow-hidden text-xs">
+                            <table className="w-full text-left border-collapse">
+                              <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 text-[11px]">
+                                <tr>
+                                  <th className="py-2 px-3">Campo</th>
+                                  <th className="py-2 px-3">Valor Atual na Ficha</th>
+                                  <th className="py-2 px-3">Novo Valor Solicitado</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {proposedEntries.map(([key, newVal]) => {
+                                  const currentVal = targetMember
+                                    ? key === 'emergencyContactName'
+                                      ? targetMember.emergencyContact?.name || '—'
+                                      : key === 'emergencyContactPhone'
+                                      ? targetMember.emergencyContact?.phone || '—'
+                                      : String((targetMember as unknown as Record<string, unknown>)[key] || '—')
+                                    : '—';
+                                  return (
+                                    <tr key={key}>
+                                      <td className="py-2 px-3 font-semibold text-slate-700">
+                                        {fieldLabels[key] || key}
+                                      </td>
+                                      <td className="py-2 px-3 text-slate-500">{currentVal}</td>
+                                      <td className="py-2 px-3 font-bold text-blue-900">{String(newVal)}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+
+                        {req.responseNotes && (
+                          <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700">
+                            <strong>Resposta registada:</strong> {req.responseNotes}
+                            {req.assignedUserName && (
+                              <span className="text-slate-500"> · {req.assignedUserName}</span>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                          <div>
+                            {req.attachmentBase64 && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setViewingUpdateAttachment({
+                                    title: `Anexo do Pedido · ${req.memberName}`,
+                                    fileName: req.attachmentFileName || `Anexo_${req.id}`,
+                                    base64: req.attachmentBase64!,
+                                  })
+                                }
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg cursor-pointer"
+                              >
+                                <Paperclip className="w-3.5 h-3.5" />
+                                <span>Ver Documento Anexo ({req.attachmentFileName || 'Ficheiro'})</span>
+                              </button>
+                            )}
+                          </div>
+
+                          {isOpen && canProcess && (
+                            <div className="flex flex-wrap items-center gap-2">
+                              {req.status === 'pendente' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const res = respondToRequest(
+                                      req.id,
+                                      'em_analise',
+                                      'Pedido rececionado pela Secretaria e em análise.'
+                                    );
+                                    if (res.success) {
+                                      setUpdatesFeedback({
+                                        type: 'success',
+                                        message: `Pedido ${req.id} marcado como Em Análise.`,
+                                      });
+                                    } else {
+                                      setUpdatesFeedback({
+                                        type: 'error',
+                                        message: res.error || 'Erro ao atualizar pedido.',
+                                      });
+                                    }
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg cursor-pointer"
+                                >
+                                  Marcar em Análise
+                                </button>
+                              )}
+
+                              {proposedEntries.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRequestDecisionNotes('Dados conferidos e atualizados na ficha do membro.');
+                                    setRequestDecisionError(null);
+                                    setRequestDecisionModal({
+                                      request: req,
+                                      action: 'aprovado',
+                                      applyChanges: true,
+                                    });
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg cursor-pointer"
+                                >
+                                  Aprovar e Aplicar na Ficha
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRequestDecisionNotes('Pedido tratado pela Secretaria.');
+                                  setRequestDecisionError(null);
+                                  setRequestDecisionModal({
+                                    request: req,
+                                    action: 'concluido',
+                                    applyChanges: false,
+                                  });
+                                }}
+                                className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg cursor-pointer"
+                              >
+                                Concluir
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRequestDecisionNotes('');
+                                  setRequestDecisionError(null);
+                                  setRequestDecisionModal({
+                                    request: req,
+                                    action: 'rejeitado',
+                                    applyChanges: false,
+                                  });
+                                }}
+                                className="px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg cursor-pointer"
+                              >
+                                Rejeitar
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* MODAL 1: Formulário Completo de Registo (Secretaria - mesmo formulário da auto-inscrição) */}
       <Modal
@@ -4576,6 +4929,163 @@ export const MembersModule: React.FC = () => {
           )}
         </div>
       </Modal>
+
+      {/* MODAL: Resposta da Secretaria ao Pedido de Atualização Cadastral */}
+      {requestDecisionModal && (
+        <Modal
+          isOpen={Boolean(requestDecisionModal)}
+          onClose={() => {
+            setRequestDecisionModal(null);
+            setRequestDecisionError(null);
+          }}
+          title={
+            requestDecisionModal.action === 'rejeitado'
+              ? `Rejeitar Pedido ${requestDecisionModal.request.id}`
+              : requestDecisionModal.applyChanges
+              ? `Aprovar e Aplicar Alterações · ${requestDecisionModal.request.id}`
+              : `Concluir Pedido ${requestDecisionModal.request.id}`
+          }
+          description={`Membro: ${requestDecisionModal.request.memberName} · ${requestDecisionModal.request.subject}`}
+          maxWidth="md"
+        >
+          <div className="space-y-4 text-xs">
+            {requestDecisionError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg">
+                {requestDecisionError}
+              </div>
+            )}
+
+            {requestDecisionModal.applyChanges && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-lg">
+                Ao confirmar, os novos dados propostos serão gravados automaticamente na ficha oficial de{' '}
+                <strong>{requestDecisionModal.request.memberName}</strong>.
+              </div>
+            )}
+
+            <div>
+              <label className="block text-slate-700 font-semibold mb-1">
+                Notas / Resposta para o Membro {requestDecisionModal.action === 'rejeitado' && <span className="text-rose-600">*</span>}
+              </label>
+              <textarea
+                rows={3}
+                value={requestDecisionNotes}
+                onChange={(e) => {
+                  setRequestDecisionNotes(e.target.value);
+                  setRequestDecisionError(null);
+                }}
+                placeholder="Escreva a resposta oficial da Secretaria..."
+                className="w-full p-2 border border-slate-200 rounded-lg"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setRequestDecisionModal(null);
+                  setRequestDecisionError(null);
+                }}
+                className="px-3.5 py-1.5 text-slate-600 hover:text-slate-900 font-semibold"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const res = respondToRequest(
+                    requestDecisionModal.request.id,
+                    requestDecisionModal.action,
+                    requestDecisionNotes,
+                    { applyChanges: requestDecisionModal.applyChanges }
+                  );
+                  if (res.success) {
+                    setUpdatesFeedback({
+                      type: 'success',
+                      message: `Pedido ${requestDecisionModal.request.id} atualizado com sucesso.`,
+                    });
+                    setRequestDecisionModal(null);
+                    setRequestDecisionError(null);
+                  } else {
+                    setRequestDecisionError(res.error || 'Erro ao responder ao pedido.');
+                  }
+                }}
+                className={`px-4 py-1.5 font-bold text-white rounded-lg cursor-pointer ${
+                  requestDecisionModal.action === 'rejeitado'
+                    ? 'bg-rose-700 hover:bg-rose-800'
+                    : 'bg-emerald-700 hover:bg-emerald-800'
+                }`}
+              >
+                Confirmar Decisão
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* MODAL: Visualizador de Anexo de Pedido Cadastral */}
+      {viewingUpdateAttachment && (() => {
+        const previewKind = getDocumentPreviewKind(
+          viewingUpdateAttachment.base64,
+          viewingUpdateAttachment.fileName
+        );
+        return (
+          <Modal
+            isOpen={Boolean(viewingUpdateAttachment)}
+            onClose={() => setViewingUpdateAttachment(null)}
+            title={viewingUpdateAttachment.title}
+            maxWidth="2xl"
+          >
+            <div className="space-y-4 text-xs">
+              <div className="border border-slate-200 rounded-xl bg-slate-50 overflow-hidden min-h-[220px] flex items-center justify-center p-2">
+                {previewKind === 'image' ? (
+                  <img
+                    src={viewingUpdateAttachment.base64}
+                    alt={viewingUpdateAttachment.fileName}
+                    className="max-h-[60vh] w-auto object-contain rounded"
+                  />
+                ) : previewKind === 'pdf' ? (
+                  <iframe
+                    src={viewingUpdateAttachment.base64}
+                    title={viewingUpdateAttachment.fileName}
+                    className="w-full h-[60vh] rounded bg-white"
+                  />
+                ) : (
+                  <div className="p-6 text-center text-slate-600">
+                    Pré-visualização indisponível para este formato.
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                <span className="text-slate-500 truncate max-w-[260px]">
+                  {viewingUpdateAttachment.fileName}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadDocumentFile(
+                        viewingUpdateAttachment.base64,
+                        viewingUpdateAttachment.fileName
+                      )
+                    }
+                    className="px-3.5 py-1.5 bg-blue-900 hover:bg-blue-800 text-white font-semibold rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Descarregar</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewingUpdateAttachment(null)}
+                    className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg cursor-pointer"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 };

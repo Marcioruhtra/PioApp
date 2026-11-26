@@ -27,6 +27,11 @@ import {
   TrendingUp,
   Eraser,
   RotateCcw,
+  Upload,
+  Download,
+  BookOpen,
+  Paperclip,
+  Users,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import {
@@ -41,10 +46,11 @@ import {
   MemberCategory,
 } from '../../types';
 import { formatKz, parseKzToCents } from '../../utils/currency';
-import { formatDateAO, getMonthNamePT } from '../../utils/date';
+import { formatDateAO, formatDateTimeAO, getMonthNamePT } from '../../utils/date';
 import { getMemberTeamLabel, isDirectionMember } from '../../services/accountSyncService';
 import {
   DEFAULT_QUOTA_FEE_ID,
+  buildAccountLedger,
   calculateClubQuotaTotals,
   calculateMemberQuotaSummary,
   calculateMonthlyReconciliationPreview,
@@ -56,6 +62,11 @@ import {
   resolveQuotaConfig,
 } from '../../services/quotaService';
 import { MonthlyClosing } from '../../types';
+import {
+  downloadDocumentFile,
+  getDocumentPreviewKind,
+  processProofFile,
+} from '../../utils/fileUpload';
 import { Modal } from '../common/Modal';
 import { EmptyState } from '../common/EmptyState';
 import { PrintDocumentModal } from '../common/PrintDocumentModal';
@@ -82,6 +93,7 @@ export const TreasuryModule: React.FC = () => {
     verifyPaymentProof,
     updateQuotaConfig,
     regularizeMemberQuota,
+    batchRegularizeQuotas,
     waiveMemberQuotaDebt,
     waiveAllPendingQuotaDebts,
     reverseQuotaDebtWaiver,
@@ -116,8 +128,38 @@ export const TreasuryModule: React.FC = () => {
   const [paymentModalData, setPaymentModalData] = useState<{
     expenseId: string;
     accountId: string;
+    proofFileName?: string;
+    proofBase64?: string;
   } | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [isProcessingExpenseFile, setIsProcessingExpenseFile] = useState(false);
+  const [viewingExpenseDoc, setViewingExpenseDoc] = useState<{
+    title: string;
+    subtitle: string;
+    fileName: string;
+    base64: string;
+  } | null>(null);
+
+  // Extrato / Livro-Caixa por conta
+  const [ledgerAccount, setLedgerAccount] = useState<TreasuryAccount | null>(null);
+  const [ledgerKindFilter, setLedgerKindFilter] = useState<'todos' | 'entrada' | 'saida' | 'anulado'>('todos');
+  const [ledgerSearch, setLedgerSearch] = useState('');
+  const [ledgerDateFrom, setLedgerDateFrom] = useState('');
+  const [ledgerDateTo, setLedgerDateTo] = useState('');
+
+  // Regularização de quotas em lote
+  const [isBatchRegularizeOpen, setIsBatchRegularizeOpen] = useState(false);
+  const [batchSelectedMemberIds, setBatchSelectedMemberIds] = useState<string[]>([]);
+  const [batchSearch, setBatchSearch] = useState('');
+  const [batchTeamFilter, setBatchTeamFilter] = useState('all');
+  const [batchAmountMode, setBatchAmountMode] = useState<'debt_balance' | 'fixed_amount'>('debt_balance');
+  const [batchFixedAmountStr, setBatchFixedAmountStr] = useState('');
+  const [batchPaymentMethod, setBatchPaymentMethod] = useState<PaymentMethod>('numerario');
+  const [batchAccountId, setBatchAccountId] = useState(state.accounts[0]?.id || '');
+  const [batchPeriodLabel, setBatchPeriodLabel] = useState('');
+  const [batchReferenceOrProof, setBatchReferenceOrProof] = useState('');
+  const [batchNotes, setBatchNotes] = useState('');
+  const [batchRegularizeError, setBatchRegularizeError] = useState<string | null>(null);
   const [rejectModalData, setRejectModalData] = useState<{
     expenseId: string;
     title: string;
@@ -221,12 +263,22 @@ export const TreasuryModule: React.FC = () => {
   });
 
   // Formulário de Solicitação de Despesa
-  const [expenseForm, setExpenseForm] = useState({
+  const [expenseForm, setExpenseForm] = useState<{
+    title: string;
+    description: string;
+    category: string;
+    amountStr: string;
+    accountId: string;
+    invoiceFileName?: string;
+    invoiceBase64?: string;
+  }>({
     title: '',
     description: '',
     category: 'Material de Instrução',
     amountStr: '',
     accountId: state.accounts.find((a) => a.active)?.id || state.accounts[0]?.id || '',
+    invoiceFileName: undefined,
+    invoiceBase64: undefined,
   });
 
   // Fecho Mensal e Reconciliação
@@ -603,6 +655,8 @@ export const TreasuryModule: React.FC = () => {
       category: expenseForm.category,
       amountInCents: cents,
       accountId: expenseForm.accountId,
+      invoiceFileName: expenseForm.invoiceFileName,
+      invoiceBase64: expenseForm.invoiceBase64,
     });
 
     if (res.success) {
@@ -614,6 +668,8 @@ export const TreasuryModule: React.FC = () => {
         category: 'Material de Instrução',
         amountStr: '',
         accountId: state.accounts.find((a) => a.active)?.id || state.accounts[0]?.id || '',
+        invoiceFileName: undefined,
+        invoiceBase64: undefined,
       });
     } else {
       setExpenseFormError(res.error || 'Erro ao solicitar despesa.');
@@ -855,15 +911,29 @@ export const TreasuryModule: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="text-left sm:text-right flex items-center justify-between sm:justify-end gap-3 sm:gap-4 w-full sm:w-auto">
+                  <div className="text-left sm:text-right flex items-center justify-between sm:justify-end gap-2 sm:gap-3 w-full sm:w-auto flex-wrap">
                     <div>
-                      <div className="text-sm font-black text-slate-900">{formatKz(acc.currentBalanceInCents)}</div>
+                      <div className="text-sm font-black text-slate-900 tabular-nums">{formatKz(acc.currentBalanceInCents)}</div>
                       <div className="text-[10px] text-slate-500 mt-0.5">Saldo Atual</div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLedgerAccount(acc);
+                        setLedgerKindFilter('todos');
+                        setLedgerSearch('');
+                        setLedgerDateFrom('');
+                        setLedgerDateTo('');
+                      }}
+                      className="px-2.5 py-1.5 text-xs font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors border border-blue-200 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <BookOpen className="w-3.5 h-3.5" />
+                      <span>Ver Extrato</span>
+                    </button>
                     {can('treasury', 'DELETE_ACCOUNT') && (
                       <button
                         onClick={() => setAccountToDelete(acc)}
-                        className="px-2.5 py-1 text-xs font-medium text-rose-700 bg-rose-50 hover:bg-rose-100 active:bg-rose-200 rounded-md transition-colors border border-rose-200 flex items-center gap-1 shadow-2xs"
+                        className="px-2.5 py-1.5 text-xs font-medium text-rose-700 bg-rose-50 hover:bg-rose-100 active:bg-rose-200 rounded-md transition-colors border border-rose-200 flex items-center gap-1 shadow-2xs whitespace-nowrap shrink-0"
                         title="Remover Conta"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -914,6 +984,38 @@ export const TreasuryModule: React.FC = () => {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {can('treasury', 'CREATE') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const pendingIds = filteredInDebtSummaries.map((s) => s.member.id);
+                    setBatchSelectedMemberIds(pendingIds);
+                    setBatchSearch('');
+                    setBatchTeamFilter('all');
+                    setBatchAmountMode('debt_balance');
+                    setBatchFixedAmountStr(String(Math.round(activeQuotaConfig.amountInCents / 100)));
+                    setBatchPaymentMethod('numerario');
+                    setBatchAccountId(
+                      state.accounts.find((a) => a.type === 'caixa' && a.active)?.id ||
+                        state.accounts.find((a) => a.active)?.id ||
+                        state.accounts[0]?.id ||
+                        ''
+                    );
+                    setBatchPeriodLabel(
+                      `Regularização em Lote (${activeQuotaConfig.frequency === 'domingo' ? 'Domingos' : 'Mensal'} ${state.settings.currentYear})`
+                    );
+                    setBatchReferenceOrProof('');
+                    setBatchNotes('');
+                    setBatchRegularizeError(null);
+                    setIsBatchRegularizeOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg shadow-2xs transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>Regularizar em Lote</span>
+                </button>
+              )}
+
               {can('treasury', 'WAIVE_QUOTA_DEBT') && filteredInDebtSummaries.length > 0 && (
                 <button
                   type="button"
@@ -1500,11 +1602,51 @@ export const TreasuryModule: React.FC = () => {
                           <span className="text-blue-900">Aprovador: <strong>{exp.approvedByName}</strong></span>
                         </>
                       )}
+                      {exp.invoiceBase64 && (
+                        <>
+                          <span>·</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setViewingExpenseDoc({
+                                title: `Fatura / Orçamento · ${exp.title}`,
+                                subtitle: `Despesa ${exp.id} · ${exp.category}`,
+                                fileName: exp.invoiceFileName || `Fatura_${exp.id}.pdf`,
+                                base64: exp.invoiceBase64!,
+                              })
+                            }
+                            className="inline-flex items-center gap-1 font-semibold text-blue-900 hover:underline cursor-pointer"
+                          >
+                            <Paperclip className="w-3 h-3" />
+                            <span>Ver Fatura ({exp.invoiceFileName || 'Anexo'})</span>
+                          </button>
+                        </>
+                      )}
+                      {exp.paymentProofBase64 && (
+                        <>
+                          <span>·</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setViewingExpenseDoc({
+                                title: `Comprovativo de Pagamento · ${exp.title}`,
+                                subtitle: `Despesa ${exp.id} · Pago em ${formatDateAO(exp.paidAt || exp.createdAt)}`,
+                                fileName: exp.paymentProofFileName || exp.paymentProofUrl || `Comprovativo_${exp.id}.pdf`,
+                                base64: exp.paymentProofBase64!,
+                              })
+                            }
+                            className="inline-flex items-center gap-1 font-semibold text-emerald-800 hover:underline cursor-pointer"
+                          >
+                            <Eye className="w-3 h-3" />
+                            <span>Ver Comprovativo ({exp.paymentProofFileName || 'Anexo'})</span>
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
 
                   <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
-                    <div className="text-base font-black text-slate-900">{formatKz(exp.amountInCents)}</div>
+                    <div className="text-base font-black text-slate-900 tabular-nums">{formatKz(exp.amountInCents)}</div>
 
                     <div className="flex items-center gap-2">
                       {exp.status === 'solicitado' && can('treasury', 'APPROVE') && (
@@ -2443,6 +2585,61 @@ export const TreasuryModule: React.FC = () => {
             />
           </div>
 
+          <div>
+            <label className="block text-slate-700 font-semibold mb-1">
+              Anexar Fatura / Orçamento (Opcional · Imagem ou PDF até 2 MB)
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg text-slate-700 font-semibold cursor-pointer">
+                <Upload className="w-3.5 h-3.5" />
+                <span>{isProcessingExpenseFile ? 'A processar...' : 'Escolher Ficheiro'}</span>
+                <input
+                  type="file"
+                  accept="image/*,application/pdf"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setIsProcessingExpenseFile(true);
+                    setExpenseFormError(null);
+                    try {
+                      const processed = await processProofFile(file);
+                      setExpenseForm((prev) => ({
+                        ...prev,
+                        invoiceFileName: processed.fileName,
+                        invoiceBase64: processed.base64,
+                      }));
+                    } catch (err: any) {
+                      setExpenseFormError(err?.message || 'Erro ao anexar fatura.');
+                    } finally {
+                      setIsProcessingExpenseFile(false);
+                      e.target.value = '';
+                    }
+                  }}
+                />
+              </label>
+              {expenseForm.invoiceFileName && (
+                <div className="flex items-center gap-2 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                  <Paperclip className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate max-w-[200px]">{expenseForm.invoiceFileName}</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpenseForm((prev) => ({
+                        ...prev,
+                        invoiceFileName: undefined,
+                        invoiceBase64: undefined,
+                      }))
+                    }
+                    className="text-rose-700 font-bold hover:underline cursor-pointer"
+                  >
+                    Remover
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-3">
             <button
               type="button"
@@ -2453,7 +2650,8 @@ export const TreasuryModule: React.FC = () => {
             </button>
             <button
               type="submit"
-              className="px-4 py-1.5 font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded shadow-xs"
+              disabled={isProcessingExpenseFile}
+              className="px-4 py-1.5 font-semibold text-white bg-blue-900 hover:bg-blue-800 disabled:opacity-50 rounded shadow-xs"
             >
               Submeter Pedido
             </button>
@@ -2925,6 +3123,63 @@ export const TreasuryModule: React.FC = () => {
                 </div>
               )}
 
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">
+                  Comprovativo de Pagamento (Opcional · Imagem ou PDF até 2 MB)
+                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg text-slate-700 font-semibold cursor-pointer">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>{isProcessingExpenseFile ? 'A processar...' : 'Anexar Comprovativo'}</span>
+                    <input
+                      type="file"
+                      accept="image/*,application/pdf"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        setIsProcessingExpenseFile(true);
+                        setPaymentError(null);
+                        try {
+                          const processed = await processProofFile(file);
+                          setPaymentModalData((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  proofFileName: processed.fileName,
+                                  proofBase64: processed.base64,
+                                }
+                              : prev
+                          );
+                        } catch (err: any) {
+                          setPaymentError(err?.message || 'Erro ao anexar comprovativo.');
+                        } finally {
+                          setIsProcessingExpenseFile(false);
+                          e.target.value = '';
+                        }
+                      }}
+                    />
+                  </label>
+                  {paymentModalData.proofFileName && (
+                    <div className="flex items-center gap-2 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                      <Paperclip className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate max-w-[200px]">{paymentModalData.proofFileName}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPaymentModalData((prev) =>
+                            prev ? { ...prev, proofFileName: undefined, proofBase64: undefined } : prev
+                          )
+                        }
+                        className="text-rose-700 font-bold hover:underline cursor-pointer"
+                      >
+                        Remover
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
@@ -2938,13 +3193,24 @@ export const TreasuryModule: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  disabled={!hasSufficient}
+                  disabled={!hasSufficient || isProcessingExpenseFile}
                   onClick={() => {
                     setPaymentError(null);
-                    const res = payExpense(paymentModalData.expenseId, paymentModalData.accountId);
+                    const res = payExpense(
+                      paymentModalData.expenseId,
+                      paymentModalData.accountId,
+                      paymentModalData.proofFileName,
+                      paymentModalData.proofBase64
+                        ? {
+                            fileName: paymentModalData.proofFileName,
+                            base64: paymentModalData.proofBase64,
+                          }
+                        : undefined
+                    );
                     if (res.success) {
                       setPaymentModalData(null);
                       setPaymentError(null);
+                      showFeedback('success', 'Despesa liquidada com sucesso.');
                     } else {
                       setPaymentError(res.error || 'Erro ao processar pagamento.');
                     }
@@ -4138,6 +4404,555 @@ export const TreasuryModule: React.FC = () => {
           </form>
         </Modal>
       )}
+
+      {/* MODAL: Extrato / Livro-Caixa por Conta */}
+      {ledgerAccount && (() => {
+        const ledger = buildAccountLedger({
+          account: ledgerAccount,
+          accounts: state.accounts,
+          receipts: state.receipts,
+          expenses: state.expenses,
+        });
+        const cleanQ = ledgerSearch.trim().toLowerCase();
+        const filteredEntries = ledger.entries.filter((entry) => {
+          if (ledgerKindFilter !== 'todos' && entry.kind !== ledgerKindFilter) return false;
+          const dateOnly = (entry.date || '').slice(0, 10);
+          if (ledgerDateFrom && dateOnly && dateOnly < ledgerDateFrom) return false;
+          if (ledgerDateTo && dateOnly && dateOnly > ledgerDateTo) return false;
+          if (cleanQ) {
+            const hay = `${entry.documentNumber} ${entry.title} ${entry.counterparty} ${entry.categoryOrFee} ${entry.notes || ''}`.toLowerCase();
+            if (!hay.includes(cleanQ)) return false;
+          }
+          return true;
+        });
+
+        const exportLedgerCsv = () => {
+          const escapeCsv = (val: string) => `"${String(val || '').replace(/"/g, '""')}"`;
+          const headers = ['Data', 'Documento', 'Tipo', 'Descrição', 'Contraparte', 'Rubrica/Categoria', 'Movimento (Kz)', 'Saldo Progressivo (Kz)'];
+          const rows = filteredEntries.map((entry) => [
+            formatDateAO(entry.date),
+            entry.documentNumber,
+            entry.kind === 'entrada' ? 'Entrada' : entry.kind === 'saida' ? 'Saída' : 'Anulado',
+            entry.title,
+            entry.counterparty,
+            entry.categoryOrFee,
+            (entry.signedAmountInCents / 100).toFixed(2),
+            (entry.runningBalanceInCents / 100).toFixed(2),
+          ]);
+          const csv = '\uFEFF' + [headers, ...rows].map((r) => r.map(escapeCsv).join(';')).join('\n');
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `Extrato_${ledgerAccount.name.replace(/\s+/g, '_')}.csv`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        };
+
+        return (
+          <Modal
+            isOpen={Boolean(ledgerAccount)}
+            onClose={() => setLedgerAccount(null)}
+            title={`Extrato / Livro-Caixa · ${ledgerAccount.name}`}
+            description={
+              ledgerAccount.accountNumber
+                ? `Conta ${ledgerAccount.type.toUpperCase()} · ${ledgerAccount.accountNumber}`
+                : `Conta institucional (${ledgerAccount.type.toUpperCase()})`
+            }
+            maxWidth="4xl"
+          >
+            <div className="space-y-4 text-xs">
+              {/* Resumo Financeiro da Conta */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                  <div className="text-[11px] font-semibold text-slate-500">Saldo Inicial</div>
+                  <div className="text-sm font-black text-slate-900 mt-0.5 tabular-nums">
+                    {formatKz(ledger.openingBalanceInCents)}
+                  </div>
+                </div>
+                <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-lg">
+                  <div className="text-[11px] font-semibold text-emerald-800">Total Entradas</div>
+                  <div className="text-sm font-black text-emerald-700 mt-0.5 tabular-nums">
+                    +{formatKz(ledger.totalInflowInCents)}
+                  </div>
+                </div>
+                <div className="p-3 bg-rose-50/70 border border-rose-200 rounded-lg">
+                  <div className="text-[11px] font-semibold text-rose-800">Total Saídas</div>
+                  <div className="text-sm font-black text-rose-700 mt-0.5 tabular-nums">
+                    -{formatKz(ledger.totalOutflowInCents)}
+                  </div>
+                </div>
+                <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg">
+                  <div className="text-[11px] font-semibold text-blue-900">Saldo Atual</div>
+                  <div className="text-sm font-black text-blue-950 mt-0.5 tabular-nums">
+                    {formatKz(ledger.closingBalanceInCents)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Filtros e Exportação */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+                <div className="relative lg:col-span-2">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={ledgerSearch}
+                    onChange={(e) => setLedgerSearch(e.target.value)}
+                    placeholder="Pesquisar recibo, despesa, membro..."
+                    className="w-full pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <select
+                  value={ledgerKindFilter}
+                  onChange={(e) => setLedgerKindFilter(e.target.value as any)}
+                  className="px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white"
+                >
+                  <option value="todos">Todos os Movimentos ({ledger.entriesCount})</option>
+                  <option value="entrada">Entradas</option>
+                  <option value="saida">Saídas</option>
+                  <option value="anulado">Anulados ({ledger.cancelledCount})</option>
+                </select>
+                <input
+                  type="date"
+                  value={ledgerDateFrom}
+                  onChange={(e) => setLedgerDateFrom(e.target.value)}
+                  aria-label="Data inicial"
+                  className="px-2.5 py-1.5 border border-slate-200 rounded-lg"
+                />
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="date"
+                    value={ledgerDateTo}
+                    onChange={(e) => setLedgerDateTo(e.target.value)}
+                    aria-label="Data final"
+                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg"
+                  />
+                  <button
+                    type="button"
+                    onClick={exportLedgerCsv}
+                    disabled={filteredEntries.length === 0}
+                    className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white font-semibold rounded-lg inline-flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                    title="Exportar extrato filtrado em CSV"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>CSV</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Tabela Cronológica do Livro-Caixa */}
+              {filteredEntries.length === 0 ? (
+                <div className="p-8 text-center text-slate-500 border border-slate-200 rounded-xl bg-slate-50">
+                  Nenhum movimento encontrado nesta conta para os filtros selecionados.
+                </div>
+              ) : (
+                <div className="max-h-[52vh] overflow-auto border border-slate-200 rounded-xl">
+                  <table className="w-full min-w-[740px] text-left border-collapse text-xs">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold sticky top-0">
+                      <tr>
+                        <th className="py-2.5 px-3">Data</th>
+                        <th className="py-2.5 px-3">Documento</th>
+                        <th className="py-2.5 px-3">Movimento / Contraparte</th>
+                        <th className="py-2.5 px-3 text-right">Valor</th>
+                        <th className="py-2.5 px-3 text-right">Saldo Progressivo</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredEntries.map((entry) => (
+                        <tr key={entry.id} className={entry.isCancelled ? 'bg-slate-50/70 text-slate-400' : 'hover:bg-slate-50/70'}>
+                          <td className="py-2.5 px-3 whitespace-nowrap tabular-nums">
+                            {formatDateTimeAO(entry.date)}
+                          </td>
+                          <td className="py-2.5 px-3 font-mono font-semibold whitespace-nowrap">
+                            {entry.documentNumber}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className={`font-semibold ${entry.isCancelled ? 'line-through text-slate-400' : 'text-slate-900'}`}>
+                              {entry.title}
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              {entry.counterparty} · {entry.categoryOrFee}
+                              {entry.notes ? ` · ${entry.notes}` : ''}
+                            </div>
+                          </td>
+                          <td className={`py-2.5 px-3 text-right font-bold whitespace-nowrap tabular-nums ${
+                            entry.isCancelled
+                              ? 'text-slate-400 line-through'
+                              : entry.kind === 'entrada'
+                              ? 'text-emerald-700'
+                              : 'text-rose-700'
+                          }`}>
+                            {entry.kind === 'entrada'
+                              ? `+${formatKz(entry.amountInCents)}`
+                              : entry.kind === 'saida'
+                              ? `-${formatKz(entry.amountInCents)}`
+                              : formatKz(entry.amountInCents)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-bold text-slate-900 whitespace-nowrap tabular-nums">
+                            {formatKz(entry.runningBalanceInCents)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="flex justify-end pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setLedgerAccount(null)}
+                  className="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-lg cursor-pointer"
+                >
+                  Fechar Extrato
+                </button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {/* MODAL: Regularização de Quotas em Lote */}
+      {isBatchRegularizeOpen && (() => {
+        const cleanSearch = batchSearch.trim().toLowerCase();
+        const eligibleSummaries = memberQuotaSummaries.filter((s) => {
+          if (batchTeamFilter !== 'all') {
+            const team = getMemberTeamLabel(s.member, state.users);
+            if (batchTeamFilter === '__sem_equipa__' && team !== 'Sem Equipa') return false;
+            if (batchTeamFilter !== '__sem_equipa__' && team !== batchTeamFilter) return false;
+          }
+          if (cleanSearch) {
+            const hay = `${s.member.fullName} ${s.member.manualNumber} ${getMemberTeamLabel(s.member, state.users)}`.toLowerCase();
+            if (!hay.includes(cleanSearch)) return false;
+          }
+          return true;
+        });
+
+        const fixedCents = parseKzToCents(batchFixedAmountStr);
+        const estimatedTotalCents = batchSelectedMemberIds.reduce((sum, id) => {
+          const summary = memberQuotaSummaries.find((s) => s.member.id === id);
+          if (!summary) return sum;
+          if (batchAmountMode === 'debt_balance') {
+            return sum + Math.max(0, summary.balanceDueInCents);
+          }
+          return sum + Math.max(0, fixedCents);
+        }, 0);
+
+        const toggleMemberSelection = (id: string) => {
+          setBatchSelectedMemberIds((prev) =>
+            prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+          );
+        };
+
+        return (
+          <Modal
+            isOpen={isBatchRegularizeOpen}
+            onClose={() => {
+              setIsBatchRegularizeOpen(false);
+              setBatchRegularizeError(null);
+            }}
+            title="Regularização de Quotas em Lote"
+            description="Selecione os membros para emitir recibos sequenciais e creditar a conta institucional numa única operação."
+            maxWidth="3xl"
+          >
+            <div className="space-y-4 text-xs">
+              {batchRegularizeError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg">
+                  {batchRegularizeError}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Modo de Lançamento</label>
+                  <select
+                    value={batchAmountMode}
+                    onChange={(e) => setBatchAmountMode(e.target.value as any)}
+                    className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+                  >
+                    <option value="debt_balance">Quitar Saldo Devedor Exato de cada membro</option>
+                    <option value="fixed_amount">Valor Fixo por membro selecionado</option>
+                  </select>
+                </div>
+
+                {batchAmountMode === 'fixed_amount' ? (
+                  <div>
+                    <label className="block text-slate-700 font-semibold mb-1">Valor Fixo por Membro (Kz)</label>
+                    <input
+                      type="text"
+                      value={batchFixedAmountStr}
+                      onChange={(e) => setBatchFixedAmountStr(e.target.value)}
+                      placeholder="Ex: 500"
+                      className="w-full p-2 border border-slate-200 rounded-lg font-bold tabular-nums"
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-slate-700 font-semibold mb-1">Período / Referência</label>
+                    <input
+                      type="text"
+                      value={batchPeriodLabel}
+                      onChange={(e) => setBatchPeriodLabel(e.target.value)}
+                      className="w-full p-2 border border-slate-200 rounded-lg"
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Método de Pagamento</label>
+                  <select
+                    value={batchPaymentMethod}
+                    onChange={(e) => setBatchPaymentMethod(e.target.value as PaymentMethod)}
+                    className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+                  >
+                    <option value="numerario">Numerário</option>
+                    <option value="multicaixa_express">Multicaixa Express</option>
+                    <option value="transferencia_bancaria">Transferência Bancária</option>
+                    <option value="deposito_bancario">Depósito Bancário</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Conta de Destino</label>
+                  <select
+                    value={batchAccountId}
+                    onChange={(e) => setBatchAccountId(e.target.value)}
+                    className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+                  >
+                    {state.accounts.filter((a) => a.active).map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.name} ({formatKz(acc.currentBalanceInCents)})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input
+                  type="text"
+                  value={batchReferenceOrProof}
+                  onChange={(e) => setBatchReferenceOrProof(e.target.value)}
+                  placeholder="Referência / Comprovativo (opcional)"
+                  className="w-full p-2 border border-slate-200 rounded-lg"
+                />
+                <input
+                  type="text"
+                  value={batchNotes}
+                  onChange={(e) => setBatchNotes(e.target.value)}
+                  placeholder="Observações da Tesouraria (opcional)"
+                  className="w-full p-2 border border-slate-200 rounded-lg"
+                />
+              </div>
+
+              {/* Filtro e Ações de Seleção */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[220px]">
+                  <div className="relative flex-1 min-w-[180px]">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={batchSearch}
+                      onChange={(e) => setBatchSearch(e.target.value)}
+                      placeholder="Filtrar membros..."
+                      className="w-full pl-8 pr-2.5 py-1.5 border border-slate-200 rounded-lg"
+                    />
+                  </div>
+                  <select
+                    value={batchTeamFilter}
+                    onChange={(e) => setBatchTeamFilter(e.target.value)}
+                    className="px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white"
+                  >
+                    <option value="all">Todas as Equipas</option>
+                    <option value="__sem_equipa__">Sem Equipa</option>
+                    {quotaAvailableTeams.map((team) => (
+                      <option key={team} value={team}>
+                        {team}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBatchSelectedMemberIds(
+                        eligibleSummaries.filter((s) => s.balanceDueInCents > 0).map((s) => s.member.id)
+                      )
+                    }
+                    className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-lg font-semibold cursor-pointer"
+                  >
+                    Selecionar Pendentes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBatchSelectedMemberIds(eligibleSummaries.map((s) => s.member.id))}
+                    className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg font-semibold cursor-pointer"
+                  >
+                    Todos ({eligibleSummaries.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBatchSelectedMemberIds([])}
+                    className="px-2.5 py-1.5 text-slate-600 hover:text-slate-900 font-semibold cursor-pointer"
+                  >
+                    Limpar
+                  </button>
+                </div>
+              </div>
+
+              {/* Lista de Membros */}
+              <div className="max-h-60 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100">
+                {eligibleSummaries.map((s) => {
+                  const isChecked = batchSelectedMemberIds.includes(s.member.id);
+                  const willChargeCents =
+                    batchAmountMode === 'debt_balance' ? s.balanceDueInCents : Math.max(0, fixedCents);
+                  return (
+                    <label
+                      key={s.member.id}
+                      className={`p-2.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-slate-50 ${
+                        isChecked ? 'bg-blue-50/50' : ''
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleMemberSelection(s.member.id)}
+                          className="rounded border-slate-300 text-blue-900"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-900 truncate">{s.member.fullName}</div>
+                          <div className="text-[11px] text-slate-500">
+                            {s.member.manualNumber} · {getMemberTeamLabel(s.member, state.users)}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0 tabular-nums">
+                        <div className={`font-bold ${s.balanceDueInCents > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                          {s.balanceDueInCents > 0 ? `Dívida: ${formatKz(s.balanceDueInCents)}` : 'Em dia'}
+                        </div>
+                        {isChecked && (
+                          <div className="text-[10px] text-blue-900 font-semibold">
+                            A lançar: {formatKz(willChargeCents)}
+                          </div>
+                        )}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+
+              {/* Rodapé Total e Submissão */}
+              <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="text-slate-700 tabular-nums">
+                  <strong>{batchSelectedMemberIds.length}</strong> selecionado(s) · Total a creditar:{' '}
+                  <strong className="text-blue-950">{formatKz(estimatedTotalCents)}</strong>
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsBatchRegularizeOpen(false);
+                      setBatchRegularizeError(null);
+                    }}
+                    className="px-3.5 py-2 text-slate-600 hover:text-slate-900 font-semibold"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={batchSelectedMemberIds.length === 0 || estimatedTotalCents <= 0}
+                    onClick={() => {
+                      setBatchRegularizeError(null);
+                      const res = batchRegularizeQuotas({
+                        memberIds: batchSelectedMemberIds,
+                        paymentMethod: batchPaymentMethod,
+                        accountId: batchAccountId,
+                        periodLabel: batchPeriodLabel,
+                        amountMode: batchAmountMode,
+                        fixedAmountInCents: batchAmountMode === 'fixed_amount' ? fixedCents : undefined,
+                        referenceOrProof: batchReferenceOrProof,
+                        notes: batchNotes,
+                      });
+                      if (res.success) {
+                        setIsBatchRegularizeOpen(false);
+                        showFeedback(
+                          'success',
+                          `Regularização em lote concluída: ${res.count} recibo(s) emitido(s) no total de ${formatKz(res.totalAmountInCents || 0)}.`
+                        );
+                      } else {
+                        setBatchRegularizeError(res.error || 'Erro ao regularizar quotas em lote.');
+                      }
+                    }}
+                    className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-40 text-white font-bold rounded-lg shadow-xs cursor-pointer"
+                  >
+                    Confirmar Regularização em Lote
+                  </button>
+                </div>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {/* MODAL: Visualizador de Fatura / Comprovativo de Despesa */}
+      {viewingExpenseDoc && (() => {
+        const previewKind = getDocumentPreviewKind(viewingExpenseDoc.base64, viewingExpenseDoc.fileName);
+        return (
+          <Modal
+            isOpen={Boolean(viewingExpenseDoc)}
+            onClose={() => setViewingExpenseDoc(null)}
+            title={viewingExpenseDoc.title}
+            description={viewingExpenseDoc.subtitle}
+            maxWidth="2xl"
+          >
+            <div className="space-y-4 text-xs">
+              <div className="border border-slate-200 rounded-xl bg-slate-50 overflow-hidden min-h-[240px] flex items-center justify-center p-2">
+                {previewKind === 'image' ? (
+                  <img
+                    src={viewingExpenseDoc.base64}
+                    alt={viewingExpenseDoc.fileName}
+                    className="max-h-[60vh] w-auto object-contain rounded"
+                  />
+                ) : previewKind === 'pdf' ? (
+                  <iframe
+                    src={viewingExpenseDoc.base64}
+                    title={viewingExpenseDoc.fileName}
+                    className="w-full h-[60vh] rounded bg-white"
+                  />
+                ) : (
+                  <div className="p-6 text-center text-slate-600">
+                    Pré-visualização indisponível para este formato. Utilize o botão de descarga abaixo.
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                <span className="text-slate-500 truncate max-w-[260px]">{viewingExpenseDoc.fileName}</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => downloadDocumentFile(viewingExpenseDoc.base64, viewingExpenseDoc.fileName)}
+                    className="px-3.5 py-1.5 bg-blue-900 hover:bg-blue-800 text-white font-semibold rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Descarregar Ficheiro</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewingExpenseDoc(null)}
+                    className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg cursor-pointer"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 };

@@ -43,6 +43,10 @@ import {
   EnrollmentScheduleConfig,
   ActivityRsvpStatus,
   ActivityTask,
+  TeamChatMessage,
+  TeamTask,
+  TeamNote,
+  TeamAward,
 } from '../types';
 import {
   ClubDatabaseState,
@@ -80,12 +84,21 @@ import {
   sanitizeRoleType,
 } from '../services/permissionService';
 import { resolveMinuteOfficers } from '../utils/documentSigner';
+import { applyBatchTrainingRequirementUpdate } from '../utils/associateTrainingUtils';
 import {
   canActivityHaveMinute,
   canManageActivityPortalVisibility,
   getActivityDateOnly,
   applyBatchAttendanceToActivities,
+  normalizeActivityType,
+  normalizeActivityStage,
 } from '../utils/activityUtils';
+import {
+  canPostInTeamChat,
+  canDeleteTeamChatMessage,
+  isAssignedTeamLeader,
+  isDirectionChatMonitor,
+} from '../utils/teamUtils';
 import {
   MemberRegistrationFormData,
   MemberReconfirmationInput,
@@ -261,6 +274,23 @@ interface ClubContextValue {
     referenceOrProof?: string;
     notes?: string;
   }) => { success: boolean; receipt?: PaymentReceipt; receiptNumber?: string; error?: string };
+  batchRegularizeQuotas: (data: {
+    memberIds: string[];
+    paymentMethod: PaymentReceipt['paymentMethod'];
+    accountId: string;
+    periodLabel?: string;
+    amountMode: 'debt_balance' | 'fixed_amount';
+    fixedAmountInCents?: number;
+    referenceOrProof?: string;
+    notes?: string;
+  }) => {
+    success: boolean;
+    count?: number;
+    skippedCount?: number;
+    totalAmountInCents?: number;
+    receipts?: PaymentReceipt[];
+    error?: string;
+  };
   waiveMemberQuotaDebt: (data: {
     memberId: string;
     reason: string;
@@ -280,10 +310,17 @@ interface ClubContextValue {
     category: string;
     amountInCents: number;
     accountId?: string;
+    invoiceFileName?: string;
+    invoiceBase64?: string;
   }) => { success: boolean; error?: string };
   approveExpense: (id: string, reason?: string) => { success: boolean; error?: string };
   rejectExpense: (id: string, reason: string) => { success: boolean; error?: string };
-  payExpense: (id: string, accountId: string, proofUrl?: string) => { success: boolean; error?: string };
+  payExpense: (
+    id: string,
+    accountId: string,
+    proofUrl?: string,
+    proofAttachment?: { fileName?: string; base64?: string }
+  ) => { success: boolean; error?: string };
   closeFiscalMonth: (
     year: number,
     month: number,
@@ -342,6 +379,26 @@ interface ClubContextValue {
     targetTitle: string,
     totalRequirements: number
   ) => { success: boolean; error?: string };
+  batchEnrollTrainingProgress: (data: {
+    memberIds: string[];
+    type: 'classe' | 'especialidade';
+    targetId: string;
+    targetTitle: string;
+    totalRequirements: number;
+    instructorUserId?: string;
+    instructorName?: string;
+  }) => { success: boolean; createdCount?: number; skippedCount?: number; error?: string };
+  assignTrainingInstructor: (
+    progressId: string,
+    instructorUserId: string,
+    instructorName: string
+  ) => { success: boolean; error?: string };
+  batchUpdateTrainingRequirements: (data: {
+    progressIds: string[];
+    requirementNumber: number;
+    completed: boolean;
+    notes?: string;
+  }) => { success: boolean; updatedCount?: number; error?: string };
   approveFinalTraining: (progressId: string) => { success: boolean; error?: string };
   revokeTrainingApproval: (progressId: string) => { success: boolean; error?: string };
   deleteTrainingProgress: (progressId: string) => { success: boolean; error?: string };
@@ -361,8 +418,16 @@ interface ClubContextValue {
     category: MemberPortalRequest['category'];
     subject: string;
     details: string;
-  }) => { success: boolean; error?: string };
-  respondToRequest: (requestId: string, status: MemberPortalRequest['status'], responseNotes: string) => { success: boolean; error?: string };
+    proposedChanges?: MemberPortalRequest['proposedChanges'];
+    attachmentFileName?: string;
+    attachmentBase64?: string;
+  }) => { success: boolean; request?: MemberPortalRequest; error?: string };
+  respondToRequest: (
+    requestId: string,
+    status: MemberPortalRequest['status'],
+    responseNotes: string,
+    options?: { applyChanges?: boolean }
+  ) => { success: boolean; error?: string };
   submitPaymentProof: (data: {
     feeDefinitionId: string;
     feeTitle: string;
@@ -504,6 +569,35 @@ interface ClubContextValue {
     data: Partial<MusicItem>
   ) => Promise<{ success: boolean; item?: MusicItem; error?: string; warning?: string }>;
   deleteMusicItem: (id: string) => Promise<{ success: boolean; error?: string; warning?: string }>;
+
+  // Módulo Minha Equipa & Chat Interno
+  sendTeamChatMessage: (data: {
+    unitId: string;
+    content: string;
+  }) => { success: boolean; message?: TeamChatMessage; error?: string };
+  deleteTeamChatMessage: (messageId: string) => { success: boolean; error?: string };
+  createTeamTask: (data: {
+    unitId: string;
+    title: string;
+    description?: string;
+    assignedMemberName?: string;
+    dueDate: string;
+  }) => { success: boolean; task?: TeamTask; error?: string };
+  updateTeamTaskStatus: (taskId: string, status: 'pendente' | 'concluido') => { success: boolean; error?: string };
+  deleteTeamTask: (taskId: string) => { success: boolean; error?: string };
+  createTeamNote: (data: {
+    unitId: string;
+    title: string;
+    content: string;
+  }) => { success: boolean; note?: TeamNote; error?: string };
+  deleteTeamNote: (noteId: string) => { success: boolean; error?: string };
+  createTeamAward: (data: {
+    unitId: string;
+    title: string;
+    date: string;
+    description?: string;
+  }) => { success: boolean; award?: TeamAward; error?: string };
+  deleteTeamAward: (awardId: string) => { success: boolean; error?: string };
 
   isQuotaExceeded?: boolean;
   isCloudLoading: boolean;
@@ -699,7 +793,13 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       receipts: Array.isArray(remoteData.receipts) ? remoteData.receipts : [],
       expenses: Array.isArray(remoteData.expenses) ? remoteData.expenses : [],
       monthlyClosings: Array.isArray(remoteData.monthlyClosings) ? remoteData.monthlyClosings : [],
-      activities: Array.isArray(remoteData.activities) ? remoteData.activities : [],
+      activities: Array.isArray(remoteData.activities)
+        ? remoteData.activities.map((act) => ({
+            ...act,
+            type: normalizeActivityType(act?.type),
+            stage: normalizeActivityStage(act?.stage),
+          }))
+        : [],
       classes: Array.isArray(remoteData.classes) ? remoteData.classes : [],
       specialties: Array.isArray(remoteData.specialties) ? remoteData.specialties : [],
       trainingProgress: Array.isArray(remoteData.trainingProgress) ? remoteData.trainingProgress : [],
@@ -731,6 +831,10 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       quotaWaivers: Array.isArray(remoteData.quotaWaivers) ? remoteData.quotaWaivers : [],
       musicItems: Array.isArray(remoteData.musicItems) ? remoteData.musicItems : (prev.musicItems || []),
       enrollmentRequests: reconciledEnrollments.enrollmentRequests,
+      teamChatMessages: Array.isArray(remoteData.teamChatMessages) ? remoteData.teamChatMessages : [],
+      teamTasks: Array.isArray(remoteData.teamTasks) ? remoteData.teamTasks : [],
+      teamNotes: Array.isArray(remoteData.teamNotes) ? remoteData.teamNotes : [],
+      teamAwards: Array.isArray(remoteData.teamAwards) ? remoteData.teamAwards : [],
       settings: postFinalizedSettings,
       currentUser: nextCurrentUser,
     };
@@ -4181,6 +4285,199 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true, receiptNumber, receipt: newReceipt };
   };
 
+  const batchRegularizeQuotas = (data: {
+    memberIds: string[];
+    paymentMethod: PaymentReceipt['paymentMethod'];
+    accountId: string;
+    periodLabel?: string;
+    amountMode: 'debt_balance' | 'fixed_amount';
+    fixedAmountInCents?: number;
+    referenceOrProof?: string;
+    notes?: string;
+  }) => {
+    if (!can('treasury', 'CREATE')) {
+      return { success: false, error: 'Apenas a Tesouraria ou perfis autorizados podem regularizar quotas.' };
+    }
+
+    const uniqueIds = Array.from(new Set(data.memberIds || [])).filter(Boolean);
+    if (uniqueIds.length === 0) {
+      return { success: false, error: 'Selecione pelo menos um membro para regularização em lote.' };
+    }
+
+    const fixedCents = Math.round(Number(data.fixedAmountInCents || 0));
+    if (data.amountMode === 'fixed_amount' && (Number.isNaN(fixedCents) || fixedCents <= 0)) {
+      return { success: false, error: 'O montante fixo por membro deve ser superior a zero.' };
+    }
+
+    const curState = stateRef.current;
+    const now = getNowISOString();
+    const lockCheck = isDateInLockedFiscalPeriod(curState.monthlyClosings, now);
+    if (lockCheck.locked) {
+      return {
+        success: false,
+        error: `O mês fiscal ${lockCheck.month}/${lockCheck.year} encontra-se encerrado. Solicite a reabertura à Direção para regularizar quotas neste período.`,
+      };
+    }
+
+    const targetAccount =
+      curState.accounts.find((a) => a.id === data.accountId) ||
+      curState.accounts.find((a) => a.active) ||
+      curState.accounts[0];
+    if (!targetAccount) {
+      return {
+        success: false,
+        error: 'Conta financeira institucional de destino não encontrada.',
+      };
+    }
+
+    const quotaConfig = resolveQuotaConfig(curState.settings, curState.fees);
+    const feeId = quotaConfig.activeQuotaFeeId || DEFAULT_QUOTA_FEE_ID;
+    let quotaFee =
+      curState.fees.find((f) => f.id === feeId) ||
+      curState.fees.find((f) => f.category === 'quota_diaria') ||
+      curState.fees.find((f) => f.category === 'quota_mensal');
+
+    const createdFeeToAdd: FeeDefinition | null = quotaFee
+      ? null
+      : {
+          id: feeId,
+          title:
+            quotaConfig.frequency === 'mensal'
+              ? 'Quota Regular (Mensal)'
+              : 'Quota Regular (Cada Domingo)',
+          category: quotaConfig.frequency === 'mensal' ? 'quota_mensal' : 'quota_diaria',
+          periodicity: quotaConfig.frequency === 'mensal' ? 'mensal' : 'diaria',
+          amountInCents: quotaConfig.amountInCents,
+          targetCategory: 'todas',
+          active: true,
+          year: curState.settings.currentYear,
+        };
+    if (!quotaFee && createdFeeToAdd) {
+      quotaFee = createdFeeToAdd;
+    }
+
+    const currentYear = curState.settings.currentYear;
+    const todayISO = getTodayISODate();
+    const accumulatedNumbers = [...curState.receipts.map((r) => r.receiptNumber)];
+    const generatedReceipts: PaymentReceipt[] = [];
+    let skippedCount = 0;
+    let totalAmountInCents = 0;
+
+    for (const memberId of uniqueIds) {
+      const member = curState.members.find((m) => m.id === memberId || m.manualNumber === memberId);
+      if (!member) {
+        skippedCount++;
+        continue;
+      }
+
+      let paidCents = fixedCents;
+      if (data.amountMode === 'debt_balance') {
+        const summary = calculateMemberQuotaSummary(
+          member,
+          quotaConfig,
+          curState.fees,
+          curState.receipts,
+          todayISO,
+          curState.quotaWaivers || []
+        );
+        paidCents = summary.balanceDueInCents;
+      }
+
+      if (paidCents <= 0) {
+        skippedCount++;
+        continue;
+      }
+
+      const receiptNumber = generateNextDocumentNumber('REC', currentYear, accumulatedNumbers);
+      accumulatedNumbers.push(receiptNumber);
+
+      const newReceipt: PaymentReceipt = {
+        id: receiptNumber,
+        receiptNumber,
+        memberId: member.id,
+        memberName: member.fullName,
+        feeDefinitionId: quotaFee!.id,
+        feeTitle: quotaFee!.title,
+        periodLabel:
+          data.periodLabel?.trim() ||
+          `Regularização em Lote (${quotaConfig.frequency === 'domingo' ? 'Domingos' : 'Mensal'} ${currentYear})`,
+        amountPaidInCents: paidCents,
+        paymentMethod: data.paymentMethod,
+        referenceOrProof: data.referenceOrProof?.trim() || undefined,
+        treasurerUserId: currentUser.id,
+        treasurerName: currentUser.name,
+        treasurerRole: currentUser.role,
+        paidAt: now,
+        status: 'confirmado',
+        notes: data.notes?.trim() || `Regularização em lote registada por ${currentUser.name}.`,
+        accountId: targetAccount.id,
+        accountName: targetAccount.name,
+      };
+
+      generatedReceipts.push(newReceipt);
+      totalAmountInCents += paidCents;
+    }
+
+    if (generatedReceipts.length === 0) {
+      return {
+        success: false,
+        error: 'Nenhum dos membros selecionados possuía saldo devedor elegível para regularização.',
+      };
+    }
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        fees: createdFeeToAdd ? [createdFeeToAdd, ...prev.fees] : prev.fees,
+        receipts: [...generatedReceipts, ...prev.receipts],
+        accounts: prev.accounts.map((acc) =>
+          acc.id === targetAccount.id
+            ? { ...acc, currentBalanceInCents: acc.currentBalanceInCents + totalAmountInCents }
+            : acc
+        ),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    for (const rec of generatedReceipts) {
+      const targetMember = curState.members.find((m) => m.id === rec.memberId);
+      const linkedUser = curState.users.find(
+        (u) =>
+          u.linkedMemberId === rec.memberId ||
+          (targetMember?.manualNumber && u.manualNumber === targetMember.manualNumber)
+      );
+      if (linkedUser) {
+        addNotification({
+          title: 'Quota Regularizada com Sucesso',
+          message: `O recibo ${rec.receiptNumber} no valor de ${formatKz(rec.amountPaidInCents)} foi emitido e creditado na sua conta de quotas.`,
+          category: 'financial',
+          targetModule: 'member_portal',
+          recipientUserId: linkedUser.id,
+          targetMemberId: rec.memberId,
+          isConfidential: true,
+          priority: 'normal',
+        });
+      }
+    }
+
+    logAction(
+      'treasury',
+      'REGULARIZACAO_QUOTAS_LOTE',
+      `Regularização em lote para ${generatedReceipts.length} membro(s) · Total ${formatKz(totalAmountInCents)} (Conta: ${targetAccount.name})`,
+      generatedReceipts[0].receiptNumber,
+      `${generatedReceipts.length} recibos`
+    );
+
+    return {
+      success: true,
+      count: generatedReceipts.length,
+      skippedCount,
+      totalAmountInCents,
+      receipts: generatedReceipts,
+    };
+  };
+
   const waiveMemberQuotaDebt = (data: {
     memberId: string;
     reason: string;
@@ -4483,6 +4780,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     category: string;
     amountInCents: number;
     accountId?: string;
+    invoiceFileName?: string;
+    invoiceBase64?: string;
   }) => {
     const curState = stateRef.current;
     let seq = curState.expenses.length + 1;
@@ -4502,6 +4801,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       requestedByUserId: currentUser.id,
       requestedByName: currentUser.name,
       accountId: data.accountId,
+      invoiceFileName: data.invoiceFileName,
+      invoiceBase64: data.invoiceBase64,
       status: 'solicitado',
       createdAt: now,
     };
@@ -4629,7 +4930,12 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
-  const payExpense = (id: string, accountId: string, proofUrl?: string) => {
+  const payExpense = (
+    id: string,
+    accountId: string,
+    proofUrl?: string,
+    proofAttachment?: { fileName?: string; base64?: string }
+  ) => {
     if (!can('treasury', 'CREATE') && !can('treasury', 'APPROVE') && currentUser.role !== 'admin_tecnico' && currentUser.role !== 'diretor' && currentUser.role !== 'tesoureiro') {
       return { success: false, error: 'Sem autorização para efetuar pagamento de despesa.' };
     }
@@ -4672,7 +4978,9 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 ...e,
                 status: 'pago' as const,
                 accountId: targetAccountId,
-                paymentProofUrl: proofUrl || 'Comprovativo_Pagamento.pdf',
+                paymentProofUrl: proofAttachment?.fileName || proofUrl || 'Comprovativo_Pagamento.pdf',
+                paymentProofFileName: proofAttachment?.fileName || e.paymentProofFileName,
+                paymentProofBase64: proofAttachment?.base64 || e.paymentProofBase64,
                 paidAt: now,
               }
             : e
@@ -4927,6 +5235,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const newActivity: ClubActivity = {
       ...data,
+      stage: normalizeActivityStage(data.stage),
       department: data.department || 'Instrução Geral',
       id: newId,
       visibleInMemberPortal: allowPortalVisibility,
@@ -5124,6 +5433,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updatedActivityResult = {
           ...existing,
           ...data,
+          stage: normalizeActivityStage(data.stage !== undefined ? data.stage : existing.stage),
           title: nextTitle,
           location: nextLocation,
           startDate: nextStart,
@@ -5173,6 +5483,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Sem autorização para alterar a fase da atividade.' };
     }
 
+    const normalizedStage = normalizeActivityStage(stage);
     const now = getNowISOString();
     const auditEntry = createAuditLog(
       currentUser.id,
@@ -5180,7 +5491,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       currentUser.role,
       'activities',
       'MUDANCA_FASE',
-      `Fase alterada para ${stage}`,
+      `Fase alterada para ${normalizedStage}`,
       id
     );
 
@@ -5188,7 +5499,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       (prev) => ({
         ...prev,
         updatedAt: now,
-        activities: prev.activities.map((a) => (a.id === id ? { ...a, stage } : a)),
+        activities: prev.activities.map((a) => (a.id === id ? { ...a, stage: normalizedStage } : a)),
         auditLogs: [auditEntry, ...prev.auditLogs],
       }),
       { saveLocal: true, pushCloud: true }
@@ -5219,10 +5530,8 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const now = getNowISOString();
     const nextStage: ClubActivity['stage'] =
       decision === 'aprovar'
-        ? target.stage === 'planeamento' || target.stage === 'aprovacao'
-          ? 'preparacao'
-          : target.stage
-        : 'planeamento';
+        ? normalizeActivityStage(target.stage)
+        : 'preparacao';
 
     const updatedActivity: ClubActivity = {
       ...target,
@@ -5241,7 +5550,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       decision === 'aprovar' ? 'APROVACAO_ATIVIDADE' : 'DEVOLUCAO_ATIVIDADE',
       decision === 'aprovar'
         ? `Atividade aprovada pela Direção: ${target.title}`
-        : `Atividade devolvida para planeamento (${target.title}): ${notes?.trim()}`,
+        : `Atividade devolvida para preparação (${target.title}): ${notes?.trim()}`,
       id,
       target.title
     );
@@ -5740,10 +6049,10 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         error: 'Esta atividade não está autorizada pelo Diretor para visualização no Portal do Membro.',
       };
     }
-    if (targetActivity.stage === 'encerrado') {
+    if (normalizeActivityStage(targetActivity.stage) === 'realizado') {
       return {
         success: false,
-        error: 'Esta atividade já foi encerrada.',
+        error: 'Esta atividade já foi realizada.',
       };
     }
 
@@ -5865,6 +6174,204 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
+  const batchEnrollTrainingProgress = (data: {
+    memberIds: string[];
+    type: 'classe' | 'especialidade';
+    targetId: string;
+    targetTitle: string;
+    totalRequirements: number;
+    instructorUserId?: string;
+    instructorName?: string;
+  }) => {
+    if (!can('training', 'CREATE') && !can('associate_director', 'EDIT')) {
+      return { success: false, error: 'Sem permissão para inscrever membros em lote em módulos ou medalhas.' };
+    }
+
+    const uniqueMemberIds = Array.from(new Set((data.memberIds || []).filter(Boolean)));
+    if (uniqueMemberIds.length === 0) {
+      return { success: false, error: 'Selecione pelo menos um membro elegível para inscrição.' };
+    }
+
+    const curState = stateRef.current;
+    const normalizedTitle = data.targetTitle.trim().toLowerCase();
+    const alreadyEnrolledIds = new Set(
+      curState.trainingProgress
+        .filter(
+          (tp) =>
+            tp.type === data.type &&
+            (tp.targetId === data.targetId || tp.targetTitle.trim().toLowerCase() === normalizedTitle)
+        )
+        .map((tp) => tp.memberId)
+    );
+
+    const eligibleIds = uniqueMemberIds.filter((id) => !alreadyEnrolledIds.has(id));
+    const skippedCount = uniqueMemberIds.length - eligibleIds.length;
+    if (eligibleIds.length === 0) {
+      return {
+        success: false,
+        error: 'Todos os membros selecionados já estão inscritos neste módulo ou medalha.',
+      };
+    }
+
+    const now = getNowISOString();
+    const instructorUserId = data.instructorUserId || currentUser.id;
+    const instructorName = data.instructorName || currentUser.name;
+
+    const createdItems: MemberTrainingProgress[] = eligibleIds.map((memberId, idx) => ({
+      id: `PRG-${Date.now().toString().slice(-4)}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
+      memberId,
+      type: data.type,
+      targetId: data.targetId,
+      targetTitle: data.targetTitle,
+      completedRequirements: [],
+      totalRequirements: data.totalRequirements,
+      instructorUserId,
+      instructorName,
+      instructorValidated: false,
+      finalAuthorizedApproval: false,
+      updatedAt: now,
+    }));
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'training',
+      'INSCRICAO_LOTE_FORMACAO',
+      `Inscrição em lote em "${data.targetTitle}": ${createdItems.length} inscrito(s)${skippedCount > 0 ? `, ${skippedCount} já matriculado(s)` : ''} · Instrutor: ${instructorName}`,
+      data.targetId,
+      data.targetTitle
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        trainingProgress: [...createdItems, ...prev.trainingProgress],
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true, createdCount: createdItems.length, skippedCount };
+  };
+
+  const assignTrainingInstructor = (
+    progressId: string,
+    instructorUserId: string,
+    instructorName: string
+  ) => {
+    if (!can('training', 'EDIT') && !can('associate_director', 'EDIT')) {
+      return { success: false, error: 'Sem permissão para atribuir ou alterar o instrutor responsável.' };
+    }
+
+    const curState = stateRef.current;
+    const target = curState.trainingProgress.find((p) => p.id === progressId);
+    if (!target) {
+      return { success: false, error: 'Registo de formação não encontrado.' };
+    }
+
+    const cleanName = instructorName.trim();
+    if (!cleanName) {
+      return { success: false, error: 'Selecione um instrutor válido.' };
+    }
+
+    const now = getNowISOString();
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'training',
+      'ATRIBUICAO_INSTRUTOR_FORMACAO',
+      `Instrutor de "${target.targetTitle}" atualizado para ${cleanName}`,
+      progressId,
+      target.targetTitle
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        trainingProgress: prev.trainingProgress.map((p) =>
+          p.id === progressId
+            ? {
+                ...p,
+                instructorUserId,
+                instructorName: cleanName,
+                updatedAt: now,
+              }
+            : p
+        ),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true };
+  };
+
+  const batchUpdateTrainingRequirements = (data: {
+    progressIds: string[];
+    requirementNumber: number;
+    completed: boolean;
+    notes?: string;
+  }) => {
+    if (!can('training', 'EDIT') && !can('associate_director', 'EDIT')) {
+      return { success: false, updatedCount: 0, error: 'Sem permissão para registar chamada curricular em lote.' };
+    }
+
+    const uniqueIds = Array.from(new Set((data.progressIds || []).filter(Boolean)));
+    if (uniqueIds.length === 0) {
+      return { success: false, updatedCount: 0, error: 'Selecione pelo menos um registo de membro.' };
+    }
+
+    const curState = stateRef.current;
+    const now = getNowISOString();
+    const { updatedList, updatedCount } = applyBatchTrainingRequirementUpdate(
+      curState.trainingProgress,
+      uniqueIds,
+      data.requirementNumber,
+      data.completed,
+      now,
+      data.notes
+    );
+
+    if (updatedCount === 0) {
+      return {
+        success: false,
+        updatedCount: 0,
+        error: 'Nenhuma alteração aplicada (os membros selecionados já possuem este estado ou investidura homologada).',
+      };
+    }
+
+    const firstTarget = curState.trainingProgress.find((p) => uniqueIds.includes(p.id));
+    const targetLabel = firstTarget?.targetTitle || 'Módulo/Medalha';
+    const actionLabel = data.completed ? 'Concluído' : 'Pendente';
+
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'training',
+      'CHAMADA_CURRICULAR_LOTE',
+      `Chamada curricular em lote ("${targetLabel}", Requisito #${data.requirementNumber} → ${actionLabel}): ${updatedCount} membro(s) atualizado(s)`,
+      firstTarget?.targetId || uniqueIds[0],
+      targetLabel
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        trainingProgress: updatedList,
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true, updatedCount };
+  };
+
   const approveFinalTraining = (progressId: string) => {
     if (
       !can('training', 'APPROVE') &&
@@ -5916,7 +6423,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     logAction(
       'training',
       'VALIDACAO_FINAL_INVESTIDURA',
-      `Investidura autorizada e validada para ${item.targetTitle} (Membro: ${item.memberId})`,
+      `Investidura autorizada e validada por ${currentUser.name} (${ROLE_LABELS[currentUser.role]?.label || currentUser.role}) para ${item.targetTitle} (Membro: ${item.memberId})`,
       progressId,
       item.targetTitle
     );
@@ -6375,6 +6882,24 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         oldName && oldName !== trimmedName
           ? state.members.map((m) => (m.unitOrTeam === oldName ? { ...m, unitOrTeam: trimmedName, updatedAt: now } : m))
           : state.members,
+      teamChatMessages:
+        oldName && oldName !== trimmedName
+          ? (state.teamChatMessages || []).map((msg) =>
+              msg.unitId === id ? { ...msg, unitName: trimmedName } : msg
+            )
+          : state.teamChatMessages || [],
+      teamTasks:
+        oldName && oldName !== trimmedName
+          ? (state.teamTasks || []).map((t) => (t.unitId === id ? { ...t } : t))
+          : state.teamTasks || [],
+      teamNotes:
+        oldName && oldName !== trimmedName
+          ? (state.teamNotes || []).map((n) => (n.unitId === id ? { ...n } : n))
+          : state.teamNotes || [],
+      teamAwards:
+        oldName && oldName !== trimmedName
+          ? (state.teamAwards || []).map((a) => (a.unitId === id ? { ...a } : a))
+          : state.teamAwards || [],
       auditLogs: [auditEntry, ...state.auditLogs],
     };
 
@@ -6421,6 +6946,10 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
       members: unitName
         ? state.members.map((m) => (m.unitOrTeam === unitName ? { ...m, unitOrTeam: undefined, updatedAt: now } : m))
         : state.members,
+      teamChatMessages: (state.teamChatMessages || []).filter((msg) => msg.unitId !== id),
+      teamTasks: (state.teamTasks || []).filter((t) => t.unitId !== id),
+      teamNotes: (state.teamNotes || []).filter((n) => n.unitId !== id),
+      teamAwards: (state.teamAwards || []).filter((a) => a.unitId !== id),
       auditLogs: [auditEntry, ...state.auditLogs],
     };
 
@@ -7153,6 +7682,258 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     addToast('Sugestão Removida', 'A sugestão confidencial foi eliminada com sucesso.', 'info');
     logAction('member_portal', 'REMOCAO_SUGESTAO', `Sugestão ${suggestionId} eliminada`, suggestionId, target.subject);
+    return { success: true };
+  };
+
+  const submitPortalRequest = (data: {
+    category: MemberPortalRequest['category'];
+    subject: string;
+    details: string;
+    proposedChanges?: MemberPortalRequest['proposedChanges'];
+    attachmentFileName?: string;
+    attachmentBase64?: string;
+  }) => {
+    if (!can('member_portal', 'VIEW')) {
+      return { success: false, error: 'Sem permissão para submeter pedidos no Portal do Membro.' };
+    }
+
+    const curState = stateRef.current;
+    const linkedMember = getStrictLinkedMember(currentUser, curState.members);
+    if (!linkedMember) {
+      return {
+        success: false,
+        error: 'Apenas utilizadores vinculados a um membro oficial podem submeter pedidos à Secretaria.',
+      };
+    }
+
+    const subject = (data.subject || '').trim();
+    const details = (data.details || '').trim();
+    if (!subject) {
+      return { success: false, error: 'Indique o assunto do pedido de atualização.' };
+    }
+    if (!details && !data.proposedChanges) {
+      return { success: false, error: 'Descreva os dados a atualizar ou preencha pelo menos um campo.' };
+    }
+
+    const cleanedChanges: MemberPortalRequest['proposedChanges'] | undefined = data.proposedChanges
+      ? Object.entries(data.proposedChanges).reduce<NonNullable<MemberPortalRequest['proposedChanges']>>(
+          (acc, [k, v]) => {
+            if (typeof v === 'string' && v.trim()) {
+              (acc as Record<string, string>)[k] = v.trim();
+            }
+            return acc;
+          },
+          {}
+        )
+      : undefined;
+
+    const hasCleanedChanges = Boolean(cleanedChanges && Object.keys(cleanedChanges).length > 0);
+    if (!details && !hasCleanedChanges) {
+      return { success: false, error: 'Indique os novos valores ou detalhes para o pedido.' };
+    }
+
+    const now = getNowISOString();
+    const existingIds = (curState.requests || []).map((r) => r.id);
+    const reqId = generateNextDocumentNumber('REQ', curState.settings.currentYear, existingIds);
+    const assignedRole: RoleType = data.category === 'tesouraria' ? 'tesoureiro' : 'secretario';
+
+    const newRequest: MemberPortalRequest = {
+      id: reqId,
+      memberId: linkedMember.id,
+      memberName: linkedMember.fullName,
+      category: data.category,
+      subject,
+      details: details || 'Solicitação de atualização cadastral conforme campos preenchidos.',
+      proofAttachmentName: data.attachmentFileName,
+      attachmentFileName: data.attachmentFileName,
+      attachmentBase64: data.attachmentBase64,
+      proposedChanges: hasCleanedChanges ? cleanedChanges : undefined,
+      status: 'pendente',
+      assignedRole,
+      history: [
+        {
+          status: 'pendente',
+          updatedBy: linkedMember.fullName,
+          updatedAt: now,
+          note: 'Pedido submetido pelo membro no Portal do Membro.',
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        requests: [newRequest, ...(prev.requests || [])],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    addNotification({
+      title: 'Novo Pedido de Atualização Cadastral',
+      message: `${linkedMember.fullName} enviou um pedido (${subject}) para análise da Secretaria.`,
+      category: data.category === 'tesouraria' ? 'financial' : 'request',
+      targetModule: data.category === 'tesouraria' ? 'treasury' : 'members',
+      priority: 'normal',
+    });
+
+    logAction(
+      'member_portal',
+      'PEDIDO_ATUALIZACAO_CADASTRAL',
+      `Pedido ${reqId} submetido por ${linkedMember.fullName}: ${subject}`,
+      reqId,
+      linkedMember.fullName
+    );
+
+    return { success: true, request: newRequest };
+  };
+
+  const respondToRequest = (
+    requestId: string,
+    status: MemberPortalRequest['status'],
+    responseNotes: string,
+    options?: { applyChanges?: boolean }
+  ) => {
+    const curState = stateRef.current;
+    const req = (curState.requests || []).find((r) => r.id === requestId);
+    if (!req) {
+      return { success: false, error: 'Pedido não encontrado.' };
+    }
+
+    const canHandleSecretary =
+      can('members', 'EDIT') ||
+      currentUser.role === 'secretario' ||
+      currentUser.role === 'diretor' ||
+      currentUser.role === 'admin_tecnico';
+    const canHandleTreasury =
+      req.category === 'tesouraria' &&
+      (can('treasury', 'APPROVE') || currentUser.role === 'tesoureiro');
+
+    if (!canHandleSecretary && !canHandleTreasury) {
+      return { success: false, error: 'Sem permissão para analisar ou responder a este pedido.' };
+    }
+
+    const cleanNotes = (responseNotes || '').trim();
+    if (status === 'rejeitado' && !cleanNotes) {
+      return { success: false, error: 'Indique o motivo da rejeição para conhecimento do membro.' };
+    }
+
+    const now = getNowISOString();
+    const shouldApplyChanges =
+      Boolean(options?.applyChanges) &&
+      (status === 'aprovado' || status === 'concluido') &&
+      Boolean(req.proposedChanges && Object.keys(req.proposedChanges).length > 0);
+
+    commitState(
+      (prev) => {
+        const nextRequests = (prev.requests || []).map((item) =>
+          item.id === requestId
+            ? {
+                ...item,
+                status,
+                assignedUserId: currentUser.id,
+                assignedUserName: currentUser.name,
+                responseNotes: cleanNotes || item.responseNotes,
+                history: [
+                  ...(item.history || []),
+                  {
+                    status,
+                    updatedBy: currentUser.name,
+                    updatedAt: now,
+                    note: shouldApplyChanges
+                      ? `${cleanNotes || 'Dados aplicados à ficha.'} (Ficha do membro atualizada)`
+                      : cleanNotes || undefined,
+                  },
+                ],
+                updatedAt: now,
+              }
+            : item
+        );
+
+        let nextMembers = prev.members;
+        let nextUsers = prev.users;
+
+        if (shouldApplyChanges && req.proposedChanges) {
+          const changes = req.proposedChanges;
+          nextMembers = prev.members.map((m) => {
+            if (m.id !== req.memberId) return m;
+            return {
+              ...m,
+              phone: changes.phone || m.phone,
+              address: changes.address || m.address,
+              email: changes.email !== undefined ? changes.email : m.email,
+              guardianName: changes.guardianName !== undefined ? changes.guardianName : m.guardianName,
+              guardianPhone: changes.guardianPhone !== undefined ? changes.guardianPhone : m.guardianPhone,
+              identityCardNumber: changes.identityCardNumber || m.identityCardNumber,
+              identityCardExpiryDate:
+                changes.identityCardExpiryDate !== undefined
+                  ? changes.identityCardExpiryDate
+                  : m.identityCardExpiryDate,
+              emergencyContact: {
+                ...m.emergencyContact,
+                name: changes.emergencyContactName || m.emergencyContact?.name || '',
+                phone: changes.emergencyContactPhone || m.emergencyContact?.phone || '',
+              },
+              updatedAt: now,
+            };
+          });
+          const previousMember = prev.members.find((m) => m.id === req.memberId);
+          const updatedMember = nextMembers.find((m) => m.id === req.memberId);
+          if (updatedMember) {
+            nextUsers = syncMemberChangesToUsers(updatedMember, prev.users, previousMember);
+          }
+        }
+
+        return {
+          ...prev,
+          updatedAt: now,
+          requests: nextRequests,
+          members: nextMembers,
+          users: nextUsers,
+        };
+      },
+      { saveLocal: true, pushCloud: true }
+    );
+
+    const targetMember = curState.members.find((m) => m.id === req.memberId);
+    const linkedUser = curState.users.find(
+      (u) =>
+        u.linkedMemberId === req.memberId ||
+        (targetMember?.manualNumber && u.manualNumber === targetMember.manualNumber)
+    );
+    if (linkedUser) {
+      const statusLabel =
+        status === 'concluido'
+          ? 'Concluído'
+          : status === 'aprovado'
+          ? 'Aprovado'
+          : status === 'rejeitado'
+          ? 'Rejeitado'
+          : 'Em Análise';
+      addNotification({
+        title: `Pedido Cadastral ${statusLabel}`,
+        message: `O seu pedido "${req.subject}" (${req.id}) foi atualizado por ${currentUser.name}${
+          cleanNotes ? `: ${cleanNotes}` : '.'
+        }`,
+        category: 'request',
+        targetModule: 'member_portal',
+        recipientUserId: linkedUser.id,
+        targetMemberId: req.memberId,
+        isConfidential: true,
+        priority: 'normal',
+      });
+    }
+
+    logAction(
+      'members',
+      'RESPOSTA_PEDIDO_CADASTRAL',
+      `Pedido ${req.id} (${req.memberName}) marcado como ${status}${shouldApplyChanges ? ' com aplicação automática na ficha' : ''}`,
+      req.id,
+      req.memberName
+    );
+
     return { success: true };
   };
 
@@ -8324,6 +9105,10 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         quotaWaivers: Array.isArray(parsed.quotaWaivers) ? parsed.quotaWaivers : [],
         musicItems: Array.isArray(parsed.musicItems) ? parsed.musicItems : [],
         enrollmentRequests: Array.isArray(parsed.enrollmentRequests) ? parsed.enrollmentRequests : [],
+        teamChatMessages: Array.isArray(parsed.teamChatMessages) ? parsed.teamChatMessages : [],
+        teamTasks: Array.isArray(parsed.teamTasks) ? parsed.teamTasks : [],
+        teamNotes: Array.isArray(parsed.teamNotes) ? parsed.teamNotes : [],
+        teamAwards: Array.isArray(parsed.teamAwards) ? parsed.teamAwards : [],
         settings: safeSettings,
         currentUser: resolvedCurrentUser,
         updatedAt: now,
@@ -8832,6 +9617,302 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
+  // --- MÓDULO MINHA EQUIPA & CHAT INTERNO ---
+  const sendTeamChatMessage = (data: {
+    unitId: string;
+    content: string;
+  }): { success: boolean; message?: TeamChatMessage; error?: string } => {
+    if (!can('my_team', 'VIEW') || !can('my_team', 'CREATE')) {
+      return { success: false, error: 'Sem permissão na grelha para enviar mensagens no chat da equipa.' };
+    }
+
+    const cleanContent = (data.content || '').trim();
+    if (!cleanContent) {
+      return { success: false, error: 'Escreva uma mensagem antes de enviar.' };
+    }
+    if (cleanContent.length > 1000) {
+      return { success: false, error: 'A mensagem não pode exceder 1000 caracteres.' };
+    }
+
+    const live = stateRef.current;
+    const unit = (live.settings.units || []).find((u) => u.id === data.unitId && u.active !== false);
+    if (!unit) {
+      return { success: false, error: 'Equipa não encontrada ou inativa.' };
+    }
+
+    const linkedMember = getStrictLinkedMember(currentUser, live.members);
+    if (!canPostInTeamChat(unit, linkedMember, currentUser)) {
+      return {
+        success: false,
+        error: 'Apenas os membros desta equipa ou o respetivo Líder atribuído podem interagir neste chat.',
+      };
+    }
+
+    const now = getNowISOString();
+    const newMsg: TeamChatMessage = {
+      id: `TCHAT-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+      unitId: unit.id,
+      unitName: unit.name,
+      senderUserId: currentUser.id,
+      senderMemberId: linkedMember?.id,
+      senderName: linkedMember?.fullName || currentUser.name,
+      senderRole: currentUser.role,
+      isTeamLeader: isAssignedTeamLeader(unit, currentUser),
+      content: cleanContent,
+      createdAt: now,
+    };
+
+    commitState(
+      (prev) => {
+        const existing = prev.teamChatMessages || [];
+        if (existing.some((m) => m.id === newMsg.id)) return prev;
+        return {
+          ...prev,
+          updatedAt: now,
+          teamChatMessages: [...existing, newMsg],
+        };
+      },
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true, message: newMsg };
+  };
+
+  const deleteTeamChatMessage = (messageId: string): { success: boolean; error?: string } => {
+    const live = stateRef.current;
+    const targetMsg = (live.teamChatMessages || []).find((m) => m.id === messageId);
+    if (!targetMsg) {
+      return { success: false, error: 'Mensagem não encontrada no chat da equipa.' };
+    }
+
+    const unit = (live.settings.units || []).find((u) => u.id === targetMsg.unitId);
+    if (!canDeleteTeamChatMessage(unit, currentUser)) {
+      return {
+        success: false,
+        error: 'Apenas a Direção (Diretor, Secretário, Diretor-associado) ou o Líder desta equipa pode excluir mensagens para todos.',
+      };
+    }
+
+    const now = getNowISOString();
+    const auditEntry = createAuditLog(
+      currentUser.id,
+      currentUser.name,
+      currentUser.role,
+      'my_team',
+      'EXCLUSAO_MSG_CHAT_EQUIPA',
+      `Mensagem de ${targetMsg.senderName} excluída para todos no chat da equipa ${targetMsg.unitName}.`,
+      targetMsg.id,
+      targetMsg.unitName
+    );
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        teamChatMessages: (prev.teamChatMessages || []).filter((m) => m.id !== messageId),
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+
+    return { success: true };
+  };
+
+  const createTeamTask = (data: {
+    unitId: string;
+    title: string;
+    description?: string;
+    assignedMemberName?: string;
+    dueDate: string;
+  }): { success: boolean; task?: TeamTask; error?: string } => {
+    const live = stateRef.current;
+    const unit = (live.settings.units || []).find((u) => u.id === data.unitId && u.active !== false);
+    if (!unit) return { success: false, error: 'Equipa não encontrada.' };
+    if (!isDirectionChatMonitor(currentUser.role) && !isAssignedTeamLeader(unit, currentUser)) {
+      return { success: false, error: 'Apenas a Direção ou o Líder da Equipa podem criar tarefas.' };
+    }
+    const cleanTitle = (data.title || '').trim();
+    if (!cleanTitle) return { success: false, error: 'O título da tarefa é obrigatório.' };
+
+    const now = getNowISOString();
+    const newTask: TeamTask = {
+      id: `TTASK-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+      unitId: unit.id,
+      title: cleanTitle,
+      description: data.description?.trim() || undefined,
+      assignedMemberName: data.assignedMemberName?.trim() || undefined,
+      dueDate: data.dueDate || now.slice(0, 10),
+      status: 'pendente',
+      createdByName: currentUser.name,
+      createdAt: now,
+    };
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        teamTasks: [newTask, ...(prev.teamTasks || [])],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+    return { success: true, task: newTask };
+  };
+
+  const updateTeamTaskStatus = (taskId: string, status: 'pendente' | 'concluido'): { success: boolean; error?: string } => {
+    const live = stateRef.current;
+    const task = (live.teamTasks || []).find((t) => t.id === taskId);
+    if (!task) return { success: false, error: 'Tarefa não encontrada.' };
+    const unit = (live.settings.units || []).find((u) => u.id === task.unitId);
+    if (!isDirectionChatMonitor(currentUser.role) && !(unit ? isAssignedTeamLeader(unit, currentUser) : false)) {
+      return { success: false, error: 'Sem permissão para atualizar esta tarefa.' };
+    }
+
+    const now = getNowISOString();
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        teamTasks: (prev.teamTasks || []).map((t) => (t.id === taskId ? { ...t, status } : t)),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+    return { success: true };
+  };
+
+  const deleteTeamTask = (taskId: string): { success: boolean; error?: string } => {
+    const live = stateRef.current;
+    const task = (live.teamTasks || []).find((t) => t.id === taskId);
+    if (!task) return { success: false, error: 'Tarefa não encontrada.' };
+    const unit = (live.settings.units || []).find((u) => u.id === task.unitId);
+    if (!isDirectionChatMonitor(currentUser.role) && !(unit ? isAssignedTeamLeader(unit, currentUser) : false)) {
+      return { success: false, error: 'Sem permissão para remover esta tarefa.' };
+    }
+
+    const now = getNowISOString();
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        teamTasks: (prev.teamTasks || []).filter((t) => t.id !== taskId),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+    return { success: true };
+  };
+
+  const createTeamNote = (data: {
+    unitId: string;
+    title: string;
+    content: string;
+  }): { success: boolean; note?: TeamNote; error?: string } => {
+    const live = stateRef.current;
+    const unit = (live.settings.units || []).find((u) => u.id === data.unitId && u.active !== false);
+    if (!unit) return { success: false, error: 'Equipa não encontrada.' };
+    if (!isDirectionChatMonitor(currentUser.role) && !(unit ? isAssignedTeamLeader(unit, currentUser) : false)) {
+      return { success: false, error: 'Apenas a Direção ou o Líder da Equipa podem criar notas de campo.' };
+    }
+    const cleanTitle = (data.title || '').trim();
+    const cleanContent = (data.content || '').trim();
+    if (!cleanTitle || !cleanContent) return { success: false, error: 'Preencha o título e o conteúdo da nota.' };
+
+    const now = getNowISOString();
+    const newNote: TeamNote = {
+      id: `TNOTE-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+      unitId: unit.id,
+      title: cleanTitle,
+      content: cleanContent,
+      authorName: currentUser.name,
+      createdAt: now,
+    };
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        teamNotes: [newNote, ...(prev.teamNotes || [])],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+    return { success: true, note: newNote };
+  };
+
+  const deleteTeamNote = (noteId: string): { success: boolean; error?: string } => {
+    const live = stateRef.current;
+    const note = (live.teamNotes || []).find((n) => n.id === noteId);
+    if (!note) return { success: false, error: 'Nota não encontrada.' };
+    const unit = (live.settings.units || []).find((u) => u.id === note.unitId);
+    if (!isDirectionChatMonitor(currentUser.role) && !(unit ? isAssignedTeamLeader(unit, currentUser) : false)) {
+      return { success: false, error: 'Sem permissão para remover esta nota.' };
+    }
+
+    const now = getNowISOString();
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        teamNotes: (prev.teamNotes || []).filter((n) => n.id !== noteId),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+    return { success: true };
+  };
+
+  const createTeamAward = (data: {
+    unitId: string;
+    title: string;
+    date: string;
+    description?: string;
+  }): { success: boolean; award?: TeamAward; error?: string } => {
+    const live = stateRef.current;
+    const unit = (live.settings.units || []).find((u) => u.id === data.unitId && u.active !== false);
+    if (!unit) return { success: false, error: 'Equipa não encontrada.' };
+    if (!isDirectionChatMonitor(currentUser.role) && !(unit ? isAssignedTeamLeader(unit, currentUser) : false)) {
+      return { success: false, error: 'Apenas a Direção ou o Líder da Equipa podem registar conquistas.' };
+    }
+    const cleanTitle = (data.title || '').trim();
+    if (!cleanTitle) return { success: false, error: 'O título da conquista é obrigatório.' };
+
+    const now = getNowISOString();
+    const newAward: TeamAward = {
+      id: `TAWD-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+      unitId: unit.id,
+      title: cleanTitle,
+      date: data.date || now.slice(0, 10),
+      description: data.description?.trim() || undefined,
+    };
+
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        teamAwards: [newAward, ...(prev.teamAwards || [])],
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+    return { success: true, award: newAward };
+  };
+
+  const deleteTeamAward = (awardId: string): { success: boolean; error?: string } => {
+    const live = stateRef.current;
+    const award = (live.teamAwards || []).find((a) => a.id === awardId);
+    if (!award) return { success: false, error: 'Conquista não encontrada.' };
+    const unit = (live.settings.units || []).find((u) => u.id === award.unitId);
+    if (!isDirectionChatMonitor(currentUser.role) && !(unit ? isAssignedTeamLeader(unit, currentUser) : false)) {
+      return { success: false, error: 'Sem permissão para remover esta conquista.' };
+    }
+
+    const now = getNowISOString();
+    commitState(
+      (prev) => ({
+        ...prev,
+        updatedAt: now,
+        teamAwards: (prev.teamAwards || []).filter((a) => a.id !== awardId),
+      }),
+      { saveLocal: true, pushCloud: true }
+    );
+    return { success: true };
+  };
+
   return (
     <ClubContext.Provider
       value={{
@@ -8866,6 +9947,7 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         cancelReceipt,
         updateQuotaConfig,
         regularizeMemberQuota,
+        batchRegularizeQuotas,
         waiveMemberQuotaDebt,
         waiveAllPendingQuotaDebts,
         reverseQuotaDebtWaiver,
@@ -8891,13 +9973,16 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         submitActivityRsvp,
         updateTrainingProgress,
         createTrainingProgress,
+        batchEnrollTrainingProgress,
+        assignTrainingInstructor,
+        batchUpdateTrainingRequirements,
         approveFinalTraining,
         revokeTrainingApproval,
         deleteTrainingProgress,
         createOfficialDoc,
         cancelOfficialDoc,
-        submitPortalRequest: () => ({ success: false, error: 'Módulo de pedidos substituído por Circulares.' }),
-        respondToRequest: () => ({ success: false, error: 'Módulo de pedidos substituído por Circulares.' }),
+        submitPortalRequest,
+        respondToRequest,
         submitPaymentProof,
         verifyPaymentProof,
         submitChaplaincyRequest,
@@ -8972,6 +10057,15 @@ export const ClubProvider: React.FC<{ children: React.ReactNode }> = ({ children
         createMusicItem,
         updateMusicItem,
         deleteMusicItem,
+        sendTeamChatMessage,
+        deleteTeamChatMessage,
+        createTeamTask,
+        updateTeamTaskStatus,
+        deleteTeamTask,
+        createTeamNote,
+        deleteTeamNote,
+        createTeamAward,
+        deleteTeamAward,
         isQuotaExceeded,
         isCloudLoading,
         theme,

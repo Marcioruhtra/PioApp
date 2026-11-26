@@ -35,6 +35,10 @@ import {
   QuotaDebtWaiver,
   MusicItem,
   MemberEnrollmentRequest,
+  TeamChatMessage,
+  TeamTask,
+  TeamNote,
+  TeamAward,
 } from '../types';
 import {
   INITIAL_ACCOUNTS,
@@ -97,6 +101,11 @@ export interface ClubDatabaseState {
   quotaWaivers?: QuotaDebtWaiver[];
   musicItems?: MusicItem[];
   enrollmentRequests?: MemberEnrollmentRequest[];
+  requests?: MemberPortalRequest[];
+  teamChatMessages?: TeamChatMessage[];
+  teamTasks?: TeamTask[];
+  teamNotes?: TeamNote[];
+  teamAwards?: TeamAward[];
   settings: ClubSettings;
   currentUser: UserAccount;
   updatedAt?: string;
@@ -147,6 +156,11 @@ export function createCleanCloudShellState(): ClubDatabaseState {
     quotaWaivers: [],
     musicItems: [],
     enrollmentRequests: [],
+    requests: [],
+    teamChatMessages: [],
+    teamTasks: [],
+    teamNotes: [],
+    teamAwards: [],
     settings: {
       ...INITIAL_SETTINGS,
       departments: [],
@@ -205,6 +219,7 @@ export function loadInitialState(): ClubDatabaseState {
     quotaWaivers: [],
     musicItems: INITIAL_MUSIC_ITEMS,
     enrollmentRequests: [],
+    teamChatMessages: [],
   };
 }
 
@@ -243,6 +258,7 @@ export function resetToDemoData(): ClubDatabaseState {
     quotaWaivers: [],
     musicItems: INITIAL_MUSIC_ITEMS,
     enrollmentRequests: [],
+    teamChatMessages: [],
     updatedAt: getNowISOString(),
   };
 }
@@ -330,6 +346,7 @@ export function resetToCleanAdminOnlyState(customAdmin?: Partial<UserAccount>): 
     quotaWaivers: [],
     musicItems: [],
     enrollmentRequests: [],
+    teamChatMessages: [],
     updatedAt: now,
   };
 
@@ -455,6 +472,10 @@ export function cleanSystemStorageSpace(
     teamEvaluations: [],
     quotaWaivers: [],
     musicItems: [],
+    teamChatMessages: [],
+    teamTasks: [],
+    teamNotes: [],
+    teamAwards: [],
     // Limpeza de solicitações de inscrição:
     // Elimina todas as solicitações já analisadas ('aprovado' e 'rejeitado') para liberar espaço.
     // Aquelas que estão pendentes ou em estado de análise permanecem intactas com todos os documentos anexados.

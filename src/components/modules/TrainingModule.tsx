@@ -22,6 +22,8 @@ import { useClub } from '../../context/ClubContext';
 import { MemberTrainingProgress, TrainingClass, SpecialtyHonor } from '../../types';
 import { formatDateAO } from '../../utils/date';
 import { Modal } from '../common/Modal';
+import { resolveCatalogRequirementsForProgress } from '../../utils/associateTrainingUtils';
+import { getMemberTeamLabel } from '../../services/accountSyncService';
 
 
 
@@ -41,6 +43,7 @@ export const TrainingModule: React.FC = () => {
     currentUser,
     updateTrainingProgress,
     createTrainingProgress,
+    batchUpdateTrainingRequirements,
     approveFinalTraining,
     revokeTrainingApproval,
     deleteTrainingProgress,
@@ -60,6 +63,12 @@ export const TrainingModule: React.FC = () => {
     currentUser.role === 'admin_tecnico' ||
     currentUser.role === 'instrutor';
 
+  const canEditProgress =
+    can('training', 'EDIT') ||
+    currentUser.role === 'diretor' ||
+    currentUser.role === 'instrutor' ||
+    currentUser.role === 'admin_tecnico';
+
   // Diretor, Instrutor e Administrador podem homologar investiduras
   const canApproveInvestiture =
     can('training', 'APPROVE') ||
@@ -70,6 +79,17 @@ export const TrainingModule: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'classes' | 'specialties' | 'manage_catalog'>('classes');
   const [selectedProgressId, setSelectedProgressId] = useState<string>('');
   const [isEnrollModalOpen, setIsEnrollModalOpen] = useState(false);
+
+  // --- MODAL: CHAMADA CURRICULAR / CONCLUSÃO EM LOTE ---
+  const [isBatchReqModalOpen, setIsBatchReqModalOpen] = useState(false);
+  const [batchReqType, setBatchReqType] = useState<'classe' | 'especialidade'>('classe');
+  const [batchReqTargetId, setBatchReqTargetId] = useState<string>('');
+  const [batchReqNumber, setBatchReqNumber] = useState<number>(1);
+  const [batchReqAction, setBatchReqAction] = useState<'complete' | 'uncomplete'>('complete');
+  const [batchReqTeamFilter, setBatchReqTeamFilter] = useState<string>('todas');
+  const [batchReqOnlyPending, setBatchReqOnlyPending] = useState<boolean>(true);
+  const [batchReqSelectedIds, setBatchReqSelectedIds] = useState<string[]>([]);
+  const [batchReqNotes, setBatchReqNotes] = useState<string>('');
 
   // Notificação / Feedback de ações
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -365,6 +385,115 @@ export const TrainingModule: React.FC = () => {
   );
   const currentItem = activeList.find((p) => p.id === selectedProgressId) || activeList[0] || null;
 
+  const openBatchReqModal = () => {
+    const initialType: 'classe' | 'especialidade' =
+      activeTab === 'specialties' ? 'especialidade' : 'classe';
+    const preferredItem =
+      currentItem && currentItem.type === initialType
+        ? currentItem
+        : state.trainingProgress.find((p) => p.type === initialType) || state.trainingProgress[0];
+    const resolvedType = preferredItem?.type || initialType;
+    const defaultTargetId =
+      preferredItem?.targetId ||
+      (resolvedType === 'classe' ? state.classes[0]?.id : state.specialties[0]?.id) ||
+      '';
+
+    setBatchReqType(resolvedType);
+    setBatchReqTargetId(defaultTargetId);
+    setBatchReqNumber(1);
+    setBatchReqAction('complete');
+    setBatchReqTeamFilter('todas');
+    setBatchReqOnlyPending(true);
+    setBatchReqSelectedIds([]);
+    setBatchReqNotes('');
+    setIsBatchReqModalOpen(true);
+  };
+
+  const batchCatalogItems = batchReqType === 'classe' ? state.classes : state.specialties;
+  const selectedBatchCatalogItem = batchCatalogItems.find(
+    (item) => item.id === batchReqTargetId || item.code === batchReqTargetId
+  );
+
+  const batchMatchingProgress = state.trainingProgress.filter((tp) => {
+    if (tp.type !== batchReqType) return false;
+    if (!batchReqTargetId) return true;
+    return (
+      tp.targetId === batchReqTargetId ||
+      (selectedBatchCatalogItem &&
+        (tp.targetId === selectedBatchCatalogItem.code ||
+          tp.targetTitle.trim().toLowerCase() === selectedBatchCatalogItem.title.trim().toLowerCase()))
+    );
+  });
+
+  const batchRequirementsList = (() => {
+    if (selectedBatchCatalogItem) {
+      return resolveCatalogRequirementsForProgress(
+        {
+          type: batchReqType,
+          targetId: selectedBatchCatalogItem.id,
+          targetTitle: selectedBatchCatalogItem.title,
+          totalRequirements:
+            selectedBatchCatalogItem.requirements?.length ||
+            selectedBatchCatalogItem.requirementsCount ||
+            1,
+        },
+        state.classes,
+        state.specialties
+      );
+    }
+    const sample = batchMatchingProgress[0];
+    if (sample) {
+      return resolveCatalogRequirementsForProgress(sample, state.classes, state.specialties);
+    }
+    return ['Requisito Oficial #1'];
+  })();
+
+  const effectiveBatchReqNumber = Math.min(
+    Math.max(1, batchReqNumber),
+    Math.max(1, batchRequirementsList.length)
+  );
+
+  const batchFilteredCandidates = batchMatchingProgress
+    .map((tp) => {
+      const mem = state.members.find((m) => m.id === tp.memberId);
+      if (!mem) return null;
+      const teamLabel = getMemberTeamLabel(mem, state.users);
+      const isAlreadyDone = tp.completedRequirements.includes(effectiveBatchReqNumber);
+      return { progress: tp, member: mem, teamLabel, isAlreadyDone };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    .filter((entry) => {
+      if (batchReqTeamFilter !== 'todas' && (entry.member.unitOrTeam || '') !== batchReqTeamFilter) {
+        return false;
+      }
+      if (batchReqAction === 'complete' && batchReqOnlyPending && entry.isAlreadyDone) {
+        return false;
+      }
+      if (batchReqAction === 'uncomplete' && (!entry.isAlreadyDone || entry.progress.finalAuthorizedApproval)) {
+        return false;
+      }
+      return true;
+    });
+
+  const handleBatchReqSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const res = batchUpdateTrainingRequirements({
+      progressIds: batchReqSelectedIds,
+      requirementNumber: effectiveBatchReqNumber,
+      completed: batchReqAction === 'complete',
+      notes: batchReqNotes,
+    });
+    if (res.success) {
+      setIsBatchReqModalOpen(false);
+      showFeedback(
+        'success',
+        `Chamada curricular aplicada ao Requisito #${effectiveBatchReqNumber}: ${res.updatedCount} membro(s) atualizado(s).`
+      );
+    } else {
+      showFeedback('error', res.error || 'Erro ao registar chamada curricular em lote.');
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Notificação Toast/Feedback */}
@@ -428,6 +557,17 @@ export const TrainingModule: React.FC = () => {
                 <span>Nova Medalha</span>
               </button>
             </>
+          )}
+
+          {canEditProgress && state.trainingProgress.length > 0 && (
+            <button
+              onClick={openBatchReqModal}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg shadow-2xs transition-colors cursor-pointer"
+              title="Marcar um requisito concluído para vários membros em lote"
+            >
+              <ListChecks className="w-3.5 h-3.5 text-blue-900" />
+              <span>Chamada Curricular (Lote)</span>
+            </button>
           )}
 
           {can('training', 'CREATE') && (
@@ -1678,6 +1818,233 @@ export const TrainingModule: React.FC = () => {
           </div>
         </Modal>
       )}
+      {/* MODAL: Chamada Curricular / Conclusão em Lote */}
+      <Modal
+        isOpen={isBatchReqModalOpen}
+        onClose={() => setIsBatchReqModalOpen(false)}
+        title="Chamada Curricular / Conclusão em Lote"
+        description="Aplique o cumprimento ou reabertura de um requisito oficial a vários membros ou equipas de uma só vez."
+        maxWidth="2xl"
+      >
+        <form onSubmit={handleBatchReqSubmit} className="space-y-4 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Tipo Curricular</label>
+              <select
+                value={batchReqType}
+                onChange={(e) => {
+                  const nextType = e.target.value as 'classe' | 'especialidade';
+                  const firstTarget =
+                    nextType === 'classe' ? state.classes[0]?.id || '' : state.specialties[0]?.id || '';
+                  setBatchReqType(nextType);
+                  setBatchReqTargetId(firstTarget);
+                  setBatchReqNumber(1);
+                  setBatchReqSelectedIds([]);
+                }}
+                className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+              >
+                <option value="classe">Módulo Oficial</option>
+                <option value="especialidade">Medalha</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">
+                {batchReqType === 'classe' ? 'Módulo' : 'Medalha'}
+              </label>
+              <select
+                value={batchReqTargetId}
+                onChange={(e) => {
+                  setBatchReqTargetId(e.target.value);
+                  setBatchReqNumber(1);
+                  setBatchReqSelectedIds([]);
+                }}
+                className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+              >
+                {batchCatalogItems.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="sm:col-span-2">
+              <label className="block font-semibold text-slate-700 mb-1">Requisito a Registar</label>
+              <select
+                value={effectiveBatchReqNumber}
+                onChange={(e) => {
+                  setBatchReqNumber(Number(e.target.value));
+                  setBatchReqSelectedIds([]);
+                }}
+                className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+              >
+                {batchRequirementsList.map((desc, idx) => {
+                  const num = idx + 1;
+                  return (
+                    <option key={num} value={num}>
+                      #{num} — {desc}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Ação</label>
+              <select
+                value={batchReqAction}
+                onChange={(e) => {
+                  setBatchReqAction(e.target.value as 'complete' | 'uncomplete');
+                  setBatchReqSelectedIds([]);
+                }}
+                className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+              >
+                <option value="complete">Marcar Concluído</option>
+                <option value="uncomplete">Reabrir (Pendente)</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={batchReqTeamFilter}
+                onChange={(e) => {
+                  setBatchReqTeamFilter(e.target.value);
+                  setBatchReqSelectedIds([]);
+                }}
+                className="px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white text-slate-700"
+              >
+                <option value="todas">Todas as equipas</option>
+                {state.settings.units.map((u) => (
+                  <option key={u.id} value={u.name}>
+                    {u.name}
+                  </option>
+                ))}
+              </select>
+
+              {batchReqAction === 'complete' && (
+                <label className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={batchReqOnlyPending}
+                    onChange={(e) => {
+                      setBatchReqOnlyPending(e.target.checked);
+                      setBatchReqSelectedIds([]);
+                    }}
+                    className="rounded border-slate-300 text-blue-900"
+                  />
+                  <span>Apenas pendentes neste requisito</span>
+                </label>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setBatchReqSelectedIds(batchFilteredCandidates.map((c) => c.progress.id))}
+                className="px-2.5 py-1 font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200 cursor-pointer"
+              >
+                Selecionar Todos ({batchFilteredCandidates.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setBatchReqSelectedIds([])}
+                className="px-2.5 py-1 font-semibold text-slate-600 bg-white hover:bg-slate-100 rounded border border-slate-200 cursor-pointer"
+              >
+                Limpar
+              </button>
+            </div>
+          </div>
+
+          <div className="border border-slate-200 rounded-lg max-h-60 overflow-y-auto divide-y divide-slate-100">
+            {batchFilteredCandidates.length === 0 ? (
+              <div className="p-6 text-center text-slate-500">
+                Nenhum membro inscrito corresponde aos filtros selecionados.
+              </div>
+            ) : (
+              batchFilteredCandidates.map(({ progress, member, teamLabel, isAlreadyDone }) => {
+                const checked = batchReqSelectedIds.includes(progress.id);
+                return (
+                  <label
+                    key={progress.id}
+                    className={`px-3.5 py-2.5 flex items-center justify-between gap-3 cursor-pointer transition-colors ${
+                      checked ? 'bg-blue-50/60' : 'hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          setBatchReqSelectedIds((prev) =>
+                            prev.includes(progress.id)
+                              ? prev.filter((id) => id !== progress.id)
+                              : [...prev, progress.id]
+                          )
+                        }
+                        className="rounded border-slate-300 text-blue-900 shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <p className="font-semibold text-slate-900 truncate">{member.fullName}</p>
+                        <p className="text-[11px] text-slate-500 truncate">
+                          Nº {member.manualNumber} · {teamLabel} · {progress.completedRequirements.length}/{progress.totalRequirements} reqs
+                        </p>
+                      </div>
+                    </div>
+
+                    <span
+                      className={`text-[11px] font-semibold shrink-0 ${
+                        isAlreadyDone ? 'text-emerald-700' : 'text-amber-700'
+                      }`}
+                    >
+                      {isAlreadyDone ? 'Já concluído' : 'Pendente'}
+                    </span>
+                  </label>
+                );
+              })
+            )}
+          </div>
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">
+              Nota / Observação da Sessão (Opcional)
+            </label>
+            <input
+              type="text"
+              value={batchReqNotes}
+              onChange={(e) => setBatchReqNotes(e.target.value)}
+              placeholder="Ex.: Aula prática de instrução — Sábado"
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+            />
+          </div>
+
+          <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-3">
+            <span className="text-[11px] text-slate-500 font-medium tabular-nums">
+              {batchReqSelectedIds.length} membro(s) selecionado(s)
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsBatchReqModalOpen(false)}
+                className="px-3.5 py-2 text-slate-600 hover:text-slate-900 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={batchReqSelectedIds.length === 0}
+                className="px-4 py-2 font-semibold text-white bg-blue-900 hover:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg shadow-xs cursor-pointer"
+              >
+                {batchReqAction === 'complete' ? 'Confirmar Conclusão em Lote' : 'Reabrir em Lote'}
+              </button>
+            </div>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 };

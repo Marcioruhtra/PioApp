@@ -141,6 +141,11 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   { module: 'music', action: 'CREATE', description: 'Adicionar hinos ao repertório e agendar escalas de louvor' },
   { module: 'music', action: 'EDIT', description: 'Editar letras, cifras e escalas musicais' },
   { module: 'music', action: 'PRINT', description: 'Imprimir cifras, repertório e escalas de louvor' },
+
+  // Minha Equipa & Chat Interno
+  { module: 'my_team', action: 'VIEW', description: 'Consultar dados da própria equipa e visualizar chat interno autorizado' },
+  { module: 'my_team', action: 'CREATE', description: 'Enviar mensagens no chat interno da própria equipa' },
+  { module: 'my_team', action: 'DELETE', description: 'Excluir mensagens no chat para todos (Direção e Líder da Equipa)' },
 ];
 
 // Matriz de permissões por papel institucional (Gerenciada pelo Admin)
@@ -164,6 +169,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     inventory: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'PRINT', 'ADMIN'],
     awards: ['VIEW', 'CREATE', 'APPROVE', 'ADMIN'],
     music: ['VIEW', 'CREATE', 'EDIT', 'PRINT', 'ADMIN'],
+    my_team: ['VIEW', 'CREATE', 'DELETE', 'ADMIN'],
   },
   diretor: {
     dashboard: ['VIEW'],
@@ -184,6 +190,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     inventory: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'PRINT'],
     awards: ['VIEW', 'CREATE', 'APPROVE'],
     music: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
+    my_team: ['VIEW', 'CREATE', 'DELETE'],
   },
   diretor_associado: {
     dashboard: ['VIEW'],
@@ -191,7 +198,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     members: ['VIEW', 'VIEW_DOSSIER_360', 'EDIT', 'EXPORT', 'PRINT'],
     treasury: [],
     activities: ['VIEW', 'CREATE', 'EDIT', 'EXPORT', 'PRINT'],
-    training: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
+    training: ['VIEW', 'CREATE', 'EDIT', 'APPROVE', 'EXPORT', 'PRINT'],
     documents: ['VIEW', 'CREATE', 'PRINT', 'EXPORT'],
     member_portal: ['VIEW'],
     requests: ['VIEW', 'CREATE', 'APPROVE'],
@@ -204,6 +211,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     inventory: ['VIEW', 'CREATE', 'APPROVE'],
     awards: ['VIEW', 'CREATE', 'APPROVE'],
     music: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
+    my_team: ['VIEW', 'CREATE', 'DELETE'],
   },
   secretario: {
     dashboard: ['VIEW'],
@@ -224,6 +232,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     inventory: ['VIEW', 'CREATE'],
     awards: ['VIEW', 'CREATE'],
     music: ['VIEW', 'CREATE'],
+    my_team: ['VIEW', 'CREATE', 'DELETE'],
   },
   tesoureiro: {
     dashboard: ['VIEW'],
@@ -244,6 +253,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     inventory: ['VIEW'],
     awards: ['VIEW'],
     music: ['VIEW'],
+    my_team: ['VIEW', 'CREATE'],
   },
   instrutor: {
     dashboard: ['VIEW'],
@@ -264,6 +274,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     inventory: ['VIEW'],
     awards: ['VIEW', 'CREATE'],
     music: ['VIEW'],
+    my_team: ['VIEW', 'CREATE'],
   },
   membro: {
     dashboard: ['VIEW'],
@@ -284,6 +295,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     inventory: [],
     awards: ['VIEW'],
     music: ['VIEW'],
+    my_team: ['VIEW', 'CREATE'],
   },
   capelao: {
     dashboard: ['VIEW'],
@@ -304,6 +316,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     inventory: [],
     awards: [],
     music: ['VIEW'],
+    my_team: ['VIEW', 'CREATE'],
   },
   diretor_musica: {
     dashboard: ['VIEW'],
@@ -324,6 +337,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<RoleType, Record<ModuleName, Permis
     inventory: ['VIEW'],
     awards: ['VIEW'],
     music: ['VIEW', 'CREATE', 'EDIT', 'PRINT'],
+    my_team: ['VIEW', 'CREATE'],
   },
 };
 
@@ -526,9 +540,23 @@ export const syncPermissionsMatrix = (
         if (needsDossier360Sync && role === 'secretario') {
           synced.secretario.training = synced.secretario.training.filter((a) => a !== 'VIEW');
         }
+        if (
+          role === 'diretor_associado' &&
+          synced.diretor_associado.training.includes('VIEW') &&
+          !synced.diretor_associado.training.includes('APPROVE') &&
+          !synced.diretor_associado.training.includes('EXPORT')
+        ) {
+          synced.diretor_associado.training.push('APPROVE', 'EXPORT');
+        }
       } else if (mod === 'member_portal') {
         if (!synced[role].member_portal.includes('VIEW')) {
           synced[role].member_portal.push('VIEW');
+        }
+      } else if (mod === 'my_team') {
+        for (const act of base[role].my_team) {
+          if (!synced[role].my_team.includes(act)) {
+            synced[role].my_team.push(act);
+          }
         }
       }
     }

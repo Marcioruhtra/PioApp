@@ -2,18 +2,17 @@ import React, { useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
-  ArrowRight,
   Award,
   Briefcase,
-  Calendar,
   CheckCircle2,
+  CheckSquare,
   ClipboardCheck,
   Download,
   Edit2,
   FileText,
   GraduationCap,
   Layers,
-  MessageSquare,
+  ListChecks,
   Plus,
   Printer,
   Search,
@@ -24,15 +23,13 @@ import {
   TrendingUp,
   UserCheck,
   UserPlus,
-  Users,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import {
-  ActivityStage,
   AssociateDirectivePriority,
   AssociateDirectiveStatus,
-  ClubActivity,
   MemberCategory,
+  MemberTrainingProgress,
   ModuleName,
 } from '../../types';
 import { formatDateAO } from '../../utils/date';
@@ -40,28 +37,26 @@ import { Modal } from '../common/Modal';
 import { ROLE_LABELS } from '../../services/permissionService';
 import { getMemberTeamLabel, isDirectionMember } from '../../services/accountSyncService';
 import {
-  ACTIVITY_TYPE_LABELS,
   calculateTeamAttendanceStats,
-  canActivityHaveMinute,
-  formatTaskStatusLabel,
-  getActivitiesRequiringMinute,
 } from '../../utils/activityUtils';
+import {
+  buildCatalogProgressSummaries,
+  buildInstructorWorkloadSummaries,
+  computeTrainingProgressPct,
+  getMembersWithoutTraining,
+  getModuleMedalStudySessions,
+  getTrainingStagnationDays,
+  isTrainingProgressStalled,
+  resolveCatalogRequirementsForProgress,
+  TRAINING_STALLED_DAYS_THRESHOLD,
+} from '../../utils/associateTrainingUtils';
 
 interface AssociateDirectorModuleProps {
   onNavigate?: (module: ModuleName) => void;
 }
 
-type AssociateTab = 'visao' | 'equipas' | 'operacoes' | 'formacao' | 'supervisao';
+type AssociateTab = 'visao' | 'equipas' | 'formacao' | 'supervisao';
 type TeamSortField = 'overall' | 'members' | 'training' | 'participation' | 'evaluation';
-
-const STAGE_LABELS: Record<ActivityStage, string> = {
-  planeamento: 'Planeamento',
-  aprovacao: 'Aprovação',
-  preparacao: 'Preparação',
-  execucao: 'Execução',
-  relatorio: 'Relatório',
-  encerrado: 'Encerrado',
-};
 
 const DIRECTIVE_STATUS_LABELS: Record<AssociateDirectiveStatus, string> = {
   pendente: 'Pendente',
@@ -86,9 +81,6 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
     updateUnit,
     deleteUnit,
     assignMemberToUnit,
-    updateActivityStage,
-    addTaskToActivity,
-    updateTaskStatus,
     createAssociateDirective,
     updateAssociateDirectiveStatus,
     deleteAssociateDirective,
@@ -96,6 +88,11 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
     deleteTeamEvaluation,
     createCircular,
     sendMessage,
+    updateTrainingProgress,
+    batchEnrollTrainingProgress,
+    assignTrainingInstructor,
+    approveFinalTraining,
+    revokeTrainingApproval,
   } = useClub();
 
   const canViewModule = can('associate_director', 'VIEW');
@@ -104,6 +101,16 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
   const canApprove = can('associate_director', 'APPROVE');
   const canExport = can('associate_director', 'EXPORT');
   const canPrint = can('associate_director', 'PRINT');
+
+  const canCreateTraining = can('training', 'CREATE') || canEdit;
+  const canEditTraining = can('training', 'EDIT') || canEdit;
+  const canApproveInvestiture =
+    can('training', 'APPROVE') ||
+    canApprove ||
+    currentUser.role === 'diretor' ||
+    currentUser.role === 'admin_tecnico' ||
+    currentUser.role === 'instrutor';
+  const canExportTraining = can('training', 'EXPORT') || canExport;
 
   const [activeTab, setActiveTab] = useState<AssociateTab>('visao');
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -132,22 +139,28 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
     description: string;
   } | null>(null);
 
-  // Estados de Operações & Tarefas
-  const [activityStageFilter, setActivityStageFilter] = useState<'todas' | ActivityStage>('todas');
-  const [taskStatusFilter, setTaskStatusFilter] = useState<'todas' | 'pendente' | 'em_progresso' | 'concluido'>('todas');
-  const [taskModalOpen, setTaskModalOpen] = useState(false);
-  const [taskForm, setTaskForm] = useState({
-    activityId: state.activities[0]?.id || '',
-    title: '',
-    assigneeName: '',
-    dueDate: new Date().toISOString().split('T')[0],
-    priority: 'media' as 'baixa' | 'media' | 'alta' | 'urgente',
-  });
-
-  // Estados de Supervisão Formativa
+  // Estados de Supervisão Formativa (Módulos e Medalhas)
+  const [trainingSubView, setTrainingSubView] = useState<'acompanhamento' | 'catalogo' | 'instrutores'>('acompanhamento');
   const [trainingTeamFilter, setTrainingTeamFilter] = useState<string>('todas');
   const [trainingTypeFilter, setTrainingTypeFilter] = useState<'todos' | 'classe' | 'especialidade'>('todos');
-  const [trainingReadinessFilter, setTrainingReadinessFilter] = useState<'todos' | 'prontos' | 'em_curso'>('todos');
+  const [trainingTargetFilter, setTrainingTargetFilter] = useState<string>('todos');
+  const [trainingInstructorFilter, setTrainingInstructorFilter] = useState<string>('todos');
+  const [trainingReadinessFilter, setTrainingReadinessFilter] = useState<
+    'todos' | 'prontos' | 'aprovados' | 'em_curso' | 'estagnados'
+  >('todos');
+  const [trainingSearch, setTrainingSearch] = useState('');
+  const [inspectedProgressId, setInspectedProgressId] = useState<string | null>(null);
+  const [inspectionNotes, setInspectionNotes] = useState('');
+  const [batchEnrollModalOpen, setBatchEnrollModalOpen] = useState(false);
+  const [batchEnrollForm, setBatchEnrollForm] = useState({
+    type: 'classe' as 'classe' | 'especialidade',
+    targetId: state.classes[0]?.id || '',
+    scope: 'unit' as 'unit' | 'category' | 'sem_formacao' | 'manual',
+    unitName: state.settings.units[0]?.name || '',
+    category: 'embaixador' as MemberCategory,
+    selectedMemberIds: [] as string[],
+    instructorUserId: '',
+  });
 
   // Estados de Diretivas & Avaliações
   const [directiveModalOpen, setDirectiveModalOpen] = useState(false);
@@ -293,31 +306,11 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
     );
   }, [state.trainingProgress]);
 
-  const allTasks = useMemo(() => {
-    return state.activities.flatMap((act) =>
-      (act.tasks || []).map((task) => ({
-        ...task,
-        activityId: act.id,
-        activityTitle: act.title,
-        activityStage: act.stage,
-        activityDate: act.startDate,
-      }))
-    );
-  }, [state.activities]);
-
-  const completedTasksCount = allTasks.filter((t) => t.status === 'concluido').length;
-  const urgentPendingTasksCount = allTasks.filter(
-    (t) => t.status !== 'concluido' && (t.priority === 'urgente' || t.priority === 'alta')
-  ).length;
-  const taskCompletionPct =
-    allTasks.length > 0 ? Math.round((completedTasksCount / allTasks.length) * 100) : 0;
-
   const openDirectivesCount = directives.filter(
     (d) => d.status === 'pendente' || d.status === 'em_curso'
   ).length;
 
   const unitsWithoutLeader = state.settings.units.filter((u) => !u.leaderUserId);
-  const activitiesWithoutMinute = getActivitiesRequiringMinute(state.activities);
   const candidatesReadyForInvestiture = useMemo(() => {
     return state.trainingProgress
       .map((tp) => {
@@ -338,6 +331,45 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
   const pendingInvestituresCount = candidatesReadyForInvestiture.filter(
     (c) => !c.progress.finalAuthorizedApproval && c.pct >= 100
   ).length;
+  const approvedInvestituresCount = candidatesReadyForInvestiture.filter(
+    (c) => c.progress.finalAuthorizedApproval
+  ).length;
+  const stalledTrainingCount = useMemo(
+    () => candidatesReadyForInvestiture.filter((c) => isTrainingProgressStalled(c.progress)).length,
+    [candidatesReadyForInvestiture]
+  );
+
+  const membersWithoutTraining = useMemo(
+    () => getMembersWithoutTraining(state.members, state.trainingProgress, state.users),
+    [state.members, state.trainingProgress, state.users]
+  );
+
+  const catalogSummaries = useMemo(
+    () => buildCatalogProgressSummaries(state.classes, state.specialties, state.trainingProgress, activeMembers),
+    [state.classes, state.specialties, state.trainingProgress, activeMembers]
+  );
+
+  const instructorWorkloads = useMemo(
+    () => buildInstructorWorkloadSummaries(state.users, state.trainingProgress, activeMembers),
+    [state.users, state.trainingProgress, activeMembers]
+  );
+
+  const studySessions = useMemo(
+    () => getModuleMedalStudySessions(state.activities),
+    [state.activities]
+  );
+
+  const trainingInstructors = useMemo(() => {
+    return state.users
+      .filter((u) => u.active && u.role !== 'membro')
+      .slice()
+      .sort((a, b) => {
+        const aPref = a.role === 'instrutor' || a.role === 'diretor_associado' ? 0 : 1;
+        const bPref = b.role === 'instrutor' || b.role === 'diretor_associado' ? 0 : 1;
+        if (aPref !== bPref) return aPref - bPref;
+        return a.name.localeCompare(b.name);
+      });
+  }, [state.users]);
 
   // Equipa selecionada no separador de Gestão de Equipas
   const activeSelectedUnit = useMemo(() => {
@@ -373,7 +405,7 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
   }, [activeSelectedUnit, teamRosterSearch]);
 
   const eligibleLeaders = useMemo(() => {
-    return state.users.filter((u) => u.active && u.role !== 'membro');
+    return state.users.filter((u) => u.active && u.role !== 'membro' && u.role !== 'admin_tecnico');
   }, [state.users]);
 
   if (!canViewModule) {
@@ -513,35 +545,6 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
     }
   };
 
-  // Handler Tarefa Operacional
-  const handleCreateTask = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!canEdit && !can('activities', 'EDIT')) {
-      showFeedback('error', 'Sem permissão para criar tarefas operacionais.');
-      return;
-    }
-    if (!taskForm.activityId || !taskForm.title.trim()) {
-      showFeedback('error', 'Selecione a atividade e descreva a tarefa operacional.');
-      return;
-    }
-    addTaskToActivity(taskForm.activityId, {
-      title: taskForm.title.trim(),
-      assigneeName: taskForm.assigneeName.trim() || currentUser.name,
-      dueDate: taskForm.dueDate,
-      priority: taskForm.priority,
-      status: 'pendente',
-    });
-    setTaskModalOpen(false);
-    setTaskForm({
-      activityId: state.activities[0]?.id || '',
-      title: '',
-      assigneeName: '',
-      dueDate: new Date().toISOString().split('T')[0],
-      priority: 'media',
-    });
-    showFeedback('success', 'Tarefa operacional adicionada à atividade e sincronizada.');
-  };
-
   // Handler Diretiva Operacional
   const handleSaveDirective = (e: React.FormEvent) => {
     e.preventDefault();
@@ -636,21 +639,176 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
     }
   };
 
-  const filteredActivities = state.activities.filter((act) =>
-    activityStageFilter === 'todas' ? true : act.stage === activityStageFilter
-  );
-
-  const filteredTasks = allTasks.filter((t) =>
-    taskStatusFilter === 'todas' ? true : t.status === taskStatusFilter
-  );
-
   const filteredTraining = candidatesReadyForInvestiture.filter((item) => {
     if (trainingTeamFilter !== 'todas' && (item.member.unitOrTeam || '') !== trainingTeamFilter) return false;
     if (trainingTypeFilter !== 'todos' && item.progress.type !== trainingTypeFilter) return false;
-    if (trainingReadinessFilter === 'prontos') return item.pct >= 100 && !item.progress.finalAuthorizedApproval;
-    if (trainingReadinessFilter === 'em_curso') return item.pct < 100;
+    if (trainingTargetFilter !== 'todos') {
+      const [fType, fId] = trainingTargetFilter.split('::');
+      if (item.progress.type !== fType || (item.progress.targetId !== fId && item.progress.targetTitle !== fId)) {
+        return false;
+      }
+    }
+    if (
+      trainingInstructorFilter !== 'todos' &&
+      item.progress.instructorUserId !== trainingInstructorFilter &&
+      item.progress.instructorName !== trainingInstructorFilter
+    ) {
+      return false;
+    }
+    if (trainingReadinessFilter === 'prontos' && !(item.pct >= 100 && !item.progress.finalAuthorizedApproval)) return false;
+    if (trainingReadinessFilter === 'aprovados' && !item.progress.finalAuthorizedApproval) return false;
+    if (trainingReadinessFilter === 'em_curso' && (item.pct >= 100 || item.progress.finalAuthorizedApproval)) return false;
+    if (trainingReadinessFilter === 'estagnados' && !isTrainingProgressStalled(item.progress)) return false;
+    const q = trainingSearch.trim().toLowerCase();
+    if (q) {
+      const matchesName = item.member.fullName.toLowerCase().includes(q);
+      const matchesNum = String(item.member.manualNumber || '').toLowerCase().includes(q);
+      const matchesTitle = item.progress.targetTitle.toLowerCase().includes(q);
+      if (!matchesName && !matchesNum && !matchesTitle) return false;
+    }
     return true;
   });
+
+  const inspectedItem = useMemo(() => {
+    if (!inspectedProgressId) return null;
+    return candidatesReadyForInvestiture.find((c) => c.progress.id === inspectedProgressId) || null;
+  }, [inspectedProgressId, candidatesReadyForInvestiture]);
+
+  const openBatchEnrollModal = (preset?: {
+    type?: 'classe' | 'especialidade';
+    targetId?: string;
+    scope?: 'unit' | 'category' | 'sem_formacao' | 'manual';
+    memberIds?: string[];
+  }) => {
+    const nextType = preset?.type || (state.classes.length > 0 ? 'classe' : 'especialidade');
+    const defaultTarget =
+      preset?.targetId ||
+      (nextType === 'classe' ? state.classes[0]?.id || '' : state.specialties[0]?.id || '');
+    const defaultInstructor =
+      trainingInstructors.find((u) => u.role === 'instrutor')?.id ||
+      trainingInstructors[0]?.id ||
+      currentUser.id;
+    setBatchEnrollForm({
+      type: nextType,
+      targetId: defaultTarget,
+      scope: preset?.scope || (membersWithoutTraining.length > 0 ? 'sem_formacao' : 'unit'),
+      unitName: state.settings.units[0]?.name || '',
+      category: 'embaixador',
+      selectedMemberIds: preset?.memberIds || [],
+      instructorUserId: defaultInstructor,
+    });
+    setBatchEnrollModalOpen(true);
+  };
+
+  const batchEnrollTargetMembers = useMemo(() => {
+    if (batchEnrollForm.scope === 'unit') {
+      return activeMembers.filter((m) => m.unitOrTeam === batchEnrollForm.unitName);
+    }
+    if (batchEnrollForm.scope === 'category') {
+      return activeMembers.filter((m) => m.category === batchEnrollForm.category);
+    }
+    if (batchEnrollForm.scope === 'sem_formacao') {
+      return membersWithoutTraining;
+    }
+    const idSet = new Set(batchEnrollForm.selectedMemberIds);
+    return activeMembers.filter((m) => idSet.has(m.id));
+  }, [batchEnrollForm, activeMembers, membersWithoutTraining]);
+
+  const handleBatchEnrollSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!batchEnrollForm.targetId) {
+      showFeedback('error', 'Selecione um Módulo ou Medalha do catálogo.');
+      return;
+    }
+
+    let targetTitle = '';
+    let totalReqs = 6;
+    if (batchEnrollForm.type === 'classe') {
+      const cls = state.classes.find((c) => c.id === batchEnrollForm.targetId);
+      if (!cls) {
+        showFeedback('error', 'Módulo selecionado não encontrado.');
+        return;
+      }
+      targetTitle = cls.title;
+      totalReqs = cls.requirements?.length || cls.requirementsCount || 8;
+    } else {
+      const esp = state.specialties.find((s) => s.id === batchEnrollForm.targetId);
+      if (!esp) {
+        showFeedback('error', 'Medalha selecionada não encontrada.');
+        return;
+      }
+      targetTitle = esp.title;
+      totalReqs = esp.requirements?.length || esp.requirementsCount || 6;
+    }
+
+    const chosenInstr = state.users.find((u) => u.id === batchEnrollForm.instructorUserId);
+    const res = batchEnrollTrainingProgress({
+      memberIds: batchEnrollTargetMembers.map((m) => m.id),
+      type: batchEnrollForm.type,
+      targetId: batchEnrollForm.targetId,
+      targetTitle,
+      totalRequirements: totalReqs,
+      instructorUserId: chosenInstr?.id || currentUser.id,
+      instructorName: chosenInstr?.name || currentUser.name,
+    });
+
+    if (res.success) {
+      setBatchEnrollModalOpen(false);
+      showFeedback(
+        'success',
+        `Inscrição em lote concluída para "${targetTitle}": ${res.createdCount} membro(s) inscrito(s)${
+          res.skippedCount ? ` (${res.skippedCount} já matriculado(s))` : ''
+        }.`
+      );
+    } else {
+      showFeedback('error', res.error || 'Não foi possível concluir a inscrição em lote.');
+    }
+  };
+
+  const handleExportTrainingReadinessCsv = () => {
+    if (!canExportTraining) {
+      showFeedback('error', 'Sem permissão na grelha para exportar mapas de Módulos e Medalhas.');
+      return;
+    }
+    let csv = '\uFEFFNumero;Membro;Categoria;Equipa;Tipo;Modulo_ou_Medalha;Instrutor;Concluidos;Total;Progresso_%;Dias_Sem_Atualizacao;Situacao\n';
+    filteredTraining.forEach(({ progress, member, pct }) => {
+      const tipoLabel = progress.type === 'classe' ? 'Módulo' : 'Medalha';
+      const sit = progress.finalAuthorizedApproval
+        ? 'Investidura Aprovada'
+        : pct >= 100
+        ? 'Pronto p/ Validação'
+        : isTrainingProgressStalled(progress)
+        ? 'Estagnado'
+        : 'Em Formação';
+      const dias = getTrainingStagnationDays(progress);
+      csv += `"${member.manualNumber}";"${member.fullName}";"${CATEGORY_LABELS[member.category]}";"${getMemberTeamLabel(member, state.users)}";"${tipoLabel}";"${progress.targetTitle}";"${progress.instructorName}";${progress.completedRequirements.length};${progress.totalRequirements};${pct};${dias};"${sit}"\n`;
+    });
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Supervisao_Modulos_Medalhas_${state.settings.currentYear}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showFeedback('success', 'Mapa de prontidão e progresso de Módulos e Medalhas exportado em CSV.');
+  };
+
+  const handleToggleInspectedRequirement = (progress: MemberTrainingProgress, reqNumber: number) => {
+    if (!canEditTraining) {
+      showFeedback('error', 'Sem permissão na grelha para atualizar requisitos de formação.');
+      return;
+    }
+    const exists = progress.completedRequirements.includes(reqNumber);
+    const nextReqs = exists
+      ? progress.completedRequirements.filter((n) => n !== reqNumber)
+      : [...progress.completedRequirements, reqNumber].sort((a, b) => a - b);
+    const res = updateTrainingProgress(progress.id, nextReqs, inspectionNotes.trim() || undefined);
+    if (!res.success) {
+      showFeedback('error', res.error || 'Erro ao atualizar requisito.');
+    }
+  };
 
   const filteredDirectives = directives.filter((d) =>
     directiveStatusFilter === 'todas' ? true : d.status === directiveStatusFilter
@@ -659,7 +817,6 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
   const tabs: { id: AssociateTab; label: string; count?: number }[] = [
     { id: 'visao', label: 'Visão Executiva' },
     { id: 'equipas', label: 'Equipas & Alocação', count: state.settings.units.length },
-    { id: 'operacoes', label: 'Operações & Tarefas', count: allTasks.filter((t) => t.status !== 'concluido').length },
     { id: 'formacao', label: 'Supervisão Formativa', count: pendingInvestituresCount },
     { id: 'supervisao', label: 'Diretivas & Avaliações', count: openDirectivesCount },
   ];
@@ -683,7 +840,7 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
             </h1>
           </div>
           <p className="text-xs sm:text-sm text-slate-600 mt-1 max-w-3xl leading-relaxed">
-            Supervisão administrativa integrada de equipas, coordenação de tarefas de atividades, prontidão formativa e diretivas operacionais, com total separação da tesouraria e das listas nominais de presença.
+            Supervisão especializada de Módulos e Medalhas, coordenação de instrutores e equipas, sessões de estudo e prontidão de investidura, com total separação da tesouraria e das listas nominais de presença.
           </p>
         </div>
 
@@ -814,27 +971,29 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
 
             <div className="bg-white p-5 rounded-xl border border-slate-200">
               <div className="flex items-center justify-between text-slate-500">
-                <span className="text-xs font-semibold text-slate-600">Índice Médio Formativo</span>
+                <span className="text-xs font-semibold text-slate-600">Módulos e Medalhas</span>
                 <GraduationCap className="w-4 h-4 text-blue-900 shrink-0" />
               </div>
               <div className="text-2xl font-bold text-slate-900 tabular-nums mt-2">{globalAvgTrainingPct}%</div>
-              <div className="text-xs text-slate-500 mt-1.5 flex items-center gap-1.5 tabular-nums">
-                <span>{state.trainingProgress.length} planos ativos</span>
+              <div className="text-xs text-slate-500 mt-1.5 flex items-center gap-1.5 tabular-nums flex-wrap">
+                <span>{state.trainingProgress.length} planos</span>
                 <span aria-hidden="true">·</span>
-                <span>{pendingInvestituresCount} prontos p/ validação</span>
+                <span>{pendingInvestituresCount} prontos</span>
+                <span aria-hidden="true">·</span>
+                <span>{membersWithoutTraining.length} sem formação</span>
               </div>
             </div>
 
             <div className="bg-white p-5 rounded-xl border border-slate-200">
               <div className="flex items-center justify-between text-slate-500">
-                <span className="text-xs font-semibold text-slate-600">Execução de Tarefas</span>
+                <span className="text-xs font-semibold text-slate-600">Sessões de Estudo</span>
                 <ClipboardCheck className="w-4 h-4 text-emerald-700 shrink-0" />
               </div>
-              <div className="text-2xl font-bold text-slate-900 tabular-nums mt-2">{taskCompletionPct}%</div>
-              <div className="text-xs text-slate-500 mt-1.5 flex items-center gap-1.5 tabular-nums">
-                <span>{completedTasksCount}/{allTasks.length} concluídas</span>
+              <div className="text-2xl font-bold text-slate-900 tabular-nums mt-2">{studySessions.upcoming.length}</div>
+              <div className="text-xs text-slate-500 mt-1.5 flex items-center gap-1.5 tabular-nums flex-wrap">
+                <span>Módulos e Medalhas</span>
                 <span aria-hidden="true">·</span>
-                <span>{urgentPendingTasksCount} prioritárias</span>
+                <span>{studySessions.completed.length} realizadas</span>
               </div>
             </div>
 
@@ -896,34 +1055,47 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
 
                 <div className="p-4 flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-xs font-semibold text-slate-900">Reuniões da comissão sem ata</p>
+                    <p className="text-xs font-semibold text-slate-900">Membros sem Módulo ou Medalha</p>
                     <p className="text-xs text-slate-500 tabular-nums mt-0.5">
-                      {activitiesWithoutMinute.length} reunião(ões) da comissão em falta de ata
+                      {membersWithoutTraining.length} membro(s) ativo(s) ainda sem plano formativo
                     </p>
                   </div>
-                  <button
-                    onClick={() => setActiveTab('operacoes')}
-                    className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    Ver Atividades
-                  </button>
+                  {canCreateTraining ? (
+                    <button
+                      onClick={() => openBatchEnrollModal({ scope: 'sem_formacao' })}
+                      className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Inscrever em Lote
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setTrainingSubView('instrutores');
+                        setActiveTab('formacao');
+                      }}
+                      className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Consultar
+                    </button>
+                  )}
                 </div>
 
                 <div className="p-4 flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-xs font-semibold text-slate-900">Candidatos prontos p/ investidura</p>
+                    <p className="text-xs font-semibold text-slate-900">Formações estagnadas (+{TRAINING_STALLED_DAYS_THRESHOLD} dias)</p>
                     <p className="text-xs text-slate-500 tabular-nums mt-0.5">
-                      {pendingInvestituresCount} plano(s) com 100% dos requisitos cumpridos
+                      {stalledTrainingCount} plano(s) sem avanço recente de requisitos
                     </p>
                   </div>
                   <button
                     onClick={() => {
-                      setTrainingReadinessFilter('prontos');
+                      setTrainingSubView('acompanhamento');
+                      setTrainingReadinessFilter('estagnados');
                       setActiveTab('formacao');
                     }}
                     className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
                   >
-                    Supervisionar
+                    Ver Atrasos
                   </button>
                 </div>
               </div>
@@ -1380,283 +1552,554 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
       )}
 
       {/* ===================================================================== */}
-      {/* TAB 3: OPERAÇÕES DE ATIVIDADES & GESTÃO DE TAREFAS                    */}
-      {/* (Estritamente sem sub-aba ou listagem nominal de presenças)           */}
-      {/* ===================================================================== */}
-      {activeTab === 'operacoes' && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            {/* Supervisão de Fases & Atas de Atividades */}
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col">
-              <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-bold text-slate-900">Monitorização de Atividades & Reuniões</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">Controlo de etapas e conformidade de atas (sem chamada nominal)</p>
-                </div>
-                <select
-                  value={activityStageFilter}
-                  onChange={(e) => setActivityStageFilter(e.target.value as 'todas' | ActivityStage)}
-                  className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
-                >
-                  <option value="todas">Todas as fases</option>
-                  {Object.entries(STAGE_LABELS).map(([key, label]) => (
-                    <option key={key} value={key}>{label}</option>
-                  ))}
-                </select>
-              </div>
-
-              {filteredActivities.length === 0 ? (
-                <div className="p-8 text-center text-xs text-slate-500">
-                  Nenhuma atividade corresponde ao filtro selecionado.
-                </div>
-              ) : (
-                <div className="divide-y divide-slate-100">
-                  {filteredActivities.map((act) => {
-                    const totalT = act.tasks?.length || 0;
-                    const doneT = act.tasks?.filter((t) => t.status === 'concluido').length || 0;
-                    const pctT = totalT > 0 ? Math.round((doneT / totalT) * 100) : 0;
-
-                    return (
-                      <div key={act.id} className="p-4 space-y-2.5 hover:bg-slate-50/70">
-                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <h3 className="text-xs font-bold text-slate-900 truncate">{act.title}</h3>
-                            <p className="text-[11px] text-slate-500 mt-0.5">
-                              {ACTIVITY_TYPE_LABELS[act.type]} · {formatDateAO(act.startDate)} · {act.location}
-                            </p>
-                          </div>
-
-                          <div className="flex items-center gap-2 shrink-0">
-                            {canActivityHaveMinute(act.type) ? (
-                              <span className={`text-[11px] font-semibold ${act.minute ? 'text-emerald-700' : 'text-amber-700'}`}>
-                                {act.minute ? 'Ata OK' : 'Sem Ata'}
-                              </span>
-                            ) : (
-                              <span className="text-[11px] text-slate-400">
-                                Sem ata aplicável
-                              </span>
-                            )}
-                            {(canEdit || can('activities', 'EDIT')) ? (
-                              <select
-                                value={act.stage}
-                                onChange={(e) => {
-                                  const res = updateActivityStage(act.id, e.target.value as ActivityStage);
-                                  if (res.success) showFeedback('success', `Fase da atividade "${act.title}" atualizada.`);
-                                  else showFeedback('error', res.error || 'Erro ao atualizar fase.');
-                                }}
-                                className="px-2 py-1 text-[11px] font-semibold border border-slate-200 rounded bg-white text-slate-800"
-                              >
-                                {Object.entries(STAGE_LABELS).map(([k, v]) => (
-                                  <option key={k} value={k}>{v}</option>
-                                ))}
-                              </select>
-                            ) : (
-                              <span className="text-[11px] font-semibold text-slate-700">
-                                {STAGE_LABELS[act.stage]}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-3">
-                          <div className="flex-1 bg-slate-200 h-1.5 rounded-full overflow-hidden">
-                            <div className="bg-blue-900 h-full rounded-full" style={{ width: `${pctT}%` }} />
-                          </div>
-                          <span className="text-[11px] font-mono tabular-nums text-slate-600 shrink-0">
-                            {doneT}/{totalT} tarefas ({pctT}%)
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {/* Matriz Unificada de Tarefas Operacionais */}
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col">
-              <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-bold text-slate-900">Painel Unificado de Tarefas</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">Delegação e acompanhamento operacional por responsável</p>
-                </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <select
-                    value={taskStatusFilter}
-                    onChange={(e) => setTaskStatusFilter(e.target.value as any)}
-                    className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
-                  >
-                    <option value="todas">Todos estados</option>
-                    <option value="pendente">Pendentes</option>
-                    <option value="em_progresso">Em Progresso</option>
-                    <option value="concluido">Concluídas</option>
-                  </select>
-                  {(canEdit || can('activities', 'EDIT')) && state.activities.length > 0 && (
-                    <button
-                      onClick={() => {
-                        setTaskForm((prev) => ({
-                          ...prev,
-                          activityId: prev.activityId || state.activities[0]?.id || '',
-                        }));
-                        setTaskModalOpen(true);
-                      }}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Atribuir Tarefa</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {filteredTasks.length === 0 ? (
-                <div className="p-8 text-center text-xs text-slate-500">
-                  Nenhuma tarefa registada para os critérios atuais.
-                </div>
-              ) : (
-                <div className="divide-y divide-slate-100">
-                  {filteredTasks.map((task) => (
-                    <div key={`${task.activityId}-${task.id}`} className="p-4 flex items-center justify-between gap-3 hover:bg-slate-50/70">
-                      <div className="min-w-0">
-                        <p className={`text-xs font-semibold truncate ${task.status === 'concluido' ? 'line-through text-slate-400' : 'text-slate-900'}`}>
-                          {task.title}
-                        </p>
-                        <p className="text-[11px] text-slate-500 mt-0.5 truncate">
-                          {task.activityTitle} · Resp.: {task.assigneeName} · Prazo: {formatDateAO(task.dueDate)} · Prioridade: {task.priority}
-                        </p>
-                      </div>
-
-                      {(canEdit || can('activities', 'EDIT')) ? (
-                        <select
-                          value={task.status}
-                          onChange={(e) => {
-                            updateTaskStatus(
-                              task.activityId,
-                              task.id,
-                              e.target.value as 'pendente' | 'em_progresso' | 'concluido'
-                            );
-                            showFeedback('success', `Estado da tarefa "${task.title}" atualizado.`);
-                          }}
-                          className="px-2.5 py-1 text-[11px] font-semibold border border-slate-200 rounded-lg bg-white text-slate-800 shrink-0"
-                        >
-                          <option value="pendente">Pendente</option>
-                          <option value="em_progresso">Em Progresso</option>
-                          <option value="concluido">Concluído</option>
-                        </select>
-                      ) : (
-                        <span className="text-[11px] font-semibold text-slate-600 shrink-0">
-                          {formatTaskStatusLabel(task.status)}
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===================================================================== */}
-      {/* TAB 4: SUPERVISÃO FORMATIVA & PRONTIDÃO DE INVESTIDURA                */}
+      {/* TAB 3: SUPERVISÃO ESPECIALIZADA DE MÓDULOS E MEDALHAS                 */}
       {/* ===================================================================== */}
       {activeTab === 'formacao' && (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-bold text-slate-900">
-                Supervisão Formativa & Prontidão de Investidura ({filteredTraining.length})
-              </h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Acompanhamento de requisitos cumpridos por membro e por equipa para coordenação com instrutores e direção
-              </p>
+        <div className="space-y-6">
+          {/* Resumo + Sub-navegação + Ações do Centro de Módulos e Medalhas */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg w-fit">
+              <button
+                onClick={() => setTrainingSubView('acompanhamento')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                  trainingSubView === 'acompanhamento'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Acompanhamento & Validação ({filteredTraining.length})
+              </button>
+              <button
+                onClick={() => setTrainingSubView('catalogo')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                  trainingSubView === 'catalogo'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Painel por Módulo & Medalha ({catalogSummaries.length})
+              </button>
+              <button
+                onClick={() => setTrainingSubView('instrutores')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                  trainingSubView === 'instrutores'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Instrutores & Sem Formação ({membersWithoutTraining.length})
+              </button>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={trainingTeamFilter}
-                onChange={(e) => setTrainingTeamFilter(e.target.value)}
-                className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
-              >
-                <option value="todas">Todas as equipas</option>
-                {state.settings.units.map((u) => (
-                  <option key={u.id} value={u.name}>{u.name}</option>
-                ))}
-              </select>
+              <div className="text-xs text-slate-600 tabular-nums mr-2 flex items-center gap-2">
+                <span>{pendingInvestituresCount} prontos p/ validar</span>
+                <span aria-hidden="true">·</span>
+                <span>{approvedInvestituresCount} homologados</span>
+                <span aria-hidden="true">·</span>
+                <span>{stalledTrainingCount} estagnados</span>
+              </div>
 
-              <select
-                value={trainingTypeFilter}
-                onChange={(e) => setTrainingTypeFilter(e.target.value as any)}
-                className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
-              >
-                <option value="todos">Módulos & Medalhas</option>
-                <option value="classe">Apenas Módulos</option>
-                <option value="especialidade">Apenas Medalhas</option>
-              </select>
+              {canExportTraining && (
+                <button
+                  onClick={handleExportTrainingReadinessCsv}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Exportar Mapa CSV</span>
+                </button>
+              )}
 
-              <select
-                value={trainingReadinessFilter}
-                onChange={(e) => setTrainingReadinessFilter(e.target.value as any)}
-                className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
-              >
-                <option value="todos">Todos os estágios</option>
-                <option value="prontos">Prontos p/ Investidura (100%)</option>
-                <option value="em_curso">Em Progresso (&lt; 100%)</option>
-              </select>
+              {canCreateTraining && (
+                <button
+                  onClick={() => openBatchEnrollModal()}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg cursor-pointer"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Inscrever em Lote</span>
+                </button>
+              )}
             </div>
           </div>
 
-          {filteredTraining.length === 0 ? (
-            <div className="p-10 text-center text-xs text-slate-500">
-              Nenhum registo formativo encontrado com os filtros selecionados.
+          {/* SUB-VISTA 1: ACOMPANHAMENTO INDIVIDUAL, REQUISITOS & HOMOLOGAÇÃO */}
+          {trainingSubView === 'acompanhamento' && (
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-200 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-900">
+                      Supervisão de Módulos, Medalhas & Homologação de Investidura ({filteredTraining.length})
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Inspeção de requisitos, atribuição de instrutor e validação final de investidura pelo Diretor-associado
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={trainingSearch}
+                      onChange={(e) => setTrainingSearch(e.target.value)}
+                      placeholder="Pesquisar membro, Nº ou título..."
+                      className="pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-900/20"
+                    />
+                  </div>
+
+                  <select
+                    value={trainingTeamFilter}
+                    onChange={(e) => setTrainingTeamFilter(e.target.value)}
+                    className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
+                  >
+                    <option value="todas">Todas as equipas</option>
+                    {state.settings.units.map((u) => (
+                      <option key={u.id} value={u.name}>{u.name}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={trainingTypeFilter}
+                    onChange={(e) => {
+                      setTrainingTypeFilter(e.target.value as any);
+                      setTrainingTargetFilter('todos');
+                    }}
+                    className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
+                  >
+                    <option value="todos">Módulos & Medalhas</option>
+                    <option value="classe">Apenas Módulos</option>
+                    <option value="especialidade">Apenas Medalhas</option>
+                  </select>
+
+                  <select
+                    value={trainingTargetFilter}
+                    onChange={(e) => setTrainingTargetFilter(e.target.value)}
+                    className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-700 max-w-[220px]"
+                  >
+                    <option value="todos">Todos Módulos / Medalhas</option>
+                    {catalogSummaries
+                      .filter((c) => trainingTypeFilter === 'todos' || c.type === trainingTypeFilter)
+                      .map((c) => (
+                        <option key={`${c.type}::${c.id}`} value={`${c.type}::${c.id}`}>
+                          {c.type === 'classe' ? 'Módulo' : 'Medalha'}: {c.title}
+                        </option>
+                      ))}
+                  </select>
+
+                  <select
+                    value={trainingInstructorFilter}
+                    onChange={(e) => setTrainingInstructorFilter(e.target.value)}
+                    className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
+                  >
+                    <option value="todos">Todos os instrutores</option>
+                    {instructorWorkloads.map((ins) => (
+                      <option key={ins.instructorUserId} value={ins.instructorUserId}>
+                        {ins.instructorName}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={trainingReadinessFilter}
+                    onChange={(e) => setTrainingReadinessFilter(e.target.value as any)}
+                    className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
+                  >
+                    <option value="todos">Todos os estágios</option>
+                    <option value="prontos">Prontos p/ Validação (100%)</option>
+                    <option value="aprovados">Investidura Aprovada</option>
+                    <option value="em_curso">Em Formação (&lt; 100%)</option>
+                    <option value="estagnados">Estagnados (+{TRAINING_STALLED_DAYS_THRESHOLD} dias)</option>
+                  </select>
+                </div>
+              </div>
+
+              {filteredTraining.length === 0 ? (
+                <div className="p-10 text-center text-xs text-slate-500">
+                  Nenhum registo formativo encontrado com os filtros selecionados.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                        <th className="py-3 px-4">Membro</th>
+                        <th className="py-3 px-3">Equipa</th>
+                        <th className="py-3 px-3">Módulo / Medalha</th>
+                        <th className="py-3 px-3">Instrutor Responsável</th>
+                        <th className="py-3 px-3 text-right">Requisitos</th>
+                        <th className="py-3 px-3 text-right">Situação</th>
+                        <th className="py-3 px-4 text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredTraining.map(({ progress, member, pct }) => {
+                        const stalledDays = getTrainingStagnationDays(progress);
+                        const isStalled = stalledDays >= TRAINING_STALLED_DAYS_THRESHOLD;
+                        return (
+                          <tr key={progress.id} className="hover:bg-slate-50">
+                            <td className="py-3 px-4">
+                              <div className="font-semibold text-slate-900">{member.fullName}</div>
+                              <div className="text-[11px] font-mono tabular-nums text-slate-500">
+                                Nº {member.manualNumber} · {CATEGORY_LABELS[member.category]}
+                              </div>
+                            </td>
+                            <td className="py-3 px-3 text-slate-700">
+                              {getMemberTeamLabel(member, state.users)}
+                            </td>
+                            <td className="py-3 px-3">
+                              <div className="font-semibold text-slate-900">{progress.targetTitle}</div>
+                              <div className="text-[11px] text-slate-500">
+                                {progress.type === 'classe' ? 'Módulo' : 'Medalha'}
+                              </div>
+                            </td>
+                            <td className="py-3 px-3">
+                              {canEditTraining && trainingInstructors.length > 0 ? (
+                                <select
+                                  value={
+                                    trainingInstructors.some((u) => u.id === progress.instructorUserId)
+                                      ? progress.instructorUserId
+                                      : ''
+                                  }
+                                  onChange={(e) => {
+                                    const chosen = trainingInstructors.find((u) => u.id === e.target.value);
+                                    if (!chosen) return;
+                                    const res = assignTrainingInstructor(progress.id, chosen.id, chosen.name);
+                                    if (res.success) {
+                                      showFeedback('success', `Instrutor de "${progress.targetTitle}" atualizado para ${chosen.name}.`);
+                                    } else {
+                                      showFeedback('error', res.error || 'Erro ao atribuir instrutor.');
+                                    }
+                                  }}
+                                  aria-label={`Instrutor de ${member.fullName}`}
+                                  className="px-2 py-1 text-[11px] border border-slate-200 rounded bg-white text-slate-700 max-w-[170px]"
+                                >
+                                  {!trainingInstructors.some((u) => u.id === progress.instructorUserId) && (
+                                    <option value="">{progress.instructorName || 'Selecionar...'}</option>
+                                  )}
+                                  {trainingInstructors.map((u) => (
+                                    <option key={u.id} value={u.id}>
+                                      {u.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <span className="text-slate-600">{progress.instructorName}</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-slate-800">
+                              <div>{progress.completedRequirements.length}/{progress.totalRequirements} ({pct}%)</div>
+                              {isStalled && (
+                                <div className="text-[10px] font-sans font-semibold text-amber-700">
+                                  Parado há {stalledDays}d
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-3 px-3 text-right">
+                              {progress.finalAuthorizedApproval ? (
+                                <span className="text-xs font-semibold text-emerald-700">Investidura Aprovada</span>
+                              ) : pct >= 100 ? (
+                                <span className="text-xs font-semibold text-amber-700">Pronto p/ Validação</span>
+                              ) : (
+                                <span className="text-xs text-slate-500">Em Formação</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <div className="inline-flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setInspectionNotes(progress.observations || '');
+                                    setInspectedProgressId(progress.id);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md cursor-pointer"
+                                >
+                                  <ListChecks className="w-3 h-3" />
+                                  <span>Requisitos</span>
+                                </button>
+                                {canApproveInvestiture && !progress.finalAuthorizedApproval && pct >= 100 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const res = approveFinalTraining(progress.id);
+                                      if (res.success) {
+                                        showFeedback('success', `Investidura homologada para ${member.fullName} (${progress.targetTitle}).`);
+                                      } else {
+                                        showFeedback('error', res.error || 'Erro ao homologar investidura.');
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-md cursor-pointer"
+                                  >
+                                    <ShieldCheck className="w-3 h-3" />
+                                    <span>Homologar</span>
+                                  </button>
+                                )}
+                                {canApproveInvestiture && progress.finalAuthorizedApproval && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const res = revokeTrainingApproval(progress.id);
+                                      if (res.success) {
+                                        showFeedback('success', `Homologação reaberta para ${member.fullName} (${progress.targetTitle}).`);
+                                      } else {
+                                        showFeedback('error', res.error || 'Erro ao reabrir homologação.');
+                                      }
+                                    }}
+                                    className="text-[11px] font-semibold text-slate-500 hover:text-rose-700 underline cursor-pointer px-1"
+                                  >
+                                    Reabrir
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
-                    <th className="py-3 px-4">Membro</th>
-                    <th className="py-3 px-3">Equipa</th>
-                    <th className="py-3 px-3">Módulo / Medalha</th>
-                    <th className="py-3 px-3">Instrutor</th>
-                    <th className="py-3 px-3 text-right">Requisitos</th>
-                    <th className="py-3 px-4 text-right">Situação</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredTraining.map(({ progress, member, pct }) => (
-                    <tr key={progress.id} className="hover:bg-slate-50">
-                      <td className="py-3 px-4">
-                        <div className="font-semibold text-slate-900">{member.fullName}</div>
-                        <div className="text-[11px] font-mono tabular-nums text-slate-500">
-                          Nº {member.manualNumber} · {CATEGORY_LABELS[member.category]}
+          )}
+
+          {/* SUB-VISTA 2: COBERTURA E GARGALOS POR MÓDULO & MEDALHA */}
+          {trainingSubView === 'catalogo' && (
+            <div className="space-y-6">
+              {(['classe', 'especialidade'] as const).map((groupType) => {
+                const items = catalogSummaries.filter((c) => c.type === groupType);
+                const heading = groupType === 'classe' ? 'Módulos Oficiais' : 'Medalhas / Especialidades';
+                return (
+                  <div key={groupType} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                    <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+                      <div>
+                        <h2 className="text-sm font-bold text-slate-900">
+                          {heading} ({items.length})
+                        </h2>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Cobertura de inscritos, progresso médio, pendências de validação e atrasos no catálogo
+                        </p>
+                      </div>
+                    </div>
+
+                    {items.length === 0 ? (
+                      <div className="p-8 text-center text-xs text-slate-500">
+                        Nenhum item ativo nesta categoria do catálogo.
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                              <th className="py-2.5 px-4">Título</th>
+                              <th className="py-2.5 px-3 text-right">Requisitos</th>
+                              <th className="py-2.5 px-3 text-right">Inscritos</th>
+                              <th className="py-2.5 px-3 text-right">Média %</th>
+                              <th className="py-2.5 px-3 text-right">Estagnados</th>
+                              <th className="py-2.5 px-3 text-right">Prontos</th>
+                              <th className="py-2.5 px-3 text-right">Aprovados</th>
+                              <th className="py-2.5 px-4 text-right">Ações</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {items.map((item) => (
+                              <tr key={item.id} className="hover:bg-slate-50">
+                                <td className="py-3 px-4">
+                                  <div className="font-semibold text-slate-900">{item.title}</div>
+                                  <div className="text-[11px] text-slate-500">
+                                    {item.instructorNames.length > 0
+                                      ? `Instrutores: ${item.instructorNames.join(', ')}`
+                                      : 'Sem instrutor atribuído ainda'}
+                                  </div>
+                                </td>
+                                <td className="py-3 px-3 text-right font-mono tabular-nums text-slate-600">
+                                  {item.requirementsCount}
+                                </td>
+                                <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-slate-900">
+                                  {item.enrolledCount}
+                                </td>
+                                <td className="py-3 px-3 text-right font-mono tabular-nums text-slate-700">
+                                  {item.avgPct}%
+                                </td>
+                                <td className="py-3 px-3 text-right font-mono tabular-nums">
+                                  <span className={item.stalledCount > 0 ? 'font-bold text-amber-700' : 'text-slate-500'}>
+                                    {item.stalledCount}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-3 text-right font-mono tabular-nums">
+                                  <span className={item.readyForValidationCount > 0 ? 'font-bold text-blue-900' : 'text-slate-500'}>
+                                    {item.readyForValidationCount}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-emerald-700">
+                                  {item.approvedCount}
+                                </td>
+                                <td className="py-3 px-4 text-right">
+                                  <div className="inline-flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setTrainingTypeFilter(item.type);
+                                        setTrainingTargetFilter(`${item.type}::${item.id}`);
+                                        setTrainingReadinessFilter('todos');
+                                        setTrainingSubView('acompanhamento');
+                                      }}
+                                      className="px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md cursor-pointer"
+                                    >
+                                      Ver Inscritos
+                                    </button>
+                                    {canCreateTraining && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          openBatchEnrollModal({
+                                            type: item.type,
+                                            targetId: item.id,
+                                            scope: 'unit',
+                                          })
+                                        }
+                                        className="px-2.5 py-1 text-[11px] font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 rounded-md cursor-pointer"
+                                      >
+                                        Inscrever Equipa
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* SUB-VISTA 3: COORDENAÇÃO DE INSTRUTORES & MEMBROS SEM FORMAÇÃO */}
+          {trainingSubView === 'instrutores' && (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+              {/* Carga & Desempenho de Instrutores */}
+              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col">
+                <div className="px-5 py-4 border-b border-slate-200">
+                  <h2 className="text-sm font-bold text-slate-900">
+                    Coordenação de Instrutores ({instructorWorkloads.length})
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Carga de planos por instrutor, prontidão de investidura e estagnações
+                  </p>
+                </div>
+
+                {instructorWorkloads.length === 0 ? (
+                  <div className="p-8 text-center text-xs text-slate-500">
+                    Nenhum instrutor registado ou com planos atribuídos.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {instructorWorkloads.map((ins) => (
+                      <div key={ins.instructorUserId} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <UserCheck className="w-3.5 h-3.5 text-blue-900 shrink-0" />
+                            <h3 className="text-xs font-bold text-slate-900 truncate">{ins.instructorName}</h3>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
+                            {ins.totalAssigned} plano(s) ({ins.modulesCount} módulos · {ins.medalsCount} medalhas) · Média {ins.avgPct}% · {ins.readyForValidationCount} pronto(s) · {ins.stalledCount} estagnado(s)
+                          </p>
                         </div>
-                      </td>
-                      <td className="py-3 px-3 text-slate-700">
-                        {getMemberTeamLabel(member, state.users)}
-                      </td>
-                      <td className="py-3 px-3">
-                        <div className="font-semibold text-slate-900">{progress.targetTitle}</div>
-                        <div className="text-[11px] text-slate-500">{progress.type === 'classe' ? 'Módulo' : 'Medalha'}</div>
-                      </td>
-                      <td className="py-3 px-3 text-slate-600">{progress.instructorName}</td>
-                      <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-slate-800">
-                        {progress.completedRequirements.length}/{progress.totalRequirements} ({pct}%)
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        {progress.finalAuthorizedApproval ? (
-                          <span className="text-xs font-semibold text-emerald-700">Investidura Aprovada</span>
-                        ) : pct >= 100 ? (
-                          <span className="text-xs font-semibold text-amber-700">Pronto p/ Validação</span>
-                        ) : (
-                          <span className="text-xs text-slate-500">Em Formação</span>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTrainingInstructorFilter(ins.instructorUserId);
+                              setTrainingReadinessFilter('todos');
+                              setTrainingSubView('acompanhamento');
+                            }}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md cursor-pointer"
+                          >
+                            Ver Planos
+                          </button>
+                          {canCreate && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDirectiveForm((prev) => ({
+                                  ...prev,
+                                  title: `Acompanhamento de Módulos/Medalhas — ${ins.instructorName}`,
+                                  assignedLeaderName: ins.instructorName,
+                                  description: `Revisão de requisitos pendentes (${ins.stalledCount} estagnado(s)) e preparação de investidura.`,
+                                }));
+                                setDirectiveModalOpen(true);
+                              }}
+                              className="px-2.5 py-1 text-[11px] font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 rounded-md cursor-pointer"
+                            >
+                              Diretiva
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Membros Ativos Sem Nenhum Módulo ou Medalha */}
+              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col">
+                <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-900">
+                      Membros Ativos Sem Formação ({membersWithoutTraining.length})
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Membros ativos que ainda não iniciaram nenhum módulo nem medalha
+                    </p>
+                  </div>
+                  {canCreateTraining && membersWithoutTraining.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => openBatchEnrollModal({ scope: 'sem_formacao' })}
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Inscrever Todos
+                    </button>
+                  )}
+                </div>
+
+                {membersWithoutTraining.length === 0 ? (
+                  <div className="p-8 text-center text-xs text-slate-500">
+                    Todos os membros ativos elegíveis possuem pelo menos um módulo ou medalha atribuído.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100 max-h-[460px] overflow-y-auto">
+                    {membersWithoutTraining.map((mem) => (
+                      <div key={mem.id} className="px-4 py-3 flex items-center justify-between gap-3 hover:bg-slate-50">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-slate-900 truncate">{mem.fullName}</p>
+                          <p className="text-[11px] text-slate-500 tabular-nums">
+                            Nº {mem.manualNumber} · {CATEGORY_LABELS[mem.category]} · {getMemberTeamLabel(mem, state.users)}
+                          </p>
+                        </div>
+                        {canCreateTraining && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openBatchEnrollModal({
+                                scope: 'manual',
+                                memberIds: [mem.id],
+                              })
+                            }
+                            className="px-2.5 py-1 text-[11px] font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 rounded-md whitespace-nowrap shrink-0 cursor-pointer"
+                          >
+                            Inscrever
+                          </button>
                         )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -1954,98 +2397,6 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
               className="px-4 py-2 font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg cursor-pointer"
             >
               {editingUnitId ? 'Guardar Alterações' : 'Criar Equipa'}
-            </button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* Modal Atribuir Tarefa Operacional */}
-      <Modal
-        isOpen={taskModalOpen}
-        onClose={() => setTaskModalOpen(false)}
-        title="Atribuir Nova Tarefa Operacional"
-        description="Adicione uma tarefa diretamente ao plano de trabalho de uma atividade."
-      >
-        <form onSubmit={handleCreateTask} className="space-y-4 text-xs">
-          <div>
-            <label className="block font-semibold text-slate-700 mb-1">Atividade / Reunião *</label>
-            <select
-              value={taskForm.activityId}
-              onChange={(e) => setTaskForm({ ...taskForm, activityId: e.target.value })}
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-            >
-              {state.activities.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.title} ({formatDateAO(a.startDate)})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block font-semibold text-slate-700 mb-1">Descrição da Tarefa *</label>
-            <input
-              type="text"
-              required
-              value={taskForm.title}
-              onChange={(e) => setTaskForm({ ...taskForm, title: e.target.value })}
-              placeholder="Ex.: Preparar material de instrução para a Unidade"
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block font-semibold text-slate-700 mb-1">Responsável *</label>
-              <input
-                type="text"
-                required
-                value={taskForm.assigneeName}
-                onChange={(e) => setTaskForm({ ...taskForm, assigneeName: e.target.value })}
-                placeholder="Nome do responsável"
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-              />
-            </div>
-
-            <div>
-              <label className="block font-semibold text-slate-700 mb-1">Data Limite *</label>
-              <input
-                type="date"
-                required
-                value={taskForm.dueDate}
-                onChange={(e) => setTaskForm({ ...taskForm, dueDate: e.target.value })}
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="block font-semibold text-slate-700 mb-1">Prioridade</label>
-            <select
-              value={taskForm.priority}
-              onChange={(e) => setTaskForm({ ...taskForm, priority: e.target.value as any })}
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-            >
-              <option value="baixa">Baixa</option>
-              <option value="media">Média</option>
-              <option value="alta">Alta</option>
-              <option value="urgente">Urgente</option>
-            </select>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
-            <button
-              type="button"
-              onClick={() => setTaskModalOpen(false)}
-              className="px-4 py-2 font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-2 font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg cursor-pointer"
-            >
-              Registar Tarefa
             </button>
           </div>
         </form>
@@ -2441,8 +2792,8 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
                   <strong className="text-base">{globalAvgTrainingPct}%</strong>
                 </div>
                 <div className="border border-slate-200 rounded p-3">
-                  <span className="text-slate-500 block">Execução Tarefas</span>
-                  <strong className="text-base">{taskCompletionPct}%</strong>
+                  <span className="text-slate-500 block">Sessões de Estudo</span>
+                  <strong className="text-base">{studySessions.upcoming.length}</strong>
                 </div>
                 <div className="border border-slate-200 rounded p-3">
                   <span className="text-slate-500 block">Diretivas Ativas</span>
@@ -2502,6 +2853,30 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
                 </div>
               )}
 
+              <div>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 mb-2">
+                  Resumo de Módulos, Medalhas & Prontidão de Investidura
+                </h3>
+                <div className="grid grid-cols-4 gap-3 text-xs tabular-nums mb-3">
+                  <div className="border border-slate-200 rounded p-2.5">
+                    <span className="text-slate-500 block">Planos Ativos</span>
+                    <strong>{candidatesReadyForInvestiture.length}</strong>
+                  </div>
+                  <div className="border border-slate-200 rounded p-2.5">
+                    <span className="text-slate-500 block">Prontos p/ Validação</span>
+                    <strong>{pendingInvestituresCount}</strong>
+                  </div>
+                  <div className="border border-slate-200 rounded p-2.5">
+                    <span className="text-slate-500 block">Investiduras Aprovadas</span>
+                    <strong>{approvedInvestituresCount}</strong>
+                  </div>
+                  <div className="border border-slate-200 rounded p-2.5">
+                    <span className="text-slate-500 block">Membros Sem Formação</span>
+                    <strong>{membersWithoutTraining.length}</strong>
+                  </div>
+                </div>
+              </div>
+
               <div className="print-signature-section pt-8 grid grid-cols-2 gap-12 text-center text-xs">
                 <div className="border-t border-slate-400 pt-2">
                   <div className="font-semibold">{currentUser.name}</div>
@@ -2521,6 +2896,331 @@ export const AssociateDirectorModule: React.FC<AssociateDirectorModuleProps> = (
           </div>
         </div>
       )}
+
+      {/* Modal Inspeção de Requisitos & Homologação de Módulo / Medalha */}
+      <Modal
+        isOpen={Boolean(inspectedItem)}
+        onClose={() => setInspectedProgressId(null)}
+        title={inspectedItem ? `Requisitos: ${inspectedItem.progress.targetTitle}` : 'Inspeção de Requisitos'}
+        description={
+          inspectedItem
+            ? `${inspectedItem.member.fullName} (Nº ${inspectedItem.member.manualNumber}) · ${
+                inspectedItem.progress.type === 'classe' ? 'Módulo' : 'Medalha'
+              }`
+            : ''
+        }
+        maxWidth="2xl"
+      >
+        {inspectedItem && (() => {
+          const reqList = resolveCatalogRequirementsForProgress(
+            inspectedItem.progress,
+            state.classes,
+            state.specialties
+          );
+          const effectivePct = computeTrainingProgressPct({
+            completedRequirements: inspectedItem.progress.completedRequirements,
+            totalRequirements: reqList.length,
+          });
+          return (
+            <div className="space-y-4 text-xs">
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="space-y-0.5">
+                  <div className="font-semibold text-slate-900">
+                    Progresso: {inspectedItem.progress.completedRequirements.length}/{reqList.length} ({effectivePct}%)
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Instrutor: {inspectedItem.progress.instructorName} · Atualizado em {formatDateAO(inspectedItem.progress.updatedAt)}
+                  </div>
+                </div>
+                <div className="text-right">
+                  {inspectedItem.progress.finalAuthorizedApproval ? (
+                    <span className="text-xs font-bold text-emerald-700">Investidura Homologada</span>
+                  ) : effectivePct >= 100 ? (
+                    <span className="text-xs font-bold text-amber-700">Pronto para Homologação</span>
+                  ) : (
+                    <span className="text-xs font-semibold text-slate-600">Em Formação</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-lg">
+                {reqList.map((reqTitle, index) => {
+                  const reqNumber = index + 1;
+                  const checked = inspectedItem.progress.completedRequirements.includes(reqNumber);
+                  return (
+                    <label
+                      key={reqNumber}
+                      className={`p-3 flex items-start gap-2.5 ${
+                        canEditTraining ? 'cursor-pointer hover:bg-slate-50' : ''
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={!canEditTraining || inspectedItem.progress.finalAuthorizedApproval}
+                        onChange={() => handleToggleInspectedRequirement(inspectedItem.progress, reqNumber)}
+                        className="mt-0.5 rounded text-blue-900"
+                      />
+                      <span className={checked ? 'text-slate-900 font-medium' : 'text-slate-600'}>
+                        <strong className="font-mono tabular-nums mr-1.5">#{reqNumber}</strong>
+                        {reqTitle}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+
+              {canEditTraining && (
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Notas de Supervisão do Diretor-associado (Opcional)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={inspectionNotes}
+                      onChange={(e) => setInspectionNotes(e.target.value)}
+                      placeholder="Observações sobre avaliação prática ou pendências..."
+                      className="flex-1 px-3 py-1.5 border border-slate-200 rounded-lg"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const res = updateTrainingProgress(
+                          inspectedItem.progress.id,
+                          inspectedItem.progress.completedRequirements,
+                          inspectionNotes.trim()
+                        );
+                        if (res.success) {
+                          showFeedback('success', 'Observações formativas guardadas.');
+                        } else {
+                          showFeedback('error', res.error || 'Erro ao guardar observações.');
+                        }
+                      }}
+                      className="px-3 py-1.5 font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                    >
+                      Guardar Nota
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setInspectedProgressId(null)}
+                  className="px-4 py-2 font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                >
+                  Fechar
+                </button>
+
+                {canApproveInvestiture && (
+                  inspectedItem.progress.finalAuthorizedApproval ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const res = revokeTrainingApproval(inspectedItem.progress.id);
+                        if (res.success) {
+                          showFeedback('success', `Investidura reaberta para reavaliação (${inspectedItem.member.fullName}).`);
+                        } else {
+                          showFeedback('error', res.error || 'Erro ao reabrir investidura.');
+                        }
+                      }}
+                      className="px-4 py-2 font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg cursor-pointer"
+                    >
+                      Reabrir / Revogar Homologação
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const res = approveFinalTraining(inspectedItem.progress.id);
+                        if (res.success) {
+                          showFeedback('success', `Investidura homologada com sucesso para ${inspectedItem.member.fullName}!`);
+                          setInspectedProgressId(null);
+                        } else {
+                          showFeedback('error', res.error || 'Erro ao homologar investidura.');
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg cursor-pointer"
+                    >
+                      <CheckSquare className="w-3.5 h-3.5" />
+                      <span>Homologar Investidura</span>
+                    </button>
+                  )
+                )}
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
+
+      {/* Modal Inscrição em Lote em Módulo ou Medalha */}
+      <Modal
+        isOpen={batchEnrollModalOpen}
+        onClose={() => setBatchEnrollModalOpen(false)}
+        title="Inscrever Membros em Módulo ou Medalha"
+        description="Matricule toda uma equipa, categoria ou membros sem formação com atribuição direta de instrutor."
+        maxWidth="lg"
+      >
+        <form onSubmit={handleBatchEnrollSubmit} className="space-y-4 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Tipo *</label>
+              <select
+                value={batchEnrollForm.type}
+                onChange={(e) => {
+                  const nextType = e.target.value as 'classe' | 'especialidade';
+                  const firstId =
+                    nextType === 'classe' ? state.classes[0]?.id || '' : state.specialties[0]?.id || '';
+                  setBatchEnrollForm((prev) => ({ ...prev, type: nextType, targetId: firstId }));
+                }}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
+              >
+                <option value="classe">Módulo</option>
+                <option value="especialidade">Medalha</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">
+                {batchEnrollForm.type === 'classe' ? 'Selecionar Módulo *' : 'Selecionar Medalha *'}
+              </label>
+              <select
+                value={batchEnrollForm.targetId}
+                onChange={(e) => setBatchEnrollForm((prev) => ({ ...prev, targetId: e.target.value }))}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
+                required
+              >
+                <option value="">Selecione...</option>
+                {(batchEnrollForm.type === 'classe' ? state.classes : state.specialties).map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Grupo Alvo *</label>
+              <select
+                value={batchEnrollForm.scope}
+                onChange={(e) =>
+                  setBatchEnrollForm((prev) => ({
+                    ...prev,
+                    scope: e.target.value as 'unit' | 'category' | 'sem_formacao' | 'manual',
+                  }))
+                }
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
+              >
+                <option value="unit">Por Equipa / Unidade</option>
+                <option value="category">Por Categoria</option>
+                <option value="sem_formacao">Membros Sem Formação ({membersWithoutTraining.length})</option>
+                <option value="manual">Seleção Manual de Membros</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Instrutor Responsável *</label>
+              <select
+                value={batchEnrollForm.instructorUserId}
+                onChange={(e) =>
+                  setBatchEnrollForm((prev) => ({ ...prev, instructorUserId: e.target.value }))
+                }
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
+              >
+                {trainingInstructors.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name} ({ROLE_LABELS[u.role]?.label || u.role})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {batchEnrollForm.scope === 'unit' && (
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Equipa *</label>
+              <select
+                value={batchEnrollForm.unitName}
+                onChange={(e) => setBatchEnrollForm((prev) => ({ ...prev, unitName: e.target.value }))}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
+              >
+                {state.settings.units.map((u) => (
+                  <option key={u.id} value={u.name}>{u.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {batchEnrollForm.scope === 'category' && (
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Categoria *</label>
+              <select
+                value={batchEnrollForm.category}
+                onChange={(e) =>
+                  setBatchEnrollForm((prev) => ({ ...prev, category: e.target.value as MemberCategory }))
+                }
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
+              >
+                <option value="embaixador">Embaixadores</option>
+                <option value="lider">Liderança</option>
+                <option value="aspirante">Aspirantes</option>
+              </select>
+            </div>
+          )}
+
+          {batchEnrollForm.scope === 'manual' && (
+            <div className="max-h-44 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+              {activeMembers.map((m) => {
+                const checked = batchEnrollForm.selectedMemberIds.includes(m.id);
+                return (
+                  <label key={m.id} className="px-3 py-2 flex items-center gap-2 cursor-pointer hover:bg-slate-50">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() =>
+                        setBatchEnrollForm((prev) => ({
+                          ...prev,
+                          selectedMemberIds: checked
+                            ? prev.selectedMemberIds.filter((id) => id !== m.id)
+                            : [...prev.selectedMemberIds, m.id],
+                        }))
+                      }
+                      className="rounded text-blue-900"
+                    />
+                    <span className="font-medium text-slate-900">{m.fullName}</span>
+                    <span className="text-slate-500 ml-auto tabular-nums">Nº {m.manualNumber}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-700 tabular-nums">
+            Serão processados <strong>{batchEnrollTargetMembers.length}</strong> membro(s) elegível(is). Membros já inscritos neste item serão ignorados automaticamente sem duplicação.
+          </div>
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={() => setBatchEnrollModalOpen(false)}
+              className="px-4 py-2 font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={batchEnrollTargetMembers.length === 0 || !batchEnrollForm.targetId}
+              className="px-4 py-2 font-semibold text-white bg-blue-900 hover:bg-blue-800 disabled:opacity-50 rounded-lg cursor-pointer"
+            >
+              Confirmar Inscrição em Lote
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Modal de Confirmação de Remoção Segura */}
       <Modal

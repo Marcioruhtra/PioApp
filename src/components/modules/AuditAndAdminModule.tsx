@@ -1021,6 +1021,8 @@ export const AuditAndAdminModule: React.FC = () => {
                   chaplaincy: 'Capelania Digital',
                   suggestions: 'Sugestões à Direção',
                   messaging: 'Mensagens e Comunicados',
+                  music: 'Música e Louvor',
+                  my_team: 'Minha Equipa & Chat Interno',
                 };
                 const isAssociateExclusive = module === 'associate_director';
                 const canToggleModulePerm = isAssociateExclusive

@@ -9,82 +9,131 @@ import {
 import { hasPermission } from '../services/permissionService';
 
 export const ACTIVITY_TYPE_LABELS: Record<ClubActivity['type'], string> = {
-  reuniao_regular: 'Actividades Normais',
-  acampamento: 'Acampamento / Bivaque',
-  civica: 'Atividade Cívica',
-  formacao: 'Formação e Módulos',
-  social: 'Ação Social',
-  diretoria: 'Reunião da Comissão',
+  actividade_regular: 'Actividade Regular',
+  modulos_medalhas: 'Módulos e Medalhas (para estudo de Módulos e Medalhas)',
+  acampamento: 'Acampamento',
+  actividades_espirituais: 'Actividades Espirituais',
+  actividades_sociais: 'Actividades Sociais',
+  actividades_recreativa: 'Actividades Recreativa',
+  programa_sabado: 'Programa de Sábado',
+  reuniao_comissao: 'Reunião da Comissão',
 };
 
 export const ACTIVITY_STAGE_LABELS: Record<ActivityStage, string> = {
-  planeamento: 'Planeamento',
-  aprovacao: 'Aprovação',
   preparacao: 'Preparação',
   execucao: 'Execução',
-  relatorio: 'Relatório',
-  encerrado: 'Encerrado',
+  realizado: 'Realizado',
 };
 
 export const ACTIVITY_TYPE_COLORS: Record<
   ClubActivity['type'],
   { pill: string; badge: string; border: string }
 > = {
-  reuniao_regular: {
+  actividade_regular: {
     pill: 'bg-blue-100 text-blue-900 border-blue-200 hover:bg-blue-200',
     badge: 'bg-blue-100 text-blue-900 border-blue-200',
     border: 'border-l-blue-700',
+  },
+  modulos_medalhas: {
+    pill: 'bg-indigo-100 text-indigo-900 border-indigo-200 hover:bg-indigo-200',
+    badge: 'bg-indigo-100 text-indigo-900 border-indigo-200',
+    border: 'border-l-indigo-700',
   },
   acampamento: {
     pill: 'bg-emerald-100 text-emerald-900 border-emerald-200 hover:bg-emerald-200',
     badge: 'bg-emerald-100 text-emerald-900 border-emerald-200',
     border: 'border-l-emerald-700',
   },
-  civica: {
+  actividades_espirituais: {
     pill: 'bg-amber-100 text-amber-900 border-amber-200 hover:bg-amber-200',
     badge: 'bg-amber-100 text-amber-900 border-amber-200',
     border: 'border-l-amber-600',
   },
-  formacao: {
-    pill: 'bg-indigo-100 text-indigo-900 border-indigo-200 hover:bg-indigo-200',
-    badge: 'bg-indigo-100 text-indigo-900 border-indigo-200',
-    border: 'border-l-indigo-700',
-  },
-  social: {
+  actividades_sociais: {
     pill: 'bg-cyan-100 text-cyan-900 border-cyan-200 hover:bg-cyan-200',
     badge: 'bg-cyan-100 text-cyan-900 border-cyan-200',
     border: 'border-l-cyan-700',
   },
-  diretoria: {
+  actividades_recreativa: {
+    pill: 'bg-orange-100 text-orange-900 border-orange-200 hover:bg-orange-200',
+    badge: 'bg-orange-100 text-orange-900 border-orange-200',
+    border: 'border-l-orange-600',
+  },
+  programa_sabado: {
+    pill: 'bg-teal-100 text-teal-900 border-teal-200 hover:bg-teal-200',
+    badge: 'bg-teal-100 text-teal-900 border-teal-200',
+    border: 'border-l-teal-700',
+  },
+  reuniao_comissao: {
     pill: 'bg-purple-100 text-purple-900 border-purple-200 hover:bg-purple-200',
     badge: 'bg-purple-100 text-purple-900 border-purple-200',
     border: 'border-l-purple-700',
   },
 };
 
-export function getActivityTypeLabel(type: ClubActivity['type']): string {
-  return ACTIVITY_TYPE_LABELS[type] || String(type).replace('_', ' ');
+export function normalizeActivityType(rawType?: string | null): ClubActivity['type'] {
+  if (!rawType) return 'actividade_regular';
+  if (rawType in ACTIVITY_TYPE_LABELS) {
+    return rawType as ClubActivity['type'];
+  }
+  switch (rawType) {
+    case 'reuniao_regular':
+      return 'actividade_regular';
+    case 'formacao':
+      return 'modulos_medalhas';
+    case 'social':
+      return 'actividades_sociais';
+    case 'civica':
+      return 'actividades_recreativa';
+    case 'diretoria':
+      return 'reuniao_comissao';
+    default:
+      return 'actividade_regular';
+  }
 }
 
-export function getActivityStageLabel(stage: ActivityStage): string {
-  return ACTIVITY_STAGE_LABELS[stage] || stage;
+export function getActivityTypeLabel(type: ClubActivity['type'] | string): string {
+  const normalized = normalizeActivityType(type);
+  return ACTIVITY_TYPE_LABELS[normalized] || String(type).replace('_', ' ');
+}
+
+export function normalizeActivityStage(rawStage?: string | null): ActivityStage {
+  switch (rawStage) {
+    case 'execucao':
+      return 'execucao';
+    case 'realizado':
+    case 'relatorio':
+    case 'encerrado':
+      return 'realizado';
+    case 'preparacao':
+    case 'planeamento':
+    case 'aprovacao':
+    default:
+      return 'preparacao';
+  }
+}
+
+export function getActivityStageLabel(stage: ActivityStage | string): string {
+  const normalized = normalizeActivityStage(stage);
+  return ACTIVITY_STAGE_LABELS[normalized] || stage;
 }
 
 /**
  * Regra institucional: Atas oficiais só podem ser redigidas quando o tipo de atividade
- * for "Reunião da Comissão" (`type === 'diretoria'`).
+ * for "Reunião da Comissão" (`type === 'reuniao_comissao'`).
  */
-export function canActivityHaveMinute(type?: ClubActivity['type'] | null): boolean {
-  return type === 'diretoria';
+export function canActivityHaveMinute(type?: ClubActivity['type'] | string | null): boolean {
+  if (!type) return false;
+  return normalizeActivityType(type) === 'reuniao_comissao';
 }
 
 /**
  * Devolve apenas atividades que exigem ata ("Reunião da Comissão"), já saíram
- * da fase de planeamento e ainda não têm ata redigida.
+ * da fase de preparação e ainda não têm ata redigida.
  */
 export function getActivitiesRequiringMinute(activities: ClubActivity[]): ClubActivity[] {
   return activities.filter(
-    (act) => canActivityHaveMinute(act.type) && act.stage !== 'planeamento' && !act.minute
+    (act) => canActivityHaveMinute(act.type) && normalizeActivityStage(act.stage) !== 'preparacao' && !act.minute
   );
 }
 

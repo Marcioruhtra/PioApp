@@ -68,6 +68,8 @@ import {
   getActivityTimeRangeLabel,
   getActivityTypeLabel,
   getPreviousCommissionMinute,
+  normalizeActivityStage,
+  normalizeActivityType,
   parseDeliberationsToTaskDrafts,
 } from '../../utils/activityUtils';
 
@@ -184,15 +186,15 @@ export const ActivitiesModule: React.FC = () => {
   // Formulário Nova / Edição de Atividade
   const defaultActivityForm = {
     title: '',
-    type: 'reuniao_regular' as ClubActivity['type'],
+    type: 'actividade_regular' as ClubActivity['type'],
     department: state.settings.departments?.[0]?.name || 'Instrução Geral',
-    location: "Sede do Clube de Embaixadores Pioneiros D'Alvorada, Talatona",
+    location: '',
     startDate: new Date().toISOString().split('T')[0],
     endDate: '',
     startTime: '08:30',
     endTime: '12:00',
     description: '',
-    stage: 'planeamento' as ActivityStage,
+    stage: 'preparacao' as ActivityStage,
     requiresDirectorApproval: false,
     visibleInMemberPortal: false,
     costEstimatedInCents: 0,
@@ -340,7 +342,7 @@ export const ActivitiesModule: React.FC = () => {
     setActivityError(null);
     setActivityForm({
       title: act.title,
-      type: act.type,
+      type: normalizeActivityType(act.type),
       department: act.department || 'Instrução Geral',
       location: act.location,
       startDate: startOnly || new Date().toISOString().split('T')[0],
@@ -348,7 +350,7 @@ export const ActivitiesModule: React.FC = () => {
       startTime: extractTime(act.startDate, act.startTime) || '08:30',
       endTime: extractTime(act.endDate, act.endTime) || '12:00',
       description: act.description || '',
-      stage: act.stage,
+      stage: normalizeActivityStage(act.stage),
       requiresDirectorApproval: Boolean(act.requiresDirectorApproval),
       visibleInMemberPortal: Boolean(act.visibleInMemberPortal),
       costEstimatedInCents: act.costEstimatedInCents || 0,
@@ -867,7 +869,7 @@ export const ActivitiesModule: React.FC = () => {
     const endDateOnly = getActivityDateOnly(currentActivity.endDate);
     const startDateOnly = getActivityDateOnly(currentActivity.startDate);
     const hasDistinctEndDate = Boolean(endDateOnly && endDateOnly !== startDateOnly);
-    const typeStyle = ACTIVITY_TYPE_COLORS[currentActivity.type] || ACTIVITY_TYPE_COLORS.reuniao_regular;
+    const typeStyle = ACTIVITY_TYPE_COLORS[currentActivity.type] || ACTIVITY_TYPE_COLORS.actividade_regular;
     const rsvpSummary = formatRsvpSummary(currentActivity.rsvps);
 
     const visibleTasks = currentActivity.tasks.filter((task) => {
@@ -1021,16 +1023,13 @@ export const ActivitiesModule: React.FC = () => {
               <div className="flex items-center gap-2">
                 {can('activities', 'EDIT') && (
                   <select
-                    value={currentActivity.stage}
+                    value={normalizeActivityStage(currentActivity.stage)}
                     onChange={(e) => updateActivityStage(currentActivity.id, e.target.value as ActivityStage)}
                     className="px-2.5 py-1.5 text-xs font-semibold border border-slate-300 rounded-lg bg-white text-slate-800"
                   >
-                    <option value="planeamento">Fase: Planeamento</option>
-                    <option value="aprovacao">Fase: Aprovação</option>
                     <option value="preparacao">Fase: Preparação</option>
                     <option value="execucao">Fase: Execução</option>
-                    <option value="relatorio">Fase: Relatório</option>
-                    <option value="encerrado">Fase: Encerrado</option>
+                    <option value="realizado">Fase: Realizado</option>
                   </select>
                 )}
 
@@ -1062,8 +1061,7 @@ export const ActivitiesModule: React.FC = () => {
 
           {/* Aprovação Formal do Diretor */}
           {(currentActivity.requiresDirectorApproval ||
-            currentActivity.directorDecisionAt ||
-            currentActivity.stage === 'aprovacao') && (
+            currentActivity.directorDecisionAt) && (
             <div
               className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
                 currentActivity.isApprovedByDirector === true
@@ -1739,12 +1737,14 @@ export const ActivitiesModule: React.FC = () => {
                 className="px-2.5 py-1.5 text-xs font-semibold border border-slate-300 rounded-lg bg-white text-slate-800"
               >
                 <option value="todos">Todos os Tipos</option>
-                <option value="reuniao_regular">Actividades Normais</option>
-                <option value="acampamento">Acampamento / Bivaque</option>
-                <option value="civica">Atividade Cívica</option>
-                <option value="formacao">Formação e Módulos</option>
-                <option value="social">Ação Social</option>
-                <option value="diretoria">Reunião da Comissão</option>
+                <option value="actividade_regular">Actividade Regular</option>
+                <option value="modulos_medalhas">Módulos e Medalhas (para estudo de Módulos e Medalhas)</option>
+                <option value="acampamento">Acampamento</option>
+                <option value="actividades_espirituais">Actividades Espirituais</option>
+                <option value="actividades_sociais">Actividades Sociais</option>
+                <option value="actividades_recreativa">Actividades Recreativa</option>
+                <option value="programa_sabado">Programa de Sábado</option>
+                <option value="reuniao_comissao">Reunião da Comissão</option>
               </select>
 
               <select
@@ -1753,12 +1753,9 @@ export const ActivitiesModule: React.FC = () => {
                 className="px-2.5 py-1.5 text-xs font-semibold border border-slate-300 rounded-lg bg-white text-slate-800"
               >
                 <option value="todas">Todas as Fases</option>
-                <option value="planeamento">Planeamento</option>
-                <option value="aprovacao">Aprovação</option>
                 <option value="preparacao">Preparação</option>
                 <option value="execucao">Execução</option>
-                <option value="relatorio">Relatório</option>
-                <option value="encerrado">Encerrado</option>
+                <option value="realizado">Realizado</option>
               </select>
 
               {calendarViewMode === 'lista' && (
@@ -1861,7 +1858,7 @@ export const ActivitiesModule: React.FC = () => {
 
                         <div className="space-y-1">
                           {dayActs.slice(0, 3).map((act) => {
-                            const pillCls = (ACTIVITY_TYPE_COLORS[act.type] || ACTIVITY_TYPE_COLORS.reuniao_regular).pill;
+                            const pillCls = (ACTIVITY_TYPE_COLORS[act.type] || ACTIVITY_TYPE_COLORS.actividade_regular).pill;
                             const isSelected = currentActivity?.id === act.id;
                             return (
                               <button
@@ -1912,7 +1909,7 @@ export const ActivitiesModule: React.FC = () => {
                     </div>
                   ) : (
                     filteredActivities.map((act) => {
-                      const typeStyle = ACTIVITY_TYPE_COLORS[act.type] || ACTIVITY_TYPE_COLORS.reuniao_regular;
+                      const typeStyle = ACTIVITY_TYPE_COLORS[act.type] || ACTIVITY_TYPE_COLORS.actividade_regular;
                       return (
                         <button
                           key={act.id}
@@ -2573,12 +2570,14 @@ export const ActivitiesModule: React.FC = () => {
               }
               className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900 bg-white"
             >
-              <option value="reuniao_regular">Actividades Normais</option>
-              <option value="acampamento">Acampamento / Bivaque</option>
-              <option value="civica">Atividade Cívica</option>
-              <option value="formacao">Formação e Módulos</option>
-              <option value="social">Ação Social</option>
-              <option value="diretoria">Reunião da Comissão</option>
+              <option value="actividade_regular">Actividade Regular</option>
+              <option value="modulos_medalhas">Módulos e Medalhas (para estudo de Módulos e Medalhas)</option>
+              <option value="acampamento">Acampamento</option>
+              <option value="actividades_espirituais">Actividades Espirituais</option>
+              <option value="actividades_sociais">Actividades Sociais</option>
+              <option value="actividades_recreativa">Actividades Recreativa</option>
+              <option value="programa_sabado">Programa de Sábado</option>
+              <option value="reuniao_comissao">Reunião da Comissão</option>
             </select>
           </div>
 
@@ -2627,9 +2626,10 @@ export const ActivitiesModule: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-slate-700 font-semibold mb-1">Local / Município</label>
+            <label className="block text-slate-700 font-semibold mb-1">Local da atividade</label>
             <input
               type="text"
+              placeholder="Escreva o local do evento..."
               value={activityForm.location}
               onChange={(e) => setActivityForm({ ...activityForm, location: e.target.value })}
               className="w-full p-2 border border-slate-200 rounded focus:ring-1 focus:ring-blue-900"

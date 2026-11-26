@@ -50,6 +50,7 @@ const MODULE_LABELS: Record<string, string> = {
   suggestions: 'Sugestões à Direção',
   messaging: 'Mensagens',
   music: 'Música e Louvor',
+  my_team: 'Minha Equipa',
   reports: 'Relatórios',
   settings: 'Configurações',
   audit: 'Auditoria',

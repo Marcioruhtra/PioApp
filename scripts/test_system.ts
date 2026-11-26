@@ -142,6 +142,7 @@ import {
   calculateMonthlyReconciliationPreview,
   isFiscalPeriodLocked,
   isDateInLockedFiscalPeriod,
+  buildAccountLedger,
 } from '../src/services/quotaService';
 import {
   cleanOperatorDisplayName,
@@ -156,7 +157,28 @@ import {
   shouldSkipIncomingSnapshot,
   getReconnectDelayMs,
 } from '../src/services/realtimeSyncService';
-import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver, FeeDefinition, EnrollmentScheduleConfig, MonthlyClosing, TreasuryAccount, PaymentProofReport, MusicItem } from '../src/types';
+import { Member, PaymentReceipt, ExpenseRequest, ClubActivity, TrainingClass, SpecialtyHonor, DeletionRequest, UserAccount, QuotaConfig, QuotaDebtWaiver, FeeDefinition, EnrollmentScheduleConfig, MonthlyClosing, TreasuryAccount, PaymentProofReport, MusicItem, MemberTrainingProgress, ClubSettings } from '../src/types';
+import {
+  isDirectionChatMonitor,
+  getAccessibleTeamsForUser,
+  canViewTeamChat,
+  canPostInTeamChat,
+  canDeleteTeamChatMessage,
+  buildTeamOverviewData,
+} from '../src/utils/teamUtils';
+import {
+  TRAINING_STALLED_DAYS_THRESHOLD,
+  computeTrainingProgressPct,
+  getTrainingStagnationDays,
+  isTrainingProgressStalled,
+  getMembersWithoutTraining,
+  resolveCatalogRequirementsForProgress,
+  buildCatalogProgressSummaries,
+  buildInstructorWorkloadSummaries,
+  getModuleMedalStudySessions,
+  applyBatchTrainingRequirementUpdate,
+  buildMemberAttendanceHistory,
+} from '../src/utils/associateTrainingUtils';
 
 function runTests() {
   console.log("=== INICIANDO BATERIA COMPLETA DE TESTES DO SISTEMA ===");
@@ -272,7 +294,7 @@ function runTests() {
     department: 'Instrução Geral',
     location: "Sede do Clube de Embaixadores Pioneiros D'Alvorada, Talatona",
     startDate: '2026-08-15',
-    stage: 'planeamento',
+    stage: 'preparacao',
     requiresDirectorApproval: true,
     costEstimatedInCents: estimatedCost,
     costApprovedInCents: 0,
@@ -5167,20 +5189,28 @@ function runTests() {
   // =========================================================================
   console.log("\n[TESTE 62] Verificação de rótulos de atividade e restrição de atas a 'Reunião da Comissão'...");
   assert(
-    getActivityTypeLabel('reuniao_regular') === 'Actividades Normais' &&
-      getActivityTypeLabel('diretoria') === 'Reunião da Comissão',
-    "Tipos 'reuniao_regular' e 'diretoria' exibem os novos rótulos 'Actividades Normais' e 'Reunião da Comissão'"
+    getActivityTypeLabel('actividade_regular') === 'Actividade Regular' &&
+      getActivityTypeLabel('modulos_medalhas') === 'Módulos e Medalhas (para estudo de Módulos e Medalhas)' &&
+      getActivityTypeLabel('acampamento') === 'Acampamento' &&
+      getActivityTypeLabel('actividades_espirituais') === 'Actividades Espirituais' &&
+      getActivityTypeLabel('actividades_sociais') === 'Actividades Sociais' &&
+      getActivityTypeLabel('actividades_recreativa') === 'Actividades Recreativa' &&
+      getActivityTypeLabel('programa_sabado') === 'Programa de Sábado' &&
+      getActivityTypeLabel('reuniao_comissao') === 'Reunião da Comissão',
+    "Os 8 novos tipos de atividade exibem os rótulos oficiais configurados"
   );
 
   assert(
-    canActivityHaveMinute('diretoria') === true &&
-      canActivityHaveMinute('reuniao_regular') === false &&
+    canActivityHaveMinute('reuniao_comissao') === true &&
+      canActivityHaveMinute('actividade_regular') === false &&
+      canActivityHaveMinute('modulos_medalhas') === false &&
       canActivityHaveMinute('acampamento') === false &&
-      canActivityHaveMinute('civica') === false &&
-      canActivityHaveMinute('formacao') === false &&
-      canActivityHaveMinute('social') === false &&
+      canActivityHaveMinute('actividades_espirituais') === false &&
+      canActivityHaveMinute('actividades_sociais') === false &&
+      canActivityHaveMinute('actividades_recreativa') === false &&
+      canActivityHaveMinute('programa_sabado') === false &&
       canActivityHaveMinute(undefined) === false,
-    "Atas oficiais só são permitidas para atividades do tipo 'Reunião da Comissão' ('diretoria'); restantes tipos ficam bloqueados"
+    "Atas oficiais só são permitidas para atividades do tipo 'Reunião da Comissão' ('reuniao_comissao'); restantes 7 tipos ficam bloqueados"
   );
 
   // =========================================================================
@@ -5388,8 +5418,8 @@ function runTests() {
   const baseActivities64: ClubActivity[] = [
     {
       id: 'ACT-64-1',
-      title: 'Actividades Normais Sábado',
-      type: 'reuniao_regular',
+      title: 'Actividade Regular Sábado',
+      type: 'actividade_regular',
       department: 'Direção Associada',
       startDate: '2026-03-07',
       endDate: '2026-03-07',
@@ -5415,7 +5445,7 @@ function runTests() {
       startDate: '2026-06-10',
       endDate: '2026-06-12',
       location: 'Parque',
-      stage: 'planeamento',
+      stage: 'preparacao',
       requiresDirectorApproval: true,
       costEstimatedInCents: 0,
       costApprovedInCents: 0,
@@ -5426,13 +5456,13 @@ function runTests() {
     },
     {
       id: 'ACT-64-3',
-      title: 'Reunião da Comissão (em planeamento)',
-      type: 'diretoria',
+      title: 'Reunião da Comissão (em preparação)',
+      type: 'reuniao_comissao',
       department: 'Direção',
       startDate: '2026-05-01',
       endDate: '2026-05-01',
       location: 'Sala',
-      stage: 'planeamento',
+      stage: 'preparacao',
       requiresDirectorApproval: false,
       costEstimatedInCents: 0,
       costApprovedInCents: 0,
@@ -5444,12 +5474,12 @@ function runTests() {
     {
       id: 'ACT-64-4',
       title: 'Reunião da Comissão Sem Ata',
-      type: 'diretoria',
+      type: 'reuniao_comissao',
       department: 'Direção',
       startDate: '2026-03-20',
       endDate: '2026-03-20',
       location: 'Sala',
-      stage: 'relatorio',
+      stage: 'execucao',
       requiresDirectorApproval: false,
       costEstimatedInCents: 0,
       costApprovedInCents: 0,
@@ -5461,12 +5491,12 @@ function runTests() {
     {
       id: 'ACT-64-5',
       title: 'Reunião da Comissão Com Ata',
-      type: 'diretoria',
+      type: 'reuniao_comissao',
       department: 'Direção',
       startDate: '2026-03-14',
       endDate: '2026-03-14',
       location: 'Sala',
-      stage: 'encerrado',
+      stage: 'realizado',
       requiresDirectorApproval: false,
       costEstimatedInCents: 0,
       costApprovedInCents: 0,
@@ -5494,7 +5524,7 @@ function runTests() {
   const missingMinutes64 = getActivitiesRequiringMinute(baseActivities64);
   assert(
     missingMinutes64.length === 1 && missingMinutes64[0].id === 'ACT-64-4',
-    "Radar de atas sinaliza exclusivamente 'Reunião da Comissão' fora do planeamento sem ata (ignora outros tipos)"
+    "Radar de atas sinaliza exclusivamente 'Reunião da Comissão' fora da preparação sem ata (ignora outros tipos)"
   );
 
   const teamStats64 = calculateTeamAttendanceStats(new Set(['MEM-A', 'MEM-B']), baseActivities64);
@@ -5581,11 +5611,11 @@ function runTests() {
   const hiddenInternalMeeting66: ClubActivity = {
     id: 'ACT-66-INT',
     title: 'Reunião da Comissão — Orçamento Interno',
-    type: 'diretoria',
+    type: 'reuniao_comissao',
     department: 'Direção',
     location: 'Sala da Direção',
     startDate: '2026-08-05',
-    stage: 'encerrado',
+    stage: 'realizado',
     requiresDirectorApproval: false,
     visibleInMemberPortal: false,
     costEstimatedInCents: 0,
@@ -5615,8 +5645,10 @@ function runTests() {
       doesActivityOccurOnDate(multiDayCamp66, '2026-08-16') === true &&
       doesActivityOccurOnDate(multiDayCamp66, '2026-08-17') === false &&
       getActivityTimeRangeLabel(multiDayCamp66) === '07:30 – 17:00' &&
-      getActivityStageLabel('preparacao') === 'Preparação',
-    "Eventos multi-dia ocorrem em todos os dias do intervalo e exibem faixa horária e fase corretamente"
+      getActivityStageLabel('preparacao') === 'Preparação' &&
+      getActivityStageLabel('execucao') === 'Execução' &&
+      getActivityStageLabel('realizado') === 'Realizado',
+    "Eventos multi-dia ocorrem em todos os dias do intervalo e exibem faixa horária e as 3 fases corretamente"
   );
 
   const icsText66 = buildActivityICS(multiDayCamp66);
@@ -5725,6 +5757,591 @@ function runTests() {
       hasCloudPayloadChanged(emptyShell68, updatedShell68) === true &&
       JSON.parse(JSON.stringify(newHymn68)).title === 'Hino Oficial dos Embaixadores',
     "musicItems é reconhecido na lista de chaves da nuvem, ativa isSafeCloudWritePayload e deteta alterações para gravação no Firestore"
+  );
+
+  // -------------------------------------------------------------------------
+  // TESTE 69: Especialização do Diretor-associado (RBAC Módulos/Medalhas & Utilitários)
+  // -------------------------------------------------------------------------
+  console.log("\n=== TESTE 69: ESPECIALIZAÇÃO DO DIRETOR-ASSOCIADO EM MÓDULOS E MEDALHAS ===");
+  const legacyMatrix69 = {
+    ...ROLE_PERMISSIONS_MATRIX,
+    diretor_associado: {
+      ...ROLE_PERMISSIONS_MATRIX.diretor_associado,
+      training: ['VIEW', 'CREATE', 'EDIT', 'PRINT'] as any,
+    },
+  };
+  const syncedMatrix69 = syncPermissionsMatrix(legacyMatrix69);
+
+  assert(
+    hasPermission('diretor_associado', 'training', 'APPROVE') &&
+      hasPermission('diretor_associado', 'training', 'EXPORT') &&
+      syncedMatrix69.diretor_associado.training.includes('APPROVE') &&
+      syncedMatrix69.diretor_associado.training.includes('EXPORT'),
+    "Diretor-associado possui APPROVE e EXPORT em training por omissão e após migração de matriz legada"
+  );
+
+  const now69 = new Date('2026-11-26T12:00:00.000Z');
+  const activeEmbaixador1: Member = {
+    id: 'MEM-69-1',
+    manualNumber: '2026/0691',
+    fullName: 'João Embaixador',
+    birthDate: '2012-03-10',
+    gender: 'M',
+    identityCardNumber: '006900001LA041',
+    phone: '923000001',
+    address: 'Luanda',
+    category: 'embaixador',
+    unitOrTeam: 'Águias',
+    guardianName: 'Pai João',
+    guardianPhone: '923000001',
+    emergencyContact: { name: 'Pai João', relationship: 'Pai', phone: '923000001' },
+    joinedDate: '2025-01-10',
+    annualRenewalYear: 2026,
+    status: 'ativo',
+    createdAt: '2025-01-10T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+  const activeEmbaixador2: Member = {
+    ...activeEmbaixador1,
+    id: 'MEM-69-2',
+    manualNumber: '2026/0692',
+    identityCardNumber: '006900002LA041',
+    fullName: 'Lucas Sem Formação',
+  };
+  const directionMember69: Member = {
+    ...activeEmbaixador1,
+    id: 'MEM-69-DIR',
+    manualNumber: '2026/0693',
+    identityCardNumber: '006900003LA041',
+    fullName: 'Diretor Associado',
+    category: 'lider',
+    unitOrTeam: undefined,
+  };
+  const instructorUser69: UserAccount = {
+    id: 'USR-69-INST',
+    name: 'Instrutor Mateus',
+    email: 'mateus@clube.ao',
+    role: 'instrutor',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const assocUser69: UserAccount = {
+    id: 'USR-69-ASSOC',
+    name: 'Diretor Associado',
+    email: 'assoc@clube.ao',
+    role: 'diretor_associado',
+    linkedMemberId: 'MEM-69-DIR',
+    manualNumber: '2026/0693',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  const cls69: TrainingClass = {
+    id: 'CLS-69-1',
+    code: 'MOD-01',
+    title: 'Módulo Embaixador Nível 1',
+    minimumAge: 10,
+    requirementsCount: 2,
+    requirements: ['Requisito A', 'Requisito B'],
+    active: true,
+  };
+  const spec69: SpecialtyHonor = {
+    id: 'ESP-69-1',
+    code: 'MED-01',
+    title: 'Medalha de Civismo Cristão',
+    category: 'espiritual',
+    requirementsCount: 2,
+    requirements: ['Civismo 1', 'Civismo 2'],
+    active: true,
+  };
+
+  const stalledProgress69: MemberTrainingProgress = {
+    id: 'TP-69-1',
+    memberId: 'MEM-69-1',
+    type: 'classe',
+    targetId: 'CLS-69-1',
+    targetTitle: 'Módulo Embaixador Nível 1',
+    completedRequirements: [0],
+    totalRequirements: 2,
+    instructorUserId: 'USR-69-INST',
+    instructorName: 'Instrutor Mateus',
+    instructorValidated: false,
+    finalAuthorizedApproval: false,
+    updatedAt: '2026-10-15T10:00:00.000Z',
+  };
+  const readyProgress69: MemberTrainingProgress = {
+    id: 'TP-69-2',
+    memberId: 'MEM-69-1',
+    type: 'especialidade',
+    targetId: 'ESP-69-1',
+    targetTitle: 'Medalha de Civismo Cristão',
+    completedRequirements: [0, 1],
+    totalRequirements: 2,
+    instructorUserId: 'USR-69-INST',
+    instructorName: 'Instrutor Mateus',
+    instructorValidated: true,
+    finalAuthorizedApproval: false,
+    updatedAt: '2026-11-24T10:00:00.000Z',
+  };
+
+  const unassigned69 = getMembersWithoutTraining(
+    [activeEmbaixador1, activeEmbaixador2, directionMember69],
+    [stalledProgress69, readyProgress69],
+    [instructorUser69, assocUser69]
+  );
+  const catalogSummaries69 = buildCatalogProgressSummaries(
+    [cls69],
+    [spec69],
+    [stalledProgress69, readyProgress69],
+    [activeEmbaixador1, activeEmbaixador2],
+    now69
+  );
+  const instructorWorkloads69 = buildInstructorWorkloadSummaries(
+    [instructorUser69, assocUser69],
+    [stalledProgress69, readyProgress69],
+    [activeEmbaixador1, activeEmbaixador2],
+    now69
+  );
+  const studySessions69 = getModuleMedalStudySessions([
+    {
+      ...multiDayCamp66,
+      id: 'ACT-69-STUDY-OPEN',
+      title: 'Estudo Módulo 1',
+      type: 'modulos_medalhas',
+      stage: 'preparacao',
+      startDate: '2026-12-01',
+    },
+    {
+      ...multiDayCamp66,
+      id: 'ACT-69-STUDY-DONE',
+      title: 'Estudo Medalha Civismo',
+      type: 'modulos_medalhas',
+      stage: 'realizado',
+      startDate: '2026-11-10',
+    },
+    {
+      ...multiDayCamp66,
+      id: 'ACT-69-REGULAR',
+      title: 'Actividade Regular',
+      type: 'actividade_regular',
+      stage: 'preparacao',
+      startDate: '2026-12-05',
+    },
+  ]);
+
+  assert(
+    TRAINING_STALLED_DAYS_THRESHOLD === 30 &&
+      computeTrainingProgressPct(stalledProgress69) === 50 &&
+      getTrainingStagnationDays(stalledProgress69, now69) >= 40 &&
+      isTrainingProgressStalled(stalledProgress69, now69) === true &&
+      isTrainingProgressStalled(readyProgress69, now69) === false &&
+      unassigned69.length === 1 &&
+      unassigned69[0].id === 'MEM-69-2' &&
+      resolveCatalogRequirementsForProgress(stalledProgress69, [cls69], [spec69]).length === 2 &&
+      catalogSummaries69.length === 2 &&
+      catalogSummaries69[0].stalledCount === 1 &&
+      catalogSummaries69[1].readyForValidationCount === 1 &&
+      instructorWorkloads69.find((w) => w.instructorUserId === 'USR-69-INST')?.totalAssigned === 2 &&
+      studySessions69.upcoming.length === 1 &&
+      studySessions69.completed.length === 1 &&
+      studySessions69.all.length === 2,
+    "Utilitários de supervisão do Diretor-associado calculam cobertura, estagnação >= 30d, catálogo, carga de instrutores e sessões de estudo"
+  );
+
+  // -------------------------------------------------------------------------
+  // TESTE 70: Chamada Curricular em Lote e Histórico Detalhado de Assiduidade
+  // -------------------------------------------------------------------------
+  console.log("\n=== TESTE 70: CHAMADA CURRICULAR EM LOTE E HISTÓRICO DE ASSIDUIDADE ===");
+  const approvedProgress70: MemberTrainingProgress = {
+    ...readyProgress69,
+    id: 'TP-70-APPROVED',
+    finalAuthorizedApproval: true,
+    completedRequirements: [1, 2],
+  };
+  const pendingProgress70: MemberTrainingProgress = {
+    ...stalledProgress69,
+    id: 'TP-70-PENDING',
+    completedRequirements: [1],
+    totalRequirements: 2,
+    finalAuthorizedApproval: false,
+  };
+
+  const batchComplete70 = applyBatchTrainingRequirementUpdate(
+    [pendingProgress70, approvedProgress70],
+    ['TP-70-PENDING', 'TP-70-APPROVED'],
+    2,
+    true,
+    '2026-11-26T14:00:00.000Z',
+    'Aula prática de sábado'
+  );
+  const updatedPending70 = batchComplete70.updatedList.find((p) => p.id === 'TP-70-PENDING')!;
+  const protectedUncheck70 = applyBatchTrainingRequirementUpdate(
+    batchComplete70.updatedList,
+    ['TP-70-APPROVED'],
+    2,
+    false,
+    '2026-11-26T14:05:00.000Z'
+  );
+
+  const history70 = buildMemberAttendanceHistory(
+    [
+      {
+        ...multiDayCamp66,
+        id: 'ACT-70-1',
+        title: 'Sessão de Estudo',
+        type: 'modulos_medalhas',
+        stage: 'realizado',
+        startDate: '2026-11-14',
+        location: 'Sede do Clube',
+        attendees: [{ memberId: 'MEM-70-1', present: true, notes: 'Pontual' }],
+      },
+      {
+        ...multiDayCamp66,
+        id: 'ACT-70-2',
+        title: 'Acampamento Regional',
+        type: 'acampamento',
+        stage: 'realizado',
+        startDate: '2026-11-21',
+        location: 'Kwanza Sul',
+        attendees: [{ memberId: 'MEM-70-1', present: false, notes: 'Justificado' }],
+      },
+    ],
+    'MEM-70-1'
+  );
+
+  assert(
+    batchComplete70.updatedCount === 2 &&
+      updatedPending70.completedRequirements.includes(2) &&
+      updatedPending70.instructorValidated === true &&
+      updatedPending70.observations === 'Aula prática de sábado' &&
+      protectedUncheck70.updatedCount === 0 &&
+      history70.totalCount === 2 &&
+      history70.presentCount === 1 &&
+      history70.absentCount === 1 &&
+      history70.attendancePct === 50 &&
+      history70.entries[0].activityId === 'ACT-70-2' &&
+      history70.entries[1].notes === 'Pontual',
+    "Chamada curricular atualiza requisitos em lote protegendo investiduras homologadas e histórico detalhado ordena assiduidade do membro"
+  );
+
+  // -------------------------------------------------------------------------
+  // TESTE 71: Extrato / Livro-Caixa por Conta e Sincronização de Pedidos Cadastrais
+  // -------------------------------------------------------------------------
+  console.log("\n=== TESTE 71: EXTRATO / LIVRO-CAIXA POR CONTA & SINCRONIZAÇÃO DE PEDIDOS ===");
+  const ledgerAcc71: TreasuryAccount = {
+    id: 'ACC-71-CAIXA',
+    name: 'Caixa Principal',
+    type: 'caixa',
+    initialBalanceInCents: 10000,
+    currentBalanceInCents: 20000, // 10000 inicial + 25000 entrada - 15000 saída
+    active: true,
+  };
+  const ledgerOther71: TreasuryAccount = {
+    id: 'ACC-71-BANCO',
+    name: 'Banco BAI',
+    type: 'banco',
+    initialBalanceInCents: 0,
+    currentBalanceInCents: 50000,
+    active: true,
+  };
+  const ledgerReceipts71: PaymentReceipt[] = [
+    {
+      id: 'REC-71-01',
+      receiptNumber: 'REC-2026-0071',
+      memberId: 'MEM-1',
+      memberName: 'Ana Paula',
+      feeDefinitionId: DEFAULT_QUOTA_FEE_ID,
+      feeTitle: 'Quota Regular (Cada Domingo)',
+      periodLabel: 'Novembro 2026',
+      amountPaidInCents: 25000,
+      paymentMethod: 'numerario',
+      treasurerUserId: 'U-1',
+      treasurerName: 'Tesoureiro',
+      paidAt: '2026-11-10T09:00:00.000Z',
+      status: 'confirmado',
+      accountId: 'ACC-71-CAIXA',
+      accountName: 'Caixa Principal',
+    },
+    {
+      id: 'REC-71-02',
+      receiptNumber: 'REC-2026-0072',
+      memberId: 'MEM-2',
+      memberName: 'Bruno Dias',
+      feeDefinitionId: DEFAULT_QUOTA_FEE_ID,
+      feeTitle: 'Quota Regular (Cada Domingo)',
+      periodLabel: 'Novembro 2026',
+      amountPaidInCents: 40000,
+      paymentMethod: 'numerario',
+      treasurerUserId: 'U-1',
+      treasurerName: 'Tesoureiro',
+      paidAt: '2026-11-12T09:00:00.000Z',
+      status: 'anulado',
+      isCancelled: true,
+      cancellationReason: 'Duplicado',
+      accountId: 'ACC-71-CAIXA',
+      accountName: 'Caixa Principal',
+    },
+    {
+      id: 'REC-71-03',
+      receiptNumber: 'REC-2026-0073',
+      memberId: 'MEM-3',
+      memberName: 'Carla Neto',
+      feeDefinitionId: DEFAULT_QUOTA_FEE_ID,
+      feeTitle: 'Quota Regular (Cada Domingo)',
+      periodLabel: 'Novembro 2026',
+      amountPaidInCents: 50000,
+      paymentMethod: 'transferencia_bancaria',
+      treasurerUserId: 'U-1',
+      treasurerName: 'Tesoureiro',
+      paidAt: '2026-11-13T09:00:00.000Z',
+      status: 'confirmado',
+      accountId: 'ACC-71-BANCO',
+      accountName: 'Banco BAI',
+    },
+  ];
+  const ledgerExpenses71: ExpenseRequest[] = [
+    {
+      id: 'EXP-2026-071',
+      title: 'Compra de Cordas',
+      description: 'Instrução',
+      category: 'Material de Instrução',
+      amountInCents: 15000,
+      requestedByUserId: 'U-2',
+      requestedByName: 'Diretor',
+      accountId: 'ACC-71-CAIXA',
+      status: 'pago',
+      paidAt: '2026-11-15T14:00:00.000Z',
+      createdAt: '2026-11-14T10:00:00.000Z',
+      invoiceFileName: 'fatura_cordas.pdf',
+      paymentProofFileName: 'comp_cordas.jpg',
+    },
+  ];
+
+  const ledger71 = buildAccountLedger({
+    account: ledgerAcc71,
+    accounts: [ledgerAcc71, ledgerOther71],
+    receipts: ledgerReceipts71,
+    expenses: ledgerExpenses71,
+  });
+
+  assert(
+    CLOUD_STATE_KEYS.includes('requests') &&
+      ledger71.openingBalanceInCents === 10000 &&
+      ledger71.totalInflowInCents === 25000 &&
+      ledger71.totalOutflowInCents === 15000 &&
+      ledger71.closingBalanceInCents === 20000 &&
+      ledger71.entriesCount === 3 &&
+      ledger71.cancelledCount === 1 &&
+      ledger71.entries[0].runningBalanceInCents === 35000 &&
+      ledger71.entries[1].isCancelled === true &&
+      ledger71.entries[1].runningBalanceInCents === 35000 &&
+      ledger71.entries[2].runningBalanceInCents === 20000,
+    "Extrato / Livro-Caixa calcula saldo inicial, entradas, saídas, anulados sem impacto no saldo e saldo progressivo exato; CLOUD_STATE_KEYS inclui 'requests'"
+  );
+
+  // -------------------------------------------------------------------------
+  // TESTE 72: Módulo Minha Equipa, Privacidade & Chat Interno por Equipa
+  // -------------------------------------------------------------------------
+  console.log("\n=== TESTE 72: MINHA EQUIPA, PRIVACIDADE & CHAT INTERNO POR EQUIPA ===");
+  const testUnits72: ClubSettings['units'] = [
+    { id: 'UNT-72-A', name: 'Equipa Águias', category: 'embaixador', leaderUserId: 'U-72-LEADER-A', active: true },
+    { id: 'UNT-72-B', name: 'Equipa Leões', category: 'lider', leaderUserId: 'U-72-LEADER-B', active: true },
+    { id: 'UNT-72-INACTIVE', name: 'Equipa Antiga', category: 'mista', active: false },
+  ];
+
+  const userDirector72: UserAccount = {
+    id: 'U-72-DIR',
+    email: 'dir@club.ao',
+    name: 'Diretor Clube',
+    role: 'diretor',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const userSecretario72: UserAccount = {
+    id: 'U-72-SEC',
+    email: 'sec@club.ao',
+    name: 'Secretário Clube',
+    role: 'secretario',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const userAssoc72: UserAccount = {
+    id: 'U-72-ASSOC',
+    email: 'assoc@club.ao',
+    name: 'Diretor Associado',
+    role: 'diretor_associado',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const userLeaderA72: UserAccount = {
+    id: 'U-72-LEADER-A',
+    email: 'leadA@club.ao',
+    name: 'Líder Águias',
+    role: 'instrutor',
+    linkedMemberId: 'M-72-LEAD-A',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const userLeaderB72: UserAccount = {
+    id: 'U-72-LEADER-B',
+    email: 'leadB@club.ao',
+    name: 'Líder Leões',
+    role: 'membro',
+    linkedMemberId: 'M-72-B1',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const userMemberA72: UserAccount = {
+    id: 'U-72-MEM-A',
+    email: 'memA@club.ao',
+    name: 'Membro Águia',
+    role: 'membro',
+    linkedMemberId: 'M-72-A1',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  const members72: Member[] = [
+    {
+      id: 'M-72-A1',
+      manualNumber: 'EMB-721',
+      fullName: 'João Águia',
+      birthDate: '2010-03-10',
+      gender: 'M',
+      identityCardNumber: '000999888LA042',
+      phone: '+244 911 222 333',
+      email: 'memA@club.ao',
+      address: 'Rua Secreta 123',
+      category: 'embaixador',
+      unitOrTeam: 'Equipa Águias',
+      status: 'ativo',
+      emergencyContact: { name: 'Mãe', phone: '922000111', relationship: 'Mãe' },
+      allergiesOrMedicalNotes: 'Asma leve',
+      annualRenewalYear: 2026,
+      joinedDate: '2025-01-01',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'M-72-B1',
+      manualNumber: 'LID-722',
+      fullName: 'Maria Leão',
+      birthDate: '2005-07-20',
+      gender: 'F',
+      identityCardNumber: '000777666LA041',
+      phone: '+244 923 444 555',
+      address: 'Av. Principal 45',
+      category: 'lider',
+      unitOrTeam: 'Equipa Leões',
+      status: 'ativo',
+      emergencyContact: { name: 'Pai', phone: '922000222', relationship: 'Pai' },
+      annualRenewalYear: 2026,
+      joinedDate: '2024-01-01',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    },
+  ];
+
+  const syncedMatrix72 = syncPermissionsMatrix();
+  assert(
+    CLOUD_STATE_KEYS.includes('teamChatMessages') &&
+      syncedMatrix72.membro.my_team.includes('VIEW') &&
+      syncedMatrix72.membro.my_team.includes('CREATE') &&
+      !syncedMatrix72.membro.my_team.includes('DELETE') &&
+      syncedMatrix72.diretor.my_team.includes('DELETE') &&
+      syncedMatrix72.secretario.my_team.includes('DELETE') &&
+      syncedMatrix72.diretor_associado.my_team.includes('DELETE'),
+    "CLOUD_STATE_KEYS inclui 'teamChatMessages' e syncPermissionsMatrix configura permissões de my_team corretamente"
+  );
+
+  const memberATeams = getAccessibleTeamsForUser(testUnits72, members72[0], userMemberA72);
+  const leaderATeams = getAccessibleTeamsForUser(testUnits72, undefined, userLeaderA72);
+  const directorTeams = getAccessibleTeamsForUser(testUnits72, undefined, userDirector72);
+  const secretarioTeams = getAccessibleTeamsForUser(testUnits72, undefined, userSecretario72);
+  const assocTeams = getAccessibleTeamsForUser(testUnits72, undefined, userAssoc72);
+
+  assert(
+    memberATeams.length === 1 &&
+      memberATeams[0].id === 'UNT-72-A' &&
+      leaderATeams.length === 1 &&
+      leaderATeams[0].id === 'UNT-72-A' &&
+      directorTeams.length === 2 &&
+      secretarioTeams.length === 2 &&
+      assocTeams.length === 2 &&
+      isDirectionChatMonitor('diretor') &&
+      isDirectionChatMonitor('secretario') &&
+      isDirectionChatMonitor('diretor_associado') &&
+      !isDirectionChatMonitor('membro'),
+    "Membros e Líderes acedem apenas à sua equipa; Diretor, Secretário e Diretor-associado monitoram todas as equipas ativas"
+  );
+
+  assert(
+    canViewTeamChat(testUnits72[0], members72[0], userMemberA72) === true &&
+      canViewTeamChat(testUnits72[1], members72[0], userMemberA72) === false &&
+      canViewTeamChat(testUnits72[0], undefined, userDirector72) === true &&
+      canViewTeamChat(testUnits72[1], undefined, userSecretario72) === true &&
+      canViewTeamChat(testUnits72[1], undefined, userAssoc72) === true &&
+      canPostInTeamChat(testUnits72[0], members72[0], userMemberA72) === true &&
+      canPostInTeamChat(testUnits72[1], members72[0], userMemberA72) === false &&
+      canPostInTeamChat(testUnits72[0], undefined, userLeaderA72) === true &&
+      canPostInTeamChat(testUnits72[1], undefined, userLeaderA72) === false &&
+      canPostInTeamChat(testUnits72[0], undefined, userDirector72) === true &&
+      canPostInTeamChat(testUnits72[0], undefined, userSecretario72) === true &&
+      canPostInTeamChat(testUnits72[0], undefined, userAssoc72) === true,
+    "Membros da equipa, líder e Direção podem enviar mensagens no chat da equipa"
+  );
+
+  assert(
+    canDeleteTeamChatMessage(testUnits72[0], userDirector72) === true &&
+      canDeleteTeamChatMessage(testUnits72[1], userDirector72) === true &&
+      canDeleteTeamChatMessage(testUnits72[0], userSecretario72) === true &&
+      canDeleteTeamChatMessage(testUnits72[1], userAssoc72) === true &&
+      canDeleteTeamChatMessage(testUnits72[0], userLeaderA72) === true &&
+      canDeleteTeamChatMessage(testUnits72[1], userLeaderA72) === false &&
+      canDeleteTeamChatMessage(testUnits72[1], userLeaderB72) === true &&
+      canDeleteTeamChatMessage(testUnits72[0], userMemberA72) === false,
+    "Diretor, Secretário, Diretor-associado (em qualquer equipa) e Líder da Equipa (na própria equipa) podem excluir mensagens para todos; membro comum não pode"
+  );
+
+  const overview72 = buildTeamOverviewData({
+    unit: testUnits72[0],
+    allUnits: testUnits72,
+    members: members72,
+    users: [userDirector72, userLeaderA72, userMemberA72],
+    activities: [],
+    trainingProgress: [],
+    teamEvaluations: [
+      {
+        id: 'EV-72-1',
+        unitId: 'UNT-72-A',
+        unitName: 'Equipa Águias',
+        periodLabel: 'Trimestre 1',
+        disciplineScore: 90,
+        teamworkScore: 95,
+        punctualityScore: 85,
+        trainingCommitmentScore: 90,
+        overallScore: 90,
+        evaluatedByUserId: 'U-72-ASSOC',
+        evaluatedByName: 'Diretor Associado',
+        evaluatedAt: '2026-11-20T10:00:00.000Z',
+      },
+    ],
+    associateDirectives: [],
+    messages: [],
+  });
+
+  const teammateRecord72 = overview72.teammates[0] as unknown as Record<string, unknown>;
+  assert(
+    overview72.teammates.length === 1 &&
+      overview72.teammates[0].fullName === 'João Águia' &&
+      overview72.teammates[0].manualNumber === 'EMB-721' &&
+      !('identityCardNumber' in teammateRecord72) &&
+      !('phone' in teammateRecord72) &&
+      !('address' in teammateRecord72) &&
+      !('allergiesOrMedicalNotes' in teammateRecord72) &&
+      overview72.rankingPosition === 1 &&
+      overview72.averageOverallScore === 90,
+    "buildTeamOverviewData oculta dados sensíveis dos colegas (B.I., telefone, endereço, saúde) e calcula ranking e média de avaliações"
   );
 
   console.log("\n=== RESULTADO FINAL DOS TESTES ===");

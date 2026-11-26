@@ -934,3 +934,149 @@ export function calculateMonthlyReconciliationPreview(params: {
     accountSnapshots,
   };
 }
+
+export interface AccountLedgerEntry {
+  id: string;
+  date: string;
+  kind: 'entrada' | 'saida' | 'anulado';
+  documentNumber: string;
+  title: string;
+  counterparty: string;
+  paymentMethod?: string;
+  categoryOrFee: string;
+  amountInCents: number;
+  signedAmountInCents: number;
+  runningBalanceInCents: number;
+  notes?: string;
+  isCancelled: boolean;
+}
+
+export interface AccountLedgerResult {
+  account: TreasuryAccount;
+  openingBalanceInCents: number;
+  totalInflowInCents: number;
+  totalOutflowInCents: number;
+  netMovementInCents: number;
+  closingBalanceInCents: number;
+  entriesCount: number;
+  cancelledCount: number;
+  entries: AccountLedgerEntry[];
+}
+
+/**
+ * Constrói o Extrato / Livro-Caixa cronológico de uma conta institucional específica,
+ * reconciliando entradas (recibos ativos), saídas (despesas pagas) e registos anulados,
+ * com saldo progressivo linha a linha alinhado ao saldo atual da conta.
+ */
+export function buildAccountLedger(params: {
+  account: TreasuryAccount;
+  accounts?: TreasuryAccount[];
+  receipts?: PaymentReceipt[];
+  expenses?: ExpenseRequest[];
+}): AccountLedgerResult {
+  const { account, accounts = [account], receipts = [], expenses = [] } = params;
+
+  const rawEntries: Omit<AccountLedgerEntry, 'runningBalanceInCents'>[] = [];
+  let totalInflowInCents = 0;
+  let totalOutflowInCents = 0;
+  let cancelledCount = 0;
+
+  for (const r of receipts || []) {
+    if (!r) continue;
+    const resolvedAccountId = resolveReceiptTargetAccountId(r, accounts);
+    if (resolvedAccountId !== account.id) continue;
+
+    const isCancelled = Boolean(r.isCancelled || r.status === 'anulado');
+    const amt = Math.max(0, Math.round(r.amountPaidInCents || 0));
+
+    if (isCancelled) {
+      cancelledCount++;
+      rawEntries.push({
+        id: `REC-${r.id}`,
+        date: r.paidAt || '',
+        kind: 'anulado',
+        documentNumber: r.receiptNumber || r.id,
+        title: `${r.feeTitle} (Anulado)`,
+        counterparty: r.memberName,
+        paymentMethod: r.paymentMethod,
+        categoryOrFee: r.periodLabel || r.feeTitle,
+        amountInCents: amt,
+        signedAmountInCents: 0,
+        notes: r.cancellationReason ? `Motivo: ${r.cancellationReason}` : r.notes,
+        isCancelled: true,
+      });
+    } else {
+      totalInflowInCents += amt;
+      rawEntries.push({
+        id: `REC-${r.id}`,
+        date: r.paidAt || '',
+        kind: 'entrada',
+        documentNumber: r.receiptNumber || r.id,
+        title: r.feeTitle,
+        counterparty: r.memberName,
+        paymentMethod: r.paymentMethod,
+        categoryOrFee: r.periodLabel || r.feeTitle,
+        amountInCents: amt,
+        signedAmountInCents: amt,
+        notes: r.notes,
+        isCancelled: false,
+      });
+    }
+  }
+
+  const fallbackAccount = accounts.find((a) => a.active) || accounts[0];
+  for (const e of expenses || []) {
+    if (!e || e.status !== 'pago') continue;
+    const expAccountId = e.accountId || fallbackAccount?.id;
+    if (expAccountId !== account.id) continue;
+
+    const amt = Math.max(0, Math.round(e.amountInCents || 0));
+    totalOutflowInCents += amt;
+    rawEntries.push({
+      id: `EXP-${e.id}`,
+      date: e.paidAt || e.createdAt || '',
+      kind: 'saida',
+      documentNumber: e.id,
+      title: e.title,
+      counterparty: e.requestedByName,
+      categoryOrFee: e.category,
+      amountInCents: amt,
+      signedAmountInCents: -amt,
+      notes: e.description,
+      isCancelled: false,
+    });
+  }
+
+  // Ordenação cronológica ascendente para cálculo exato do saldo progressivo
+  rawEntries.sort((a, b) => {
+    const cmp = (a.date || '').localeCompare(b.date || '');
+    if (cmp !== 0) return cmp;
+    return a.id.localeCompare(b.id);
+  });
+
+  const closingBalanceInCents = Math.round(account.currentBalanceInCents || 0);
+  const netMovementInCents = totalInflowInCents - totalOutflowInCents;
+  const openingBalanceInCents = closingBalanceInCents - netMovementInCents;
+
+  let running = openingBalanceInCents;
+  const entries: AccountLedgerEntry[] = rawEntries.map((item) => {
+    running += item.signedAmountInCents;
+    return {
+      ...item,
+      runningBalanceInCents: running,
+    };
+  });
+
+  return {
+    account,
+    openingBalanceInCents,
+    totalInflowInCents,
+    totalOutflowInCents,
+    netMovementInCents,
+    closingBalanceInCents,
+    entriesCount: entries.length,
+    cancelledCount,
+    entries,
+  };
+}
+

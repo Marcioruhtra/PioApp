@@ -35,6 +35,8 @@ import {
   ChevronRight,
   XCircle,
   HelpCircle,
+  Paperclip,
+  Edit3,
 } from 'lucide-react';
 import { useClub } from '../../context/ClubContext';
 import { formatKz, parseKzToCents } from '../../utils/currency';
@@ -48,11 +50,17 @@ import {
   SuggestionCategory,
   SuggestionStatus,
   ActivityRsvpStatus,
+  MemberTrainingProgress,
+  MemberPortalRequest,
 } from '../../types';
 import { PrintDocumentModal } from '../common/PrintDocumentModal';
 import { ProofDocumentViewerModal } from '../common/ProofDocumentViewerModal';
 import { MemberDigitalCardModal } from '../common/MemberDigitalCardModal';
-import { processProofFile } from '../../utils/fileUpload';
+import {
+  downloadDocumentFile,
+  getDocumentPreviewKind,
+  processProofFile,
+} from '../../utils/fileUpload';
 import { EnrollmentStatusCard } from '../members/EnrollmentStatusCard';
 import { MemberReconfirmationForm } from '../members/MemberReconfirmationForm';
 import { evaluateEnrollmentAvailability } from '../../services/enrollmentService';
@@ -73,6 +81,11 @@ import {
   getActivityTypeLabel,
   getMemberPortalVisibleActivities,
 } from '../../utils/activityUtils';
+import {
+  buildMemberAttendanceHistory,
+  computeTrainingProgressPct,
+  resolveCatalogRequirementsForProgress,
+} from '../../utils/associateTrainingUtils';
 
 const SUGGESTION_CATEGORY_MAP: Record<SuggestionCategory, { label: string; badgeBg: string; text: string }> = {
   geral: { label: 'Geral', badgeBg: 'bg-slate-100 border-slate-300 text-slate-800', text: 'text-slate-800' },
@@ -102,6 +115,7 @@ export const MemberPortalModule: React.FC = () => {
     replyToMessage,
     submitMemberReconfirmation,
     submitActivityRsvp,
+    submitPortalRequest,
   } = useClub();
 
   const [isProofModalOpen, setIsProofModalOpen] = useState(false);
@@ -114,6 +128,32 @@ export const MemberPortalModule: React.FC = () => {
   const [fileUploadError, setFileUploadError] = useState<string | null>(null);
   const [suggestionToDelete, setSuggestionToDelete] = useState<{ id: string; subject: string } | null>(null);
 
+  // Pedidos de atualização cadastral à Secretaria
+  const [isUpdateRequestModalOpen, setIsUpdateRequestModalOpen] = useState(false);
+  const [isProcessingUpdateFile, setIsProcessingUpdateFile] = useState(false);
+  const [updateRequestError, setUpdateRequestError] = useState<string | null>(null);
+  const [updateRequestFeedback, setUpdateRequestFeedback] = useState<string | null>(null);
+  const [viewingPortalDoc, setViewingPortalDoc] = useState<{
+    title: string;
+    fileName: string;
+    base64: string;
+  } | null>(null);
+  const [updateRequestForm, setUpdateRequestForm] = useState({
+    subject: 'Atualização de Contactos / Morada',
+    details: '',
+    phone: '',
+    address: '',
+    email: '',
+    identityCardNumber: '',
+    identityCardExpiryDate: '',
+    guardianName: '',
+    guardianPhone: '',
+    emergencyContactName: '',
+    emergencyContactPhone: '',
+    attachmentFileName: '',
+    attachmentBase64: '',
+  });
+
   // Membro estritamente vinculado ao utilizador autenticado (sem fallback para outros membros)
   const member = getStrictLinkedMember(currentUser, state.members);
   const memberId = member?.id || '';
@@ -123,24 +163,23 @@ export const MemberPortalModule: React.FC = () => {
   const portalActivities = getMemberPortalVisibleActivities(state.activities);
   const upcomingPortalActivities = portalActivities.filter((a) => {
     const refDate = getActivityDateOnly(a.endDate) || getActivityDateOnly(a.startDate);
-    return refDate >= todayISO && a.stage !== 'encerrado';
+    return refDate >= todayISO && a.stage !== 'realizado';
   });
   const pastPortalActivities = portalActivities
     .filter((a) => {
       const refDate = getActivityDateOnly(a.endDate) || getActivityDateOnly(a.startDate);
-      return refDate < todayISO || a.stage === 'encerrado';
+      return refDate < todayISO || a.stage === 'realizado';
     })
     .slice()
     .reverse();
 
-  const myRecordedAttendances = member
-    ? (state.activities || []).filter((act) => act.attendees?.some((att) => att.memberId === member.id))
-    : [];
-  const myPresentCount = member
-    ? myRecordedAttendances.filter((act) => act.attendees.some((att) => att.memberId === member.id && att.present)).length
-    : 0;
-  const myAttendancePct =
-    myRecordedAttendances.length > 0 ? Math.round((myPresentCount / myRecordedAttendances.length) * 100) : null;
+  const [selectedTrainingProgress, setSelectedTrainingProgress] = useState<MemberTrainingProgress | null>(null);
+  const [attendanceStatusFilter, setAttendanceStatusFilter] = useState<'todos' | 'presente' | 'falta'>('todos');
+
+  const attendanceHistory = buildMemberAttendanceHistory(state.activities || [], memberId);
+  const myRecordedAttendances = attendanceHistory.entries;
+  const myPresentCount = attendanceHistory.presentCount;
+  const myAttendancePct = attendanceHistory.attendancePct;
 
   // Dados exclusivos do membro
   const myReceipts = state.receipts.filter((r) => r.memberId === member?.id);
@@ -638,24 +677,68 @@ export const MemberPortalModule: React.FC = () => {
                 <UserCheck className="w-4 h-4 text-blue-900" />
                 <span>Situação Cadastral e Documental na Secretaria</span>
               </h2>
-              {enrollmentAvailability.isReconfirmationOpen &&
-                member.status !== 'arquivado' &&
-                member.status !== 'transferido' && (
+              <div className="flex flex-wrap items-center gap-2">
+                {member.status !== 'arquivado' && member.status !== 'transferido' && (
                   <button
                     type="button"
-                    onClick={() => setIsReconfirmationModalOpen(true)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-blue-900 hover:bg-blue-800 rounded-lg shadow-xs transition-colors cursor-pointer"
+                    onClick={() => {
+                      setUpdateRequestError(null);
+                      setUpdateRequestForm({
+                        subject: 'Atualização de Contactos / Morada',
+                        details: '',
+                        phone: '',
+                        address: '',
+                        email: '',
+                        identityCardNumber: '',
+                        identityCardExpiryDate: '',
+                        guardianName: '',
+                        guardianPhone: '',
+                        emergencyContactName: '',
+                        emergencyContactPhone: '',
+                        attachmentFileName: '',
+                        attachmentBase64: '',
+                      });
+                      setIsUpdateRequestModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
                   >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>
-                      {enrollmentAvailability.periodId &&
-                      member.lastReconfirmedPeriodId === enrollmentAvailability.periodId
-                        ? 'Atualizar Reconfirmação'
-                        : 'Fazer Reconfirmação de Dados'}
-                    </span>
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Pedir Atualização Cadastral</span>
                   </button>
                 )}
+                {enrollmentAvailability.isReconfirmationOpen &&
+                  member.status !== 'arquivado' &&
+                  member.status !== 'transferido' && (
+                    <button
+                      type="button"
+                      onClick={() => setIsReconfirmationModalOpen(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-blue-900 hover:bg-blue-800 rounded-lg shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>
+                        {enrollmentAvailability.periodId &&
+                        member.lastReconfirmedPeriodId === enrollmentAvailability.periodId
+                          ? 'Atualizar Reconfirmação'
+                          : 'Fazer Reconfirmação de Dados'}
+                      </span>
+                    </button>
+                  )}
+              </div>
             </div>
+
+            {updateRequestFeedback && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-lg text-xs flex items-center justify-between gap-2">
+                <span>{updateRequestFeedback}</span>
+                <button
+                  type="button"
+                  onClick={() => setUpdateRequestFeedback(null)}
+                  className="font-bold text-emerald-800 hover:underline cursor-pointer"
+                >
+                  Fechar
+                </button>
+              </div>
+            )}
+
             <EnrollmentStatusCard
               registeredMember={member}
               reconfirmationInfo={{
@@ -664,6 +747,88 @@ export const MemberPortalModule: React.FC = () => {
                 onStartReconfirmation: () => setIsReconfirmationModalOpen(true),
               }}
             />
+
+            {(() => {
+              const myRequests = (state.requests || [])
+                .filter((r) => r.memberId === member.id && r.category === 'atualizacao_dados')
+                .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+              if (myRequests.length === 0) return null;
+
+              const statusMap: Record<
+                MemberPortalRequest['status'],
+                { label: string; color: string }
+              > = {
+                pendente: { label: 'Pendente', color: 'text-amber-800' },
+                em_analise: { label: 'Em Análise', color: 'text-blue-800' },
+                aprovado: { label: 'Aprovado e Aplicado', color: 'text-emerald-800' },
+                concluido: { label: 'Concluído', color: 'text-emerald-800' },
+                rejeitado: { label: 'Rejeitado', color: 'text-rose-800' },
+              };
+
+              return (
+                <div className="pt-3 border-t border-slate-100 space-y-2">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Os Meus Pedidos de Atualização Cadastral ({myRequests.length})
+                  </div>
+                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
+                    {myRequests.slice(0, 5).map((req) => {
+                      const st = statusMap[req.status] || statusMap.pendente;
+                      const changedFields = req.proposedChanges
+                        ? Object.keys(req.proposedChanges).filter((k) => Boolean((req.proposedChanges as Record<string, unknown>)[k]))
+                        : [];
+                      return (
+                        <div key={req.id} className="p-3 bg-slate-50/40 text-xs space-y-1">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="font-bold text-slate-900">
+                              <span className="font-mono text-[11px] text-slate-500 mr-1.5">{req.id}</span>
+                              {req.subject}
+                            </div>
+                            <div className="flex items-center gap-2 text-[11px]">
+                              <span className="text-slate-500">{formatDateAO(req.createdAt)}</span>
+                              <span aria-hidden="true">·</span>
+                              <span className={`font-bold ${st.color}`}>{st.label}</span>
+                            </div>
+                          </div>
+                          <p className="text-slate-600">{req.details}</p>
+                          {changedFields.length > 0 && (
+                            <div className="text-[11px] text-slate-600">
+                              Campos propostos:{' '}
+                              <span className="font-semibold text-slate-800">{changedFields.join(', ')}</span>
+                            </div>
+                          )}
+                          {req.attachmentBase64 && (
+                            <div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setViewingPortalDoc({
+                                    title: `Anexo · ${req.subject}`,
+                                    fileName: req.attachmentFileName || `Anexo_${req.id}`,
+                                    base64: req.attachmentBase64!,
+                                  })
+                                }
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-900 hover:underline cursor-pointer"
+                              >
+                                <Paperclip className="w-3 h-3" />
+                                <span>Ver Anexo ({req.attachmentFileName || 'Documento'})</span>
+                              </button>
+                            </div>
+                          )}
+                          {req.responseNotes && (
+                            <div className="p-2 bg-white border border-slate-200 rounded-lg text-[11px] text-slate-700 mt-1">
+                              <strong>Resposta da Secretaria:</strong> {req.responseNotes}
+                              {req.assignedUserName && (
+                                <span className="text-slate-500"> · por {req.assignedUserName}</span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Alerta Institucional de Pagamentos */}
@@ -947,8 +1112,13 @@ export const MemberPortalModule: React.FC = () => {
           <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50">
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
               <GraduationCap className="w-4 h-4 text-blue-900" />
-              <span>Módulos e Medalhas em Curso</span>
+              <span>Módulos e Medalhas em Curso ({myTraining.length})</span>
             </h2>
+            {myTraining.length > 0 && (
+              <span className="text-[10px] font-semibold text-slate-500">
+                Clique para ver requisitos
+              </span>
+            )}
           </div>
 
           <div className="divide-y divide-slate-100">
@@ -956,23 +1126,56 @@ export const MemberPortalModule: React.FC = () => {
               <p className="p-4 text-xs text-slate-500">Nenhuma formação curricular em curso.</p>
             ) : (
               myTraining.map((tr) => {
-                const pct = Math.round((tr.completedRequirements.length / tr.totalRequirements) * 100);
+                const pct = computeTrainingProgressPct(tr);
                 return (
-                  <div key={tr.id} className="p-4 text-xs hover:bg-slate-50">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-slate-900">{tr.targetTitle}</span>
-                      <span className="font-bold text-blue-900">{pct}%</span>
+                  <button
+                    key={tr.id}
+                    type="button"
+                    onClick={() => setSelectedTrainingProgress(tr)}
+                    className="w-full text-left p-4 text-xs hover:bg-slate-50 transition-colors cursor-pointer block"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                          {tr.type === 'classe' ? 'Módulo Oficial' : 'Medalha'}
+                        </span>
+                        <span className="font-bold text-slate-900 truncate block">{tr.targetTitle}</span>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="font-bold text-blue-900 tabular-nums block">{pct}%</span>
+                        <span className="text-[10px] text-slate-500 tabular-nums">
+                          {tr.completedRequirements.length}/{tr.totalRequirements} reqs
+                        </span>
+                      </div>
                     </div>
                     <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden my-2">
                       <div className="bg-blue-900 h-full rounded-full" style={{ width: `${pct}%` }} />
                     </div>
-                    <div className="flex items-center justify-between text-[11px] text-slate-500">
-                      <span>Instrutor: {tr.instructorName}</span>
-                      <span className={tr.finalAuthorizedApproval ? 'text-emerald-700 font-bold' : 'text-amber-700'}>
-                        {tr.finalAuthorizedApproval ? 'Investidura Aprovada' : 'Em Curso'}
-                      </span>
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 gap-2">
+                      <span className="truncate">Instrutor: {tr.instructorName}</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span
+                          className={
+                            tr.finalAuthorizedApproval
+                              ? 'text-emerald-700 font-bold'
+                              : pct >= 100
+                              ? 'text-blue-900 font-semibold'
+                              : 'text-amber-700'
+                          }
+                        >
+                          {tr.finalAuthorizedApproval
+                            ? 'Investidura Aprovada'
+                            : pct >= 100
+                            ? 'Pronto p/ Validação'
+                            : 'Em Curso'}
+                        </span>
+                        <span className="font-semibold text-blue-900 inline-flex items-center gap-0.5">
+                          <span>Ver Caderneta</span>
+                          <ChevronRight className="w-3 h-3" />
+                        </span>
+                      </div>
                     </div>
-                  </div>
+                  </button>
                 );
               })
             )}
@@ -1217,12 +1420,16 @@ export const MemberPortalModule: React.FC = () => {
 
               <div className="flex items-center gap-3 flex-wrap shrink-0">
                 {myAttendancePct !== null && (
-                  <div className="px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-xs">
+                  <a
+                    href="#historico-assiduidade"
+                    className="px-3 py-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs transition-colors"
+                    title="Consultar histórico detalhado de presenças e faltas"
+                  >
                     <span className="text-[10px] font-bold uppercase text-blue-800 block">Minha Assiduidade</span>
-                    <span className="font-black text-blue-950">
+                    <span className="font-black text-blue-950 tabular-nums">
                       {myPresentCount} / {myRecordedAttendances.length} ({myAttendancePct}%)
                     </span>
-                  </div>
+                  </a>
                 )}
 
                 <div className="flex items-center bg-slate-100 p-1 rounded-lg text-xs font-bold">
@@ -1267,7 +1474,7 @@ export const MemberPortalModule: React.FC = () => {
             ) : (
               <div className="space-y-4">
                 {displayedAgendaActivities.map((act) => {
-                  const typeStyle = ACTIVITY_TYPE_COLORS[act.type] || ACTIVITY_TYPE_COLORS.reuniao_regular;
+                  const typeStyle = ACTIVITY_TYPE_COLORS[act.type] || ACTIVITY_TYPE_COLORS.actividade_regular;
                   const timeRange = getActivityTimeRangeLabel(act);
                   const endDateOnly = getActivityDateOnly(act.endDate);
                   const startDateOnly = getActivityDateOnly(act.startDate);
@@ -1362,7 +1569,7 @@ export const MemberPortalModule: React.FC = () => {
                       </div>
 
                       {/* Secção de Confirmação de Presença (RSVP) */}
-                      {act.stage !== 'encerrado' && (
+                      {act.stage !== 'realizado' && (
                         <div className="pt-3 border-t border-slate-100 space-y-2.5">
                           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                             <span className="text-xs font-bold text-slate-800">
@@ -1454,6 +1661,147 @@ export const MemberPortalModule: React.FC = () => {
                 })}
               </div>
             )}
+
+            {/* Histórico Detalhado de Assiduidade do Membro */}
+            <div
+              id="historico-assiduidade"
+              className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden"
+            >
+              <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-slate-900 flex items-center gap-1.5">
+                    <UserCheck className="w-4 h-4 text-blue-900" />
+                    <span>Histórico Detalhado de Assiduidade</span>
+                  </h2>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Registo individual de presenças e faltas nas atividades com chamada efetuada pela Secretaria ou Direção.
+                  </p>
+                </div>
+
+                <div className="flex items-center bg-slate-100 p-1 rounded-lg text-xs font-bold shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setAttendanceStatusFilter('todos')}
+                    className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                      attendanceStatusFilter === 'todos'
+                        ? 'bg-white text-slate-900 shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Todas ({attendanceHistory.totalCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAttendanceStatusFilter('presente')}
+                    className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                      attendanceStatusFilter === 'presente'
+                        ? 'bg-white text-emerald-800 shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Presentes ({attendanceHistory.presentCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAttendanceStatusFilter('falta')}
+                    className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                      attendanceStatusFilter === 'falta'
+                        ? 'bg-white text-rose-800 shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Faltas ({attendanceHistory.absentCount})
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-slate-50 border-b border-slate-200 text-xs tabular-nums">
+                <div className="bg-white p-3 rounded-lg border border-slate-200">
+                  <span className="text-[10px] font-bold uppercase text-slate-500 block">Chamadas Registadas</span>
+                  <strong className="text-base font-black text-slate-900">{attendanceHistory.totalCount}</strong>
+                </div>
+                <div className="bg-white p-3 rounded-lg border border-slate-200">
+                  <span className="text-[10px] font-bold uppercase text-emerald-700 block">Presenças</span>
+                  <strong className="text-base font-black text-emerald-800">{attendanceHistory.presentCount}</strong>
+                </div>
+                <div className="bg-white p-3 rounded-lg border border-slate-200">
+                  <span className="text-[10px] font-bold uppercase text-rose-700 block">Faltas</span>
+                  <strong className="text-base font-black text-rose-800">{attendanceHistory.absentCount}</strong>
+                </div>
+                <div className="bg-white p-3 rounded-lg border border-slate-200">
+                  <span className="text-[10px] font-bold uppercase text-blue-900 block">Taxa de Frequência</span>
+                  <strong className="text-base font-black text-blue-900">
+                    {attendanceHistory.attendancePct !== null ? `${attendanceHistory.attendancePct}%` : '—'}
+                  </strong>
+                </div>
+              </div>
+
+              {(() => {
+                const filteredEntries = attendanceHistory.entries.filter((entry) => {
+                  if (attendanceStatusFilter === 'presente') return entry.present;
+                  if (attendanceStatusFilter === 'falta') return !entry.present;
+                  return true;
+                });
+
+                if (attendanceHistory.totalCount === 0) {
+                  return (
+                    <div className="p-8 text-center text-xs text-slate-500">
+                      Ainda não existem registos de chamada efetuados para a sua ficha neste ciclo.
+                    </div>
+                  );
+                }
+
+                if (filteredEntries.length === 0) {
+                  return (
+                    <div className="p-8 text-center text-xs text-slate-500">
+                      Nenhum registo de assiduidade corresponde ao filtro selecionado.
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="divide-y divide-slate-100">
+                    {filteredEntries.map((entry) => (
+                      <div
+                        key={entry.activityId}
+                        className="px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50/70 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-slate-900">{entry.title}</span>
+                            <span className="text-[10px] font-semibold text-slate-500">
+                              {entry.typeLabel}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            {formatDateAO(entry.date)} · {entry.location} · Fase: {entry.stageLabel}
+                          </p>
+                          {entry.notes && (
+                            <p className="text-[11px] text-slate-700 mt-1 bg-slate-50 border border-slate-200 rounded px-2.5 py-1 inline-block">
+                              Observação: {entry.notes}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="shrink-0">
+                          {entry.present ? (
+                            <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700">
+                              <CheckCircle2 className="w-4 h-4" />
+                              <span>Presente</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-xs font-bold text-rose-700">
+                              <XCircle className="w-4 h-4" />
+                              <span>Falta</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
           </div>
         );
       })()}
@@ -2685,6 +3033,464 @@ export const MemberPortalModule: React.FC = () => {
           </div>
         </Modal>
       )}
+      {/* Modal: Caderneta Detalhada de Módulo ou Medalha */}
+      {selectedTrainingProgress && (() => {
+        const tr =
+          myTraining.find((item) => item.id === selectedTrainingProgress.id) ||
+          selectedTrainingProgress;
+        const requirements = resolveCatalogRequirementsForProgress(
+          tr,
+          state.classes,
+          state.specialties
+        );
+        const totalReqs = Math.max(tr.totalRequirements || 0, requirements.length, 1);
+        const pct = computeTrainingProgressPct({
+          completedRequirements: tr.completedRequirements,
+          totalRequirements: totalReqs,
+        });
+
+        return (
+          <Modal
+            isOpen={Boolean(selectedTrainingProgress)}
+            onClose={() => setSelectedTrainingProgress(null)}
+            title={tr.targetTitle}
+            description={`${tr.type === 'classe' ? 'Caderneta Oficial de Módulo' : 'Caderneta Oficial de Medalha'} · Instrutor: ${tr.instructorName}`}
+            maxWidth="2xl"
+          >
+            <div className="space-y-4 text-xs">
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                      Estado da Formação
+                    </span>
+                    <span
+                      className={`text-sm font-bold ${
+                        tr.finalAuthorizedApproval
+                          ? 'text-emerald-700'
+                          : pct >= 100
+                          ? 'text-blue-900'
+                          : 'text-amber-800'
+                      }`}
+                    >
+                      {tr.finalAuthorizedApproval
+                        ? 'Investidura Aprovada'
+                        : pct >= 100
+                        ? '100% Concluído — Aguardando Homologação'
+                        : 'Em Curso'}
+                    </span>
+                  </div>
+                  <div className="text-right tabular-nums">
+                    <span className="text-xl font-black text-blue-900 block">{pct}%</span>
+                    <span className="text-[11px] text-slate-500">
+                      {tr.completedRequirements.length} de {totalReqs} requisitos concluídos
+                    </span>
+                  </div>
+                </div>
+
+                <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                  <div className="bg-blue-900 h-full rounded-full" style={{ width: `${pct}%` }} />
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 pt-1">
+                  <span>Última atualização: {formatDateAO(tr.updatedAt)}</span>
+                  {tr.approvedAt && (
+                    <span className="text-emerald-700 font-semibold">
+                      Homologado em: {formatDateAO(tr.approvedAt)}
+                    </span>
+                  )}
+                </div>
+
+                {tr.observations && (
+                  <div className="pt-2 border-t border-slate-200 text-[11px] text-slate-700">
+                    <span className="font-bold text-slate-900">Observações do Instrutor: </span>
+                    {tr.observations}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                {Array.from({ length: totalReqs }).map((_, idx) => {
+                  const reqNumber = idx + 1;
+                  const isDone = tr.completedRequirements.includes(reqNumber);
+                  const desc =
+                    requirements[idx] ||
+                    `Requisito Oficial #${reqNumber}: Demonstração prática e teórica`;
+
+                  return (
+                    <div
+                      key={reqNumber}
+                      className={`p-3 rounded-lg border flex items-start justify-between gap-3 ${
+                        isDone
+                          ? 'bg-emerald-50/60 border-emerald-200 text-slate-900'
+                          : 'bg-white border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <span
+                          className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-[11px] shrink-0 mt-0.5 tabular-nums ${
+                            isDone
+                              ? 'bg-emerald-700 text-white'
+                              : 'bg-slate-100 border border-slate-300 text-slate-700'
+                          }`}
+                        >
+                          {isDone ? <Check className="w-3.5 h-3.5" /> : reqNumber}
+                        </span>
+                        <span className="leading-relaxed">{desc}</span>
+                      </div>
+
+                      <span
+                        className={`text-[11px] font-bold shrink-0 ${
+                          isDone ? 'text-emerald-700' : 'text-amber-700'
+                        }`}
+                      >
+                        {isDone ? 'Concluído' : 'Pendente'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setSelectedTrainingProgress(null)}
+                  className="px-4 py-2 font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                >
+                  Fechar Caderneta
+                </button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {/* MODAL: Pedido de Atualização Cadastral à Secretaria */}
+      <Modal
+        isOpen={isUpdateRequestModalOpen}
+        onClose={() => {
+          setIsUpdateRequestModalOpen(false);
+          setUpdateRequestError(null);
+        }}
+        title="Pedir Atualização Cadastral à Secretaria"
+        description="Preencha apenas os dados que deseja atualizar ou anexe um documento justificativo (ex: B.I. renovado)."
+        maxWidth="2xl"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            setUpdateRequestError(null);
+            const res = submitPortalRequest({
+              category: 'atualizacao_dados',
+              subject: updateRequestForm.subject,
+              details: updateRequestForm.details,
+              proposedChanges: {
+                phone: updateRequestForm.phone,
+                address: updateRequestForm.address,
+                email: updateRequestForm.email,
+                identityCardNumber: updateRequestForm.identityCardNumber,
+                identityCardExpiryDate: updateRequestForm.identityCardExpiryDate,
+                guardianName: updateRequestForm.guardianName,
+                guardianPhone: updateRequestForm.guardianPhone,
+                emergencyContactName: updateRequestForm.emergencyContactName,
+                emergencyContactPhone: updateRequestForm.emergencyContactPhone,
+              },
+              attachmentFileName: updateRequestForm.attachmentFileName || undefined,
+              attachmentBase64: updateRequestForm.attachmentBase64 || undefined,
+            });
+            if (res.success) {
+              setIsUpdateRequestModalOpen(false);
+              setUpdateRequestFeedback(
+                `Pedido ${res.request?.id || ''} enviado à Secretaria com sucesso. Acompanhe o estado abaixo.`
+              );
+            } else {
+              setUpdateRequestError(res.error || 'Erro ao enviar pedido à Secretaria.');
+            }
+          }}
+          className="space-y-4 text-xs"
+        >
+          {updateRequestError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg">
+              {updateRequestError}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-slate-700 font-semibold mb-1">Assunto do Pedido</label>
+            <select
+              value={updateRequestForm.subject}
+              onChange={(e) => setUpdateRequestForm((prev) => ({ ...prev, subject: e.target.value }))}
+              className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+            >
+              <option value="Atualização de Contactos / Morada">Atualização de Contactos / Morada</option>
+              <option value="Renovação / Atualização de B.I.">Renovação / Atualização de B.I.</option>
+              <option value="Atualização de Encarregado / Emergência">Atualização de Encarregado / Emergência</option>
+              <option value="Correção de Dados na Ficha">Correção de Dados na Ficha</option>
+            </select>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+            <div>
+              <label className="block text-slate-600 font-semibold mb-1">
+                Novo Telefone (Atual: {member.phone || '—'})
+              </label>
+              <input
+                type="text"
+                value={updateRequestForm.phone}
+                onChange={(e) => setUpdateRequestForm((prev) => ({ ...prev, phone: e.target.value }))}
+                placeholder="Deixe em branco para manter"
+                className="w-full p-2 border border-slate-200 rounded bg-white"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-semibold mb-1">
+                Novo Email (Atual: {member.email || '—'})
+              </label>
+              <input
+                type="email"
+                value={updateRequestForm.email}
+                onChange={(e) => setUpdateRequestForm((prev) => ({ ...prev, email: e.target.value }))}
+                placeholder="Deixe em branco para manter"
+                className="w-full p-2 border border-slate-200 rounded bg-white"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-slate-600 font-semibold mb-1">
+                Nova Morada (Atual: {member.address || '—'})
+              </label>
+              <input
+                type="text"
+                value={updateRequestForm.address}
+                onChange={(e) => setUpdateRequestForm((prev) => ({ ...prev, address: e.target.value }))}
+                placeholder="Deixe em branco para manter"
+                className="w-full p-2 border border-slate-200 rounded bg-white"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-semibold mb-1">
+                Novo Nº do B.I. (Atual: {member.identityCardNumber || '—'})
+              </label>
+              <input
+                type="text"
+                value={updateRequestForm.identityCardNumber}
+                onChange={(e) =>
+                  setUpdateRequestForm((prev) => ({ ...prev, identityCardNumber: e.target.value }))
+                }
+                placeholder="Deixe em branco para manter"
+                className="w-full p-2 border border-slate-200 rounded bg-white"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-semibold mb-1">
+                Nova Validade do B.I. (Atual: {formatDateAO(member.identityCardExpiryDate) || '—'})
+              </label>
+              <input
+                type="date"
+                value={updateRequestForm.identityCardExpiryDate}
+                onChange={(e) =>
+                  setUpdateRequestForm((prev) => ({ ...prev, identityCardExpiryDate: e.target.value }))
+                }
+                className="w-full p-2 border border-slate-200 rounded bg-white"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-semibold mb-1">
+                Encarregado (Atual: {member.guardianName || '—'})
+              </label>
+              <input
+                type="text"
+                value={updateRequestForm.guardianName}
+                onChange={(e) => setUpdateRequestForm((prev) => ({ ...prev, guardianName: e.target.value }))}
+                placeholder="Deixe em branco para manter"
+                className="w-full p-2 border border-slate-200 rounded bg-white"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-semibold mb-1">
+                Tel. Encarregado (Atual: {member.guardianPhone || '—'})
+              </label>
+              <input
+                type="text"
+                value={updateRequestForm.guardianPhone}
+                onChange={(e) => setUpdateRequestForm((prev) => ({ ...prev, guardianPhone: e.target.value }))}
+                placeholder="Deixe em branco para manter"
+                className="w-full p-2 border border-slate-200 rounded bg-white"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-semibold mb-1">
+                Contacto Emergência (Atual: {member.emergencyContact?.name || '—'})
+              </label>
+              <input
+                type="text"
+                value={updateRequestForm.emergencyContactName}
+                onChange={(e) =>
+                  setUpdateRequestForm((prev) => ({ ...prev, emergencyContactName: e.target.value }))
+                }
+                placeholder="Deixe em branco para manter"
+                className="w-full p-2 border border-slate-200 rounded bg-white"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-semibold mb-1">
+                Tel. Emergência (Atual: {member.emergencyContact?.phone || '—'})
+              </label>
+              <input
+                type="text"
+                value={updateRequestForm.emergencyContactPhone}
+                onChange={(e) =>
+                  setUpdateRequestForm((prev) => ({ ...prev, emergencyContactPhone: e.target.value }))
+                }
+                placeholder="Deixe em branco para manter"
+                className="w-full p-2 border border-slate-200 rounded bg-white"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-slate-700 font-semibold mb-1">
+              Detalhes / Justificação para a Secretaria
+            </label>
+            <textarea
+              rows={3}
+              value={updateRequestForm.details}
+              onChange={(e) => setUpdateRequestForm((prev) => ({ ...prev, details: e.target.value }))}
+              placeholder="Ex: Renovei o meu Bilhete de Identidade e mudei de número telefónico..."
+              className="w-full p-2 border border-slate-200 rounded-lg"
+            />
+          </div>
+
+          <div>
+            <label className="block text-slate-700 font-semibold mb-1">
+              Anexar Documento Comprovativo (Opcional · Imagem ou PDF até 2 MB)
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg text-slate-700 font-semibold cursor-pointer">
+                <Upload className="w-3.5 h-3.5" />
+                <span>{isProcessingUpdateFile ? 'A processar...' : 'Escolher Documento'}</span>
+                <input
+                  type="file"
+                  accept="image/*,application/pdf"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setIsProcessingUpdateFile(true);
+                    setUpdateRequestError(null);
+                    try {
+                      const processed = await processProofFile(file);
+                      setUpdateRequestForm((prev) => ({
+                        ...prev,
+                        attachmentFileName: processed.fileName,
+                        attachmentBase64: processed.base64,
+                      }));
+                    } catch (err: any) {
+                      setUpdateRequestError(err?.message || 'Erro ao carregar anexo.');
+                    } finally {
+                      setIsProcessingUpdateFile(false);
+                      e.target.value = '';
+                    }
+                  }}
+                />
+              </label>
+              {updateRequestForm.attachmentFileName && (
+                <div className="flex items-center gap-2 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                  <Paperclip className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate max-w-[200px]">{updateRequestForm.attachmentFileName}</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setUpdateRequestForm((prev) => ({
+                        ...prev,
+                        attachmentFileName: '',
+                        attachmentBase64: '',
+                      }))
+                    }
+                    className="text-rose-700 font-bold hover:underline cursor-pointer"
+                  >
+                    Remover
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setIsUpdateRequestModalOpen(false);
+                setUpdateRequestError(null);
+              }}
+              className="px-3.5 py-2 text-slate-600 hover:text-slate-900 font-semibold"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={isProcessingUpdateFile}
+              className="px-4 py-2 bg-blue-900 hover:bg-blue-800 disabled:opacity-50 text-white font-bold rounded-lg shadow-xs cursor-pointer"
+            >
+              Enviar Pedido à Secretaria
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* MODAL: Visualizar Documento Anexado ao Pedido */}
+      {viewingPortalDoc && (() => {
+        const previewKind = getDocumentPreviewKind(viewingPortalDoc.base64, viewingPortalDoc.fileName);
+        return (
+          <Modal
+            isOpen={Boolean(viewingPortalDoc)}
+            onClose={() => setViewingPortalDoc(null)}
+            title={viewingPortalDoc.title}
+            maxWidth="2xl"
+          >
+            <div className="space-y-4 text-xs">
+              <div className="border border-slate-200 rounded-xl bg-slate-50 overflow-hidden min-h-[220px] flex items-center justify-center p-2">
+                {previewKind === 'image' ? (
+                  <img
+                    src={viewingPortalDoc.base64}
+                    alt={viewingPortalDoc.fileName}
+                    className="max-h-[60vh] w-auto object-contain rounded"
+                  />
+                ) : previewKind === 'pdf' ? (
+                  <iframe
+                    src={viewingPortalDoc.base64}
+                    title={viewingPortalDoc.fileName}
+                    className="w-full h-[60vh] rounded bg-white"
+                  />
+                ) : (
+                  <div className="p-6 text-center text-slate-600">
+                    Pré-visualização indisponível para este formato.
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                <span className="text-slate-500 truncate max-w-[260px]">{viewingPortalDoc.fileName}</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => downloadDocumentFile(viewingPortalDoc.base64, viewingPortalDoc.fileName)}
+                    className="px-3.5 py-1.5 bg-blue-900 hover:bg-blue-800 text-white font-semibold rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Descarregar</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewingPortalDoc(null)}
+                    className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg cursor-pointer"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 };

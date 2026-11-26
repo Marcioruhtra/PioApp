@@ -138,8 +138,8 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
   );
   const taskCompletionPct = totalTasksCount > 0 ? Math.round((completedTasksCount / totalTasksCount) * 100) : 0;
   const activitiesWithMinuteCount = state.activities.filter((act) => Boolean(act.minute)).length;
-  const ongoingActivitiesCount = state.activities.filter((act) => act.stage !== 'encerrado').length;
-  const closedActivitiesCount = state.activities.filter((act) => act.stage === 'encerrado').length;
+  const ongoingActivitiesCount = state.activities.filter((act) => act.stage !== 'realizado').length;
+  const closedActivitiesCount = state.activities.filter((act) => act.stage === 'realizado').length;
 
   const canViewMembers = can('members', 'VIEW');
   const nowRef = new Date();
@@ -284,7 +284,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
           </div>
           <div className="text-2xl font-black text-slate-900">{state.activities.length}</div>
           <div className="text-xs text-slate-500 mt-2">
-            <span>{ongoingActivitiesCount} em curso · {closedActivitiesCount} encerradas</span>
+            <span>{ongoingActivitiesCount} em curso · {closedActivitiesCount} realizadas</span>
           </div>
         </div>
 

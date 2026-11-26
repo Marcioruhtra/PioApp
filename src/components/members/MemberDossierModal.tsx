@@ -44,6 +44,7 @@ import {
   hasApproveMemberAccountPermission,
   hasDeleteMemberUploadsPermission,
 } from '../../services/permissionService';
+import { getActivityTypeLabel } from '../../utils/activityUtils';
 
 interface MemberDossierModalProps {
   member: Member | null;
@@ -62,15 +63,6 @@ const CATEGORY_DISPLAY: Record<MemberCategory, string> = {
   embaixador: 'Embaixador',
   lider: 'Líder',
   aspirante: 'Aspirante',
-};
-
-const ACTIVITY_TYPE_LABELS: Record<string, string> = {
-  reuniao_regular: 'Actividades Normais',
-  acampamento: 'Acampamento',
-  civica: 'Cívica',
-  formacao: 'Formação',
-  social: 'Social',
-  diretoria: 'Reunião da Comissão',
 };
 
 export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
@@ -1213,7 +1205,7 @@ export const MemberDossierModal: React.FC<MemberDossierModalProps> = ({
                           <td className="py-2.5 px-3">
                             <div className="font-semibold text-slate-900 dark:text-white">{att.title}</div>
                             <div className="text-[11px] text-slate-500">
-                              {ACTIVITY_TYPE_LABELS[att.type] || att.type}
+                              {getActivityTypeLabel(att.type)}
                               {att.notes ? ` · ${att.notes}` : ''}
                             </div>
                           </td>

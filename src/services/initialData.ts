@@ -471,8 +471,8 @@ export const INITIAL_MONTHLY_CLOSINGS: MonthlyClosing[] = [
 export const INITIAL_ACTIVITIES: ClubActivity[] = [
   {
     id: 'ACT-2026-001',
-    title: 'Actividades Normais e Ordem Unida Semanal',
-    type: 'reuniao_regular',
+    title: 'Actividade Regular e Ordem Unida Semanal',
+    type: 'actividade_regular',
     department: 'Instrução Geral',
     location: 'Sede do Clube D\'Alvorada, Talatona',
     startDate: '2026-04-05T08:30:00Z',
@@ -547,12 +547,12 @@ export const INITIAL_ACTIVITIES: ClubActivity[] = [
   {
     id: 'ACT-2026-003',
     title: 'Reunião Ordinária da Comissão Diretiva',
-    type: 'diretoria',
+    type: 'reuniao_comissao',
     department: 'Comissão Diretiva',
     location: 'Sede do Clube D\'Alvorada, Talatona',
     startDate: '2026-03-15T14:00:00Z',
     endDate: '2026-03-15T16:30:00Z',
-    stage: 'encerrado',
+    stage: 'realizado',
     requiresDirectorApproval: false,
     costEstimatedInCents: 0,
     costApprovedInCents: 0,

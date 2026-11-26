@@ -32,6 +32,11 @@ export const CLOUD_STATE_KEYS: (keyof ClubDatabaseState)[] = [
   'quotaWaivers',
   'musicItems',
   'enrollmentRequests',
+  'requests',
+  'teamChatMessages',
+  'teamTasks',
+  'teamNotes',
+  'teamAwards',
   'settings',
 ];
 

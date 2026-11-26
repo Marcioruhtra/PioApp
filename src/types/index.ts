@@ -58,7 +58,8 @@ export type ModuleName =
   | 'messaging'
   | 'inventory'
   | 'awards'
-  | 'music';
+  | 'music'
+  | 'my_team';
 
 export interface UserAccount {
   id: string;
@@ -249,6 +250,10 @@ export interface ExpenseRequest {
   secondApproverUserId?: string; // Exceção: despesa própria exige 2º aprovador
   secondApproverName?: string;
   paymentProofUrl?: string;
+  invoiceFileName?: string;
+  invoiceBase64?: string;
+  paymentProofFileName?: string;
+  paymentProofBase64?: string;
   paidAt?: string;
   createdAt: string;
 }
@@ -293,13 +298,7 @@ export interface MonthlyClosing {
   accountSnapshots?: MonthlyClosingAccountSnapshot[];
 }
 
-export type ActivityStage = 
-  | 'planeamento' 
-  | 'aprovacao' 
-  | 'preparacao' 
-  | 'execucao' 
-  | 'relatorio' 
-  | 'encerrado';
+export type ActivityStage = 'preparacao' | 'execucao' | 'realizado';
 
 export interface ActivityTask {
   id: string;
@@ -347,7 +346,15 @@ export interface StructuredMinute {
 export interface ClubActivity {
   id: string;
   title: string;
-  type: 'reuniao_regular' | 'acampamento' | 'civica' | 'formacao' | 'social' | 'diretoria';
+  type:
+    | 'actividade_regular'
+    | 'modulos_medalhas'
+    | 'acampamento'
+    | 'actividades_espirituais'
+    | 'actividades_sociais'
+    | 'actividades_recreativa'
+    | 'programa_sabado'
+    | 'reuniao_comissao';
   department: string;
   location: string;
   startDate: string;
@@ -466,6 +473,19 @@ export interface MemberPortalRequest {
   subject: string;
   details: string;
   proofAttachmentName?: string;
+  attachmentFileName?: string;
+  attachmentBase64?: string;
+  proposedChanges?: {
+    phone?: string;
+    address?: string;
+    email?: string;
+    guardianName?: string;
+    guardianPhone?: string;
+    identityCardNumber?: string;
+    identityCardExpiryDate?: string;
+    emergencyContactName?: string;
+    emergencyContactPhone?: string;
+  };
   status: RequestStatus;
   assignedRole: RoleType;
   assignedUserId?: string;
@@ -858,6 +878,48 @@ export interface MemberEnrollmentRequest {
   memberDeletedAt?: string;
   memberDeletedByUserId?: string;
   memberDeletedByName?: string;
+}
+
+export interface TeamChatMessage {
+  id: string;
+  unitId: string;
+  unitName: string;
+  senderUserId: string;
+  senderMemberId?: string;
+  senderName: string;
+  senderRole: RoleType;
+  isTeamLeader?: boolean;
+  content: string;
+  createdAt: string;
+}
+
+export interface TeamTask {
+  id: string;
+  unitId: string;
+  title: string;
+  description?: string;
+  assignedMemberName?: string;
+  dueDate: string;
+  status: 'pendente' | 'concluido';
+  createdByName: string;
+  createdAt: string;
+}
+
+export interface TeamNote {
+  id: string;
+  unitId: string;
+  title: string;
+  content: string;
+  authorName: string;
+  createdAt: string;
+}
+
+export interface TeamAward {
+  id: string;
+  unitId: string;
+  title: string;
+  date: string;
+  description?: string;
 }
 
 

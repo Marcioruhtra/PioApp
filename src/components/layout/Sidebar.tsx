@@ -20,6 +20,7 @@ import {
   Send,
   Briefcase,
   Music,
+  Flag,
 } from 'lucide-react';
 import { ModuleName } from '../../types';
 import { useClub } from '../../context/ClubContext';
@@ -135,6 +136,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       icon: UserCheck,
       badge: unviewedSuggestions > 0 ? unviewedSuggestions : undefined,
       description: isDirectorOrAdmin ? 'Área do membro & Caixa de Sugestões' : 'Área pessoal do membro / encarregado',
+    },
+    {
+      id: 'my_team',
+      label: 'Minha Equipa',
+      icon: Flag,
+      description: 'Colegas, desempenho e chat interno da equipa',
     },
     {
       id: 'requests',
